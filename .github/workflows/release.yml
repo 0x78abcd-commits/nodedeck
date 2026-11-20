@@ -81,7 +81,19 @@ jobs:
           node scripts/ci-prepare.js "$V" "$GITHUB_REPOSITORY"
           echo "VERSION=$V" >> "$GITHUB_ENV"
       - run: npm ci
-      - name: Build & publish
+      - name: Build
+        run: npx electron-builder --win --publish never
+      - name: Publish release
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npx electron-builder --win --publish always
+        run: |
+          # 自己统一上传，避免 electron-builder 并发创建 Release 冲突
+          # latest.yml + blockmap 是安装版自动更新必需的
+          FILES=(dist/NodeDeck-Setup-$VERSION.exe dist/NodeDeck-Setup-$VERSION.exe.blockmap dist/NodeDeck-$VERSION-portable.exe dist/latest.yml)
+          ls -la "${FILES[@]}"
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            gh release upload "v$VERSION" "${FILES[@]}" --clobber
+          else
+            gh release create "v$VERSION" "${FILES[@]}" --title "NodeDeck $VERSION" --generate-notes --target "$GITHUB_SHA"
+          fi
