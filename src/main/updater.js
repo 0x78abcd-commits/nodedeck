@@ -1,10 +1,23 @@
 'use strict';
 // 自动更新：安装版用 electron-updater（GitHub Releases），便携版检测到新版后引导下载
+const fs = require('fs');
+const path = require('path');
 const { app, net, shell } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const pkg = require('../../package.json');
 
-const publish = (pkg.build && pkg.build.publish && pkg.build.publish[0]) || {};
+// 打包后 package.json 里的 build 字段会被去掉，仓库信息要从 electron-builder 生成的 app-update.yml 读
+function readPublish() {
+  if (app.isPackaged) {
+    try {
+      const yml = fs.readFileSync(path.join(process.resourcesPath, 'app-update.yml'), 'utf8');
+      const get = (k) => (yml.match(new RegExp('^' + k + ':\\s*(.+)$', 'm')) || [])[1]?.trim().replace(/^['"]|['"]$/g, '');
+      if (get('owner') && get('repo')) return { provider: 'github', owner: get('owner'), repo: get('repo') };
+    } catch (_) { /* ignore */ }
+  }
+  return (pkg.build && pkg.build.publish && pkg.build.publish[0]) || {};
+}
+const publish = readPublish();
 const isPortable = !!process.env.PORTABLE_EXECUTABLE_DIR;
 
 function cmpVer(a, b) {
