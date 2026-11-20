@@ -42,6 +42,9 @@ type Config struct {
 	Service     string `json:"service"`
 	// ReloadCmd 为空时使用 systemctl reload <Service>
 	ReloadCmd []string `json:"reloadCmd"`
+	// sing-box 自动升级
+	SingboxManifest   string `json:"singboxManifest"`
+	SingboxAutoUpdate bool   `json:"singboxAutoUpdate"`
 }
 
 type User struct {
@@ -77,6 +80,7 @@ type Agent struct {
 	applied  string            // 已应用的禁用集合签名
 	lastErr  string
 	started  time.Time
+	update   UpdateState
 	dirty    bool
 }
 
@@ -441,6 +445,7 @@ type statsResp struct {
 	Disabled map[string]string   `json:"disabled"`
 	Uptime   int64               `json:"uptime"`
 	LastErr  string              `json:"lastErr"`
+	Singbox  UpdateState         `json:"singbox"`
 }
 
 func (a *Agent) handleAdmin(w http.ResponseWriter, r *http.Request) {
@@ -448,7 +453,7 @@ func (a *Agent) handleAdmin(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
 	case "/admin/stats":
 		a.mu.Lock()
-		resp := statsResp{Version: version, Traffic: a.traffic, Disabled: a.disabled, Uptime: int64(time.Since(a.started).Seconds()), LastErr: a.lastErr}
+		resp := statsResp{Version: version, Traffic: a.traffic, Disabled: a.disabled, Uptime: int64(time.Since(a.started).Seconds()), LastErr: a.lastErr, Singbox: a.update}
 		b, _ := json.Marshal(resp)
 		a.mu.Unlock()
 		w.Write(b)
@@ -460,6 +465,14 @@ func (a *Agent) handleAdmin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+	case "/admin/update-singbox":
+		msg, err := a.updateSingbox()
+		if err != nil {
+			w.WriteHeader(500)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]string{"message": msg})
 	case "/admin/reset":
 		user := r.URL.Query().Get("user")
 		a.mu.Lock()
@@ -510,6 +523,8 @@ func run(cfgPath string) {
 	pollT := time.NewTicker(5 * time.Second)
 	enforceT := time.NewTicker(15 * time.Second)
 	saveT := time.NewTicker(30 * time.Second)
+	a.update.Current = singboxVersion(a.cfg.SingBox)
+	go a.updateLoop()
 	log.Printf("NodeDeck agent %s 已启动，订阅端口 %s", version, a.cfg.SubListen)
 	for {
 		select {
@@ -542,7 +557,7 @@ func adminCall(cfgPath, p string) {
 		method = "POST"
 	}
 	req, _ := http.NewRequest(method, "http://"+cfg.AdminListen+p, nil)
-	resp, err := (&http.Client{Timeout: 60 * time.Second}).Do(req)
+	resp, err := (&http.Client{Timeout: 5 * time.Minute}).Do(req)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "无法连接 agent:", err)
 		os.Exit(1)
@@ -583,7 +598,7 @@ func genCert(host, dir string) {
 func main() {
 	log.SetFlags(log.LstdFlags)
 	if len(os.Args) < 2 {
-		fmt.Println("用法: nodedeck-agent run|stats|apply|reset [user]|gencert|version  [-c /etc/nodedeck/agent.json]")
+		fmt.Println("用法: nodedeck-agent run|stats|apply|reset [user]|update-singbox|gencert|version  [-c /etc/nodedeck/agent.json]")
 		os.Exit(2)
 	}
 	cmd := os.Args[1]
@@ -591,6 +606,8 @@ func main() {
 	cfgPath := fs.String("c", "/etc/nodedeck/agent.json", "agent 配置文件")
 	host := fs.String("host", "www.bing.com", "证书域名")
 	dir := fs.String("dir", "/etc/nodedeck", "证书目录")
+	manifest := fs.String("manifest", "", "sing-box manifest.json 地址")
+	bin := fs.String("bin", "/usr/local/bin/nodedeck-sing-box", "sing-box 安装路径")
 	fs.Parse(os.Args[2:])
 	switch cmd {
 	case "run":
@@ -602,6 +619,15 @@ func main() {
 	case "reset":
 		user := fs.Arg(0)
 		adminCall(*cfgPath, "/admin/reset?user="+user)
+	case "install-singbox":
+		v, err := installSingbox(*manifest, *bin)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "安装 sing-box 失败:", err)
+			os.Exit(1)
+		}
+		fmt.Println("sing-box", v)
+	case "update-singbox":
+		adminCall(*cfgPath, "/admin/update-singbox")
 	case "gencert":
 		genCert(*host, *dir)
 	case "version":

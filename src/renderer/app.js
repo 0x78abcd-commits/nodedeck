@@ -17,6 +17,7 @@ let S = null; // 全量状态
 let info = {};
 let updateStatus = {};
 let dirty = false;
+let snoozed = false;
 let page = 'dash';
 
 const PAGES = [
@@ -66,11 +67,12 @@ function renderFoot() {
 function renderBanner() {
   const b = document.getElementById('banner');
   b.innerHTML = '';
-  if (!dirty || !S.servers.some((s) => s.deployedAt)) { b.classList.add('hidden'); return; }
+  const outdated = S.servers.filter(agentOutdated).length;
+  if ((!dirty && (!outdated || snoozed)) || !S.servers.some((s) => s.deployedAt)) { b.classList.add('hidden'); return; }
   b.classList.remove('hidden');
-  b.append(h('span', {}, '配置已修改，需要同步到服务器才会生效。'),
+  b.append(h('span', {}, dirty ? '配置已修改，需要同步到服务器才会生效。' : `软件已更新，${outdated} 台服务器的 agent 需要升级。`),
     h('button', { class: 'small primary', onclick: (e) => busy(e.currentTarget, syncAll) }, '同步全部服务器'),
-    h('button', { class: 'small', onclick: () => { dirty = false; renderBanner(); } }, '稍后'));
+    h('button', { class: 'small', onclick: () => { dirty = false; snoozed = true; renderBanner(); } }, '稍后'));
 }
 
 async function syncAll() {
@@ -116,6 +118,11 @@ async function viewDash(v) {
 function stat(n, l) { return h('div', { class: 'card stat' }, h('div', { class: 'n' }, n), h('div', { class: 'l' }, l)); }
 
 // ---------- 服务器 ----------
+function agentOutdated(s) {
+  const v = s.lastStatus?.agentVersion;
+  return !!(s.deployedAt && v && info.packaged && v !== info.version);
+}
+
 async function viewServers(v) {
   await reload();
   v.append(h('div', { class: 'toolbar' }, h('div', {}, h('h1', {}, '服务器'), h('p', { class: 'sub' }, '通过 SSH 安装 sing-box 和 agent，一键部署 6 种协议')), h('div', { class: 'spacer' }),
@@ -131,7 +138,7 @@ async function viewServers(v) {
     const fw = S.forwards.filter((f) => f.relayServerId === s.id).length;
     tb.append(h('tr', {},
       h('td', {}, h('b', {}, s.name), h('div', { class: 'muted mono', style: { wordBreak: 'normal', whiteSpace: 'nowrap' } }, s.host), s.role === 'relay' ? h('span', { class: 'tag blue' }, '中转机') : null),
-      h('td', {}, status, st?.version ? h('div', { class: 'muted' }, 'sing-box ' + st.version) : null, st?.mem ? h('div', { class: 'muted' }, `内存 ${st.mem} · 负载 ${st.load}`) : null),
+      h('td', {}, status, agentOutdated(s) ? h('span', { class: 'tag warn', title: '点「同步」自动升级' }, 'agent 待升级') : null, st?.version ? h('div', { class: 'muted' }, 'sing-box ' + st.version) : null, st?.mem ? h('div', { class: 'muted' }, `内存 ${st.mem} · 负载 ${st.load}`) : null),
       h('td', {}, protos.length ? protos : h('span', { class: 'muted' }, '无'), fw ? h('span', { class: 'tag blue' }, `转发 ${fw}`) : null),
       h('td', {}, exit),
       h('td', {}, h('div', { class: 'actions' },
@@ -139,6 +146,7 @@ async function viewServers(v) {
         s.deployedAt ? h('button', { class: 'small', onclick: (e) => busy(e.currentTarget, async () => { await api.call('server:sync', s.id); toast('已同步', 'ok'); dirty = false; renderBanner(); render(); }) }, '同步') : null,
         s.deployedAt ? h('button', { class: 'small', onclick: (e) => busy(e.currentTarget, async () => { await api.call('server:status', s.id); render(); }) }, '状态') : null,
         s.deployedAt ? h('button', { class: 'small', onclick: (e) => busy(e.currentTarget, () => showLogs(s)) }, '日志') : null,
+        s.deployedAt ? h('button', { class: 'small', title: '立即检查并升级 sing-box 内核', onclick: (e) => busy(e.currentTarget, async () => { const m = await api.call('server:updateSingbox', s.id); toast(m, 'ok'); render(); }) }, '升级内核') : null,
         h('button', { class: 'small', onclick: () => editServer(s) }, '编辑'),
         h('button', { class: 'small danger', onclick: () => removeServer(s) }, '删除')))));
   }
@@ -592,18 +600,20 @@ async function viewSettings(v) {
   const subPort = h('input', { type: 'number', value: st.subPort });
   const statsPort = h('input', { type: 'number', value: st.statsPort });
   const adminPort = h('input', { type: 'number', value: st.adminPort });
-  const sbUrl = h('input', { value: st.singboxUrl });
+  const sbBase = h('input', { value: st.singboxBase });
+  const sbAuto = h('input', { type: 'checkbox', checked: st.singboxAutoUpdate !== false });
   const autoUp = h('input', { type: 'checkbox', checked: st.autoUpdate !== false });
   v.append(h('h1', {}, '设置'), h('p', { class: 'sub' }, `数据目录：${info.dataDir}`));
   v.append(h('div', { class: 'grid g2' },
     h('div', { class: 'card' }, h('h3', {}, '服务器端'),
       field('订阅端口（对外开放）', subPort),
       h('div', { class: 'row' }, field('统计 API 端口（仅本机）', statsPort), field('agent 管理端口（仅本机）', adminPort)),
-      field('sing-box 下载地址（{arch} = amd64/arm64）', sbUrl, '默认从你自己仓库的 GitHub Release 下载带流量统计的 sing-box'),
+      field('sing-box 内核渠道', sbBase, '默认是你仓库里名为 singbox 的 Release，GitHub Actions 每天自动构建官方最新正式版'),
+      h('label', { class: 'f' }, sbAuto, ' VPS 自动升级 sing-box 内核（每 6 小时检查，升级前校验配置，失败自动回滚）'),
       h('label', { class: 'f' }, autoUp, ' 自动检查软件更新'),
       h('button', { class: 'primary', onclick: async () => {
-        await api.call('settings:set', { subPort: Number(subPort.value) || 2096, statsPort: Number(statsPort.value) || 9092, adminPort: Number(adminPort.value) || 9091, singboxUrl: sbUrl.value.trim(), autoUpdate: autoUp.checked });
-        toast('已保存。改了端口需要重新部署服务器', 'ok'); markDirty();
+        await api.call('settings:set', { subPort: Number(subPort.value) || 2096, statsPort: Number(statsPort.value) || 9092, adminPort: Number(adminPort.value) || 9091, singboxBase: sbBase.value.trim(), singboxAutoUpdate: sbAuto.checked, autoUpdate: autoUp.checked });
+        toast('已保存，点「同步全部」后对各 VPS 生效（改了端口需要重新部署）', 'ok'); markDirty();
       } }, '保存')),
     h('div', {}, updateCard(),
       h('div', { class: 'card' }, h('h3', {}, '备份'), h('p', { class: 'muted' }, '备份文件包含服务器密码等敏感信息，请妥善保存。本地数据已用 Windows DPAPI 加密。'),
@@ -627,5 +637,6 @@ const VIEWS = { dash: viewDash, servers: viewServers, nodes: viewNodes, users: v
   });
   await reload();
   renderNav();
+  renderBanner();
   render();
 })();

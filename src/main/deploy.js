@@ -39,9 +39,13 @@ RestartSec=3
 WantedBy=multi-user.target
 `;
 
+function singboxBase(state) { return String(state.settings?.singboxBase || '').replace(/\/+$/, ''); }
+
 function agentConfig(state) {
   const st = state.settings || {};
   return {
+    singboxManifest: `${singboxBase(state)}/manifest.json`,
+    singboxAutoUpdate: st.singboxAutoUpdate !== false,
     statsApi: `127.0.0.1:${st.statsPort || 9092}`,
     subListen: `:${st.subPort || 2096}`,
     adminListen: `127.0.0.1:${st.adminPort || 9091}`,
@@ -55,11 +59,6 @@ function agentGz(resourcesDir, arch) {
   const f = path.join(resourcesDir, 'agent', `nodedeck-agent-linux-${arch}.gz`);
   if (!fs.existsSync(f)) throw new Error(`缺少 agent 文件：${f}（请用 GitHub Actions 构建的安装包，或先运行 scripts/build-agent.sh）`);
   return fs.readFileSync(f);
-}
-
-function singboxUrl(state, arch) {
-  const tpl = state.settings?.singboxUrl || '';
-  return tpl.replace(/\{arch\}/g, arch);
 }
 
 async function detect(ssh) {
@@ -91,27 +90,14 @@ async function deployServer(state, server, { resourcesDir, log }) {
     if (info.ARCH === 'unsupported') throw new Error('不支持的 CPU 架构');
     if (info.SYSTEMD !== '1') throw new Error('系统没有 systemd，暂不支持');
 
-    if (info.CURL !== '1' && info.WGET !== '1') {
-      log('安装 curl …');
-      await ssh.run('(command -v apt-get && apt-get update -y && apt-get install -y curl) || (command -v dnf && dnf install -y curl) || (command -v yum && yum install -y curl) || (command -v apk && apk add curl)', { onData: () => {} });
-    }
-
-    // sing-box（带 v2ray_api 的构建，从你的 GitHub Release 下载）
-    const url = singboxUrl(state, info.ARCH);
-    log(`下载 sing-box：${url}`);
-    await ssh.run(`
-set -e
-mkdir -p ${DIR}; chmod 700 ${DIR}
-TMP=$(mktemp)
-if command -v curl >/dev/null; then curl -fsSL --retry 3 --connect-timeout 15 -o "$TMP" ${shq(url)}; else wget -q -O "$TMP" ${shq(url)}; fi
-gunzip -c "$TMP" > ${SB_BIN}.tmp && chmod 755 ${SB_BIN}.tmp && rm -f "$TMP"
-${SB_BIN}.tmp version | grep -q with_v2ray_api || { echo "下载的 sing-box 不含 with_v2ray_api"; exit 1; }
-mv -f ${SB_BIN}.tmp ${SB_BIN}
-${SB_BIN} version | head -1
-`, { onData: (t) => log(t.trim()) });
-
     log('上传 agent …');
+    await ssh.run(`mkdir -p ${DIR} && chmod 700 ${DIR}`);
     await ssh.writeGz(AGENT_BIN, agentGz(resourcesDir, info.ARCH));
+
+    const manifest = agentConfig(state).singboxManifest;
+    log(`安装 sing-box（${manifest}）…`);
+    const v = await ssh.run(`${AGENT_BIN} install-singbox -manifest ${shq(manifest)} -bin ${SB_BIN}`);
+    log(v.trim() + '（已校验 sha256）');
 
     log('生成自签证书 …');
     const sni = server.tlsSni || 'www.bing.com';
@@ -169,25 +155,52 @@ async function status(ssh) {
 echo SB=$(systemctl is-active nodedeck-singbox 2>/dev/null)
 echo AG=$(systemctl is-active nodedeck-agent 2>/dev/null)
 echo VER=$(${SB_BIN} version 2>/dev/null | head -1 | awk '{print $3}')
+echo AGV=$(${AGENT_BIN} version 2>/dev/null)
 echo LOAD=$(cut -d' ' -f1-3 /proc/loadavg)
 echo MEM=$(free -m | awk '/Mem:/{print $3"/"$2"MB"}')
 echo UP=$(uptime -p 2>/dev/null)
 `);
   const kv = {};
   for (const line of r.stdout.split('\n')) { const i = line.indexOf('='); if (i > 0) kv[line.slice(0, i)] = line.slice(i + 1).trim(); }
-  return { singbox: kv.SB === 'active', agent: kv.AG === 'active', version: kv.VER || '', load: kv.LOAD, mem: kv.MEM, uptime: kv.UP };
+  return { singbox: kv.SB === 'active', agent: kv.AG === 'active', version: kv.VER || '', agentVersion: kv.AGV || '', load: kv.LOAD, mem: kv.MEM, uptime: kv.UP };
 }
 
-async function syncServer(state, server, { log = () => {} } = {}) {
+// 同步：推送配置；如果 agent 版本和本软件不一致（软件更新过），顺便升级 agent
+async function syncServer(state, server, { log = () => {}, resourcesDir, appVersion } = {}) {
   return withSSH(server, async (ssh) => {
     await pushConfig(ssh, state, server, log);
-    const r = await ssh.exec(`${AGENT_BIN} apply -c ${DIR}/agent.json`);
-    if (r.code !== 0) {
-      // agent 可能没在跑，尝试重启
+    let restart = false;
+    const cfgText = JSON.stringify(agentConfig(state), null, 2);
+    const curCfg = (await ssh.exec(`cat ${DIR}/agent.json`)).stdout;
+    if (curCfg.trim() !== cfgText.trim()) { await ssh.writeFile(`${DIR}/agent.json`, cfgText); restart = true; }
+    const agv = (await ssh.exec(`${AGENT_BIN} version`)).stdout.trim();
+    if (resourcesDir && appVersion && agv !== appVersion) {
+      const info = await detect(ssh);
+      log(`升级 agent ${agv || '?'} → ${appVersion}`);
+      await ssh.writeGz(AGENT_BIN, agentGz(resourcesDir, info.ARCH));
+      restart = true;
+    }
+    if (restart) {
       await ssh.run('systemctl restart nodedeck-agent');
       await new Promise((res) => setTimeout(res, 2500));
+    } else {
+      const r = await ssh.exec(`${AGENT_BIN} apply -c ${DIR}/agent.json`);
+      if (r.code !== 0) {
+        await ssh.run('systemctl restart nodedeck-agent');
+        await new Promise((res) => setTimeout(res, 2500));
+      }
     }
     return status(ssh);
+  });
+}
+
+async function updateSingbox(server) {
+  return withSSH(server, async (ssh) => {
+    const r = await ssh.exec(`${AGENT_BIN} update-singbox -c ${DIR}/agent.json`, { timeout: 360000 });
+    let j = {};
+    try { j = JSON.parse(r.stdout); } catch (_) { /* ignore */ }
+    if (r.code !== 0) throw new Error(j.error || r.stderr || r.stdout);
+    return { message: j.message, status: await status(ssh) };
   });
 }
 
@@ -237,4 +250,4 @@ async function remoteTlsCheck(server, domain) {
   });
 }
 
-module.exports = { deployServer, syncServer, serverStatus, fetchStats, resetTraffic, serverLogs, uninstall, testSSH, remoteTlsCheck, agentConfig };
+module.exports = { deployServer, syncServer, updateSingbox, serverStatus, fetchStats, resetTraffic, serverLogs, uninstall, testSSH, remoteTlsCheck, agentConfig };

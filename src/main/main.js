@@ -18,15 +18,16 @@ let updater;
 const resourcesDir = app.isPackaged ? process.resourcesPath : path.join(__dirname, '..', '..', 'resources');
 const singboxPath = path.join(resourcesDir, 'bin', process.platform === 'win32' ? 'sing-box.exe' : 'sing-box');
 
-function defaultSingboxUrl() {
+// 服务端 sing-box 内核渠道：本仓库名为 singbox 的 Release（由 singbox.yml 每天自动更新）
+function defaultSingboxBase() {
   const owner = publish.owner || 'YOUR_GITHUB_NAME';
   const repo = publish.repo || 'nodedeck';
-  return `https://github.com/${owner}/${repo}/releases/latest/download/nodedeck-sing-box-linux-{arch}.gz`;
+  return `https://github.com/${owner}/${repo}/releases/download/singbox`;
 }
 
 function state() {
   const s = store.state;
-  if (!s.settings.singboxUrl) s.settings.singboxUrl = defaultSingboxUrl();
+  if (!s.settings.singboxBase || s.settings.singboxBase.includes('YOUR_GITHUB_NAME')) s.settings.singboxBase = defaultSingboxBase();
   return s;
 }
 
@@ -75,7 +76,7 @@ function handle(name, fn) {
 }
 
 function registerIpc() {
-  handle('app:info', () => ({ version: app.getVersion(), portable: !!process.env.PORTABLE_EXECUTABLE_DIR, repo: publish.owner ? `${publish.owner}/${publish.repo}` : '', singbox: fs.existsSync(singboxPath), dataDir: app.getPath('userData') }));
+  handle('app:info', () => ({ version: app.getVersion(), packaged: app.isPackaged, portable: !!process.env.PORTABLE_EXECUTABLE_DIR, repo: publish.owner ? `${publish.owner}/${publish.repo}` : '', singbox: fs.existsSync(singboxPath), dataDir: app.getPath('userData') }));
   handle('state:get', () => state());
   handle('col:upsert', (col, item) => store.upsert(col, item));
   handle('col:remove', (col, id) => store.remove(col, id));
@@ -118,7 +119,7 @@ function registerIpc() {
   });
   handle('server:sync', async (id) => {
     const srv = getServer(id);
-    const st = await deploy.syncServer(state(), srv, { log: taskLogger('sync:' + id) });
+    const st = await deploy.syncServer(state(), srv, { log: taskLogger('sync:' + id), resourcesDir, appVersion: app.isPackaged ? app.getVersion() : '' });
     store.upsert('servers', { id, lastStatus: st, syncedAt: Date.now() });
     return st;
   });
@@ -126,7 +127,7 @@ function registerIpc() {
     const results = [];
     for (const srv of state().servers.filter((x) => x.deployedAt)) {
       try {
-        const st = await deploy.syncServer(state(), srv);
+        const st = await deploy.syncServer(state(), srv, { resourcesDir, appVersion: app.isPackaged ? app.getVersion() : '' });
         store.upsert('servers', { id: srv.id, lastStatus: st, syncedAt: Date.now() });
         results.push({ id: srv.id, name: srv.name, ok: true });
       } catch (e) { results.push({ id: srv.id, name: srv.name, ok: false, error: e.message }); }
@@ -137,6 +138,11 @@ function registerIpc() {
     const st = await deploy.serverStatus(getServer(id));
     store.upsert('servers', { id, lastStatus: st });
     return st;
+  });
+  handle('server:updateSingbox', async (id) => {
+    const r = await deploy.updateSingbox(getServer(id));
+    store.upsert('servers', { id, lastStatus: r.status });
+    return r.message;
   });
   handle('server:logs', (id) => deploy.serverLogs(getServer(id)));
   handle('server:uninstall', async (id) => {

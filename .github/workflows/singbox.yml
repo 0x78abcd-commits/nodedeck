@@ -1,0 +1,100 @@
+name: sing-box 内核
+
+# 每天检查 sing-box 官方最新正式版；有新版就编译带 with_v2ray_api 的服务端版本，
+# 发布到本仓库名为 "singbox" 的预发布 Release（不影响软件本身的自动更新）。
+# 各 VPS 上的 agent 每 6 小时读取 manifest.json，自动升级（失败自动回滚）。
+on:
+  schedule:
+    - cron: '23 2 * * *'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '指定 sing-box 版本（如 1.14.4，留空 = 最新正式版）'
+        required: false
+      force:
+        description: '版本相同也重新构建'
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        default: ''
+      force:
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: singbox-build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 检查版本
+        id: check
+        run: |
+          WANT="${{ inputs.version }}"
+          if [ -z "$WANT" ]; then
+            WANT=$(gh api repos/SagerNet/sing-box/releases/latest --jq .tag_name)
+            WANT="${WANT#v}"
+          fi
+          HAVE=""
+          if gh release download singbox -p manifest.json -O /tmp/manifest.json 2>/dev/null; then
+            HAVE=$(jq -r .version /tmp/manifest.json)
+          fi
+          echo "官方最新: $WANT，当前: ${HAVE:-无}"
+          echo "version=$WANT" >> "$GITHUB_OUTPUT"
+          if [ "$WANT" = "$HAVE" ] && [ "${{ inputs.force }}" != "true" ]; then
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-go@v5
+        if: steps.check.outputs.build == 'true'
+        with:
+          go-version: stable
+
+      - name: 编译
+        if: steps.check.outputs.build == 'true'
+        run: |
+          V="${{ steps.check.outputs.version }}"
+          git clone --depth 1 --branch "v$V" https://github.com/SagerNet/sing-box.git /tmp/sb
+          mkdir -p out
+          cd /tmp/sb
+          LDF="$(cat release/LDFLAGS 2>/dev/null || true)"
+          for a in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH=$a go build -trimpath \
+              -tags "with_quic,with_utls,with_acme,with_v2ray_api" \
+              -ldflags "-X 'github.com/sagernet/sing-box/constant.Version=$V' $LDF -s -w -buildid=" \
+              -o "$GITHUB_WORKSPACE/out/nodedeck-sing-box-linux-$a" ./cmd/sing-box
+            gzip -9 "$GITHUB_WORKSPACE/out/nodedeck-sing-box-linux-$a"
+          done
+          cp LICENSE "$GITHUB_WORKSPACE/out/LICENSE-sing-box.txt"
+          cd "$GITHUB_WORKSPACE/out"
+          jq -n --arg v "$V" \
+            --arg a "$(sha256sum nodedeck-sing-box-linux-amd64.gz | cut -d' ' -f1)" \
+            --arg b "$(sha256sum nodedeck-sing-box-linux-arm64.gz | cut -d' ' -f1)" \
+            '{version:$v, sha256:{amd64:$a, arm64:$b}}' > manifest.json
+          cat manifest.json
+
+      - name: 发布
+        if: steps.check.outputs.build == 'true'
+        run: |
+          if ! gh release view singbox >/dev/null 2>&1; then
+            gh release create singbox --prerelease --title "sing-box 服务端内核（自动更新）" \
+              --notes "由 GitHub Actions 每天自动检查并构建，供 NodeDeck 部署和 VPS 自动升级使用，请勿删除。"
+          fi
+          # 先传二进制，最后传 manifest，保证 agent 读到新版本号时文件已就绪
+          gh release upload singbox out/nodedeck-sing-box-linux-*.gz out/LICENSE-sing-box.txt --clobber
+          gh release upload singbox out/manifest.json --clobber
+          gh release edit singbox --notes "当前 sing-box 版本：${{ steps.check.outputs.version }}（$(date -u +%F) 构建）。由 GitHub Actions 每天自动检查，请勿删除。"

@@ -15,10 +15,11 @@ on:
 permissions:
   contents: write
 
-env:
-  SINGBOX_VERSION: '1.14.4'
-
 jobs:
+  # 确保服务端 sing-box 内核已发布（已是最新则直接跳过）
+  singbox:
+    uses: ./.github/workflows/singbox.yml
+
   linux-binaries:
     runs-on: ubuntu-latest
     steps:
@@ -40,26 +41,13 @@ jobs:
             CGO_ENABLED=0 GOOS=linux GOARCH=$a go build -trimpath -ldflags "-s -w -X main.version=${{ steps.v.outputs.version }}" -o ../out/nodedeck-agent-linux-$a .
             gzip -9 ../out/nodedeck-agent-linux-$a
           done
-      - name: Build sing-box with v2ray_api (per-user traffic stats)
-        run: |
-          git clone --depth 1 --branch "v${SINGBOX_VERSION}" https://github.com/SagerNet/sing-box.git /tmp/sb
-          cd /tmp/sb
-          LDF="$(cat release/LDFLAGS 2>/dev/null || true)"
-          for a in amd64 arm64; do
-            CGO_ENABLED=0 GOOS=linux GOARCH=$a go build -trimpath \
-              -tags "with_quic,with_utls,with_acme,with_v2ray_api" \
-              -ldflags "-X 'github.com/sagernet/sing-box/constant.Version=${SINGBOX_VERSION}' ${LDF} -s -w -buildid=" \
-              -o "$GITHUB_WORKSPACE/out/nodedeck-sing-box-linux-$a" ./cmd/sing-box
-            gzip -9 "$GITHUB_WORKSPACE/out/nodedeck-sing-box-linux-$a"
-          done
-          cp LICENSE "$GITHUB_WORKSPACE/out/LICENSE-sing-box.txt"
       - uses: actions/upload-artifact@v4
         with:
           name: linux-binaries
           path: out/*
 
   windows:
-    needs: linux-binaries
+    needs: [singbox, linux-binaries]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -73,14 +61,18 @@ jobs:
           path: out
       - name: Prepare resources
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           New-Item -ItemType Directory -Force resources/agent, resources/bin | Out-Null
           Copy-Item out/nodedeck-agent-linux-*.gz resources/agent/
-          Copy-Item out/LICENSE-sing-box.txt resources/bin/
-          $v = $env:SINGBOX_VERSION
+          # 节点测试用的 Windows 版 sing-box：取官方最新正式版
+          $rel = Invoke-RestMethod -Headers @{ Authorization = "Bearer $env:GH_TOKEN" } https://api.github.com/repos/SagerNet/sing-box/releases/latest
+          $v = $rel.tag_name.TrimStart('v')
           Invoke-WebRequest "https://github.com/SagerNet/sing-box/releases/download/v$v/sing-box-$v-windows-amd64.zip" -OutFile sb.zip
           Expand-Archive sb.zip -DestinationPath sbtmp
-          Copy-Item "sbtmp/sing-box-$v-windows-amd64/sing-box.exe" resources/bin/
+          Copy-Item "sbtmp/sing-box-$v-windows-amd64/*" resources/bin/
+          Move-Item -Force resources/bin/LICENSE resources/bin/LICENSE-sing-box.txt
       - name: Set version and publish target
         shell: bash
         run: |
@@ -93,8 +85,3 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npx electron-builder --win --publish always
-      - name: Upload server binaries to release
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "v$VERSION" out/nodedeck-sing-box-linux-*.gz --clobber

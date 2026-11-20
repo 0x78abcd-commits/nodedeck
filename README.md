@@ -19,7 +19,7 @@ Windows 桌面软件：**填 VPS → 一键部署全套协议 → 分配给用�
 
 ```
 Windows 上的 NodeDeck ──SSH──▶ VPS
-                              ├─ nodedeck-sing-box（带 with_v2ray_api 的 sing-box，按用户统计流量）
+                              ├─ nodedeck-sing-box（带 with_v2ray_api 的 sing-box，按用户统计流量，自动升级）
                               └─ nodedeck-agent（Go，本仓库 agent/）
                                    ├─ 每 5 秒读取各用户流量，保存在 /etc/nodedeck/traffic.json
                                    ├─ 超额 / 到期 / 停用的用户自动移出配置并热重载
@@ -40,7 +40,7 @@ Windows 上的 NodeDeck ──SSH──▶ VPS
 4. 大约 10 分钟后，**Releases** 里会出现：
    - `NodeDeck-Setup-0.1.0.exe`：安装版，支持自动更新
    - `NodeDeck-0.1.0-portable.exe`：便携版
-   - `nodedeck-sing-box-linux-amd64.gz` / `arm64.gz`：部署时 VPS 会从这里下载
+   - 另外还有一个名为 `singbox` 的预发布 Release：VPS 部署和自动升级用的 sing-box 内核，请勿删除
 
 仓库地址和版本号由 CI 自动写进软件，`package.json` 不用手动改。
 
@@ -52,6 +52,21 @@ Windows 上的 NodeDeck ──SSH──▶ VPS
 也可以用 tag 发布：`git tag v0.1.1 && git push --tags`。
 
 > 国内网络访问 GitHub 不稳定，检查和下载更新需要先打开代理软件（V2rayN / Clash 等）。
+
+## 自动更新一览
+
+| 什么 | 怎么更新 | 要不要你动手 |
+|---|---|---|
+| sing-box 内核（协议） | `sing-box 内核` 工作流每天检查官方最新正式版，自动编译发布到名为 `singbox` 的 Release；每台 VPS 的 agent 每 6 小时检查一次并升级 | 不用 |
+| VPS 上的 agent | 软件更新后，在「服务器」点「同步全部」就会顺带升级（顶部会提示） | 点一下 |
+| 桌面软件 | 你在 Actions 里运行 Release 发版，用户端自动提示更新 | 只有改了代码才需要 |
+| 新协议 / 新功能 | 需要改代码 | 需要 |
+
+内核升级的安全措施：sha256 校验 → 新版必须能通过当前配置的 `check` → 重启后 4 秒内没起来就自动回滚到旧版。
+升级失败不会影响正在运行的节点，原因会显示在 agent 的状态里。也可以在「服务器」页点「升级内核」立即检查。
+不想自动升级的话，在「设置」里关掉，然后点「同步全部」。
+
+> GitHub 规定：仓库连续 60 天没有任何提交，定时工作流会被自动暂停（会给你发邮件）。到 Actions 页面点一下 Enable 就能恢复，或者随便提交一次代码。
 
 ## 本地开发
 
@@ -69,14 +84,14 @@ npm run dist                     # 打包 exe 到 dist/（在 Windows 上运行�
 
 ```
 src/main/core.js      配置生成 / 分享链接 / 订阅（纯逻辑，可单测）
-src/main/deploy.js    SSH 部署、同步、状态、卸载
+src/main/deploy.js    SSH 部署、同步（含 agent 升级）、状态、卸载
 src/main/tools.js     工具箱
 src/main/nodetest.js  本地 sing-box 节点测试
 src/main/updater.js   自动更新
 src/main/store.js     本地数据（Windows DPAPI 加密）
 src/renderer/         界面（原生 JS，无需构建）
-agent/                VPS 端 agent（Go，仅标准库）
-.github/workflows/    自动构建发布
+agent/                VPS 端 agent（Go，仅标准库；update.go 是内核自动升级）
+.github/workflows/    release.yml 发布软件；singbox.yml 每天自动构建 sing-box 内核
 ```
 
 ## 注意
