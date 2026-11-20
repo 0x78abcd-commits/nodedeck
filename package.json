@@ -1,0 +1,92 @@
+{
+  "name": "nodedeck",
+  "productName": "NodeDeck",
+  "version": "0.1.0",
+  "description": "NodeDeck 节点控制台 - VPS 节点部署与管理工具",
+  "main": "src/main/main.js",
+  "author": "NodeDeck",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "test": "node test/run.js",
+    "build:agent": "bash scripts/build-agent.sh",
+    "dist": "electron-builder --win --publish never"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.11",
+    "qrcode": "^1.5.4",
+    "ssh2": "^1.17.0"
+  },
+  "devDependencies": {
+    "electron": "^45.4.1",
+    "electron-builder": "^26.18.0"
+  },
+  "build": {
+    "appId": "com.nodedeck.app",
+    "productName": "NodeDeck",
+    "copyright": "NodeDeck",
+    "npmRebuild": false,
+    "asar": true,
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "src/**/*",
+      "build/icon.png",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/bin",
+        "to": "bin",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "resources/agent",
+        "to": "agent",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png",
+      "artifactName": "${productName}-Setup-${version}.${ext}"
+    },
+    "portable": {
+      "artifactName": "${productName}-${version}-portable.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "NodeDeck"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "YOUR_GITHUB_NAME",
+        "repo": "nodedeck",
+        "releaseType": "release"
+      }
+    ]
+  }
+}

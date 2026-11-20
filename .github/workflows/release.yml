@@ -1,0 +1,100 @@
+name: Release
+
+# 两种发布方式：
+#  1. 在 GitHub 网页 Actions → Release → Run workflow，输入版本号（如 0.2.0）
+#  2. 本地 git tag v0.2.0 && git push --tags
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号（例如 0.2.0，不要带 v）'
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  SINGBOX_VERSION: '1.14.4'
+
+jobs:
+  linux-binaries:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: Resolve version
+        id: v
+        run: |
+          V="${{ github.event.inputs.version }}"
+          [ -z "$V" ] && V="${GITHUB_REF_NAME#v}"
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+      - name: Build agent
+        run: |
+          mkdir -p out
+          cd agent
+          for a in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH=$a go build -trimpath -ldflags "-s -w -X main.version=${{ steps.v.outputs.version }}" -o ../out/nodedeck-agent-linux-$a .
+            gzip -9 ../out/nodedeck-agent-linux-$a
+          done
+      - name: Build sing-box with v2ray_api (per-user traffic stats)
+        run: |
+          git clone --depth 1 --branch "v${SINGBOX_VERSION}" https://github.com/SagerNet/sing-box.git /tmp/sb
+          cd /tmp/sb
+          LDF="$(cat release/LDFLAGS 2>/dev/null || true)"
+          for a in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH=$a go build -trimpath \
+              -tags "with_quic,with_utls,with_acme,with_v2ray_api" \
+              -ldflags "-X 'github.com/sagernet/sing-box/constant.Version=${SINGBOX_VERSION}' ${LDF} -s -w -buildid=" \
+              -o "$GITHUB_WORKSPACE/out/nodedeck-sing-box-linux-$a" ./cmd/sing-box
+            gzip -9 "$GITHUB_WORKSPACE/out/nodedeck-sing-box-linux-$a"
+          done
+          cp LICENSE "$GITHUB_WORKSPACE/out/LICENSE-sing-box.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-binaries
+          path: out/*
+
+  windows:
+    needs: linux-binaries
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-binaries
+          path: out
+      - name: Prepare resources
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force resources/agent, resources/bin | Out-Null
+          Copy-Item out/nodedeck-agent-linux-*.gz resources/agent/
+          Copy-Item out/LICENSE-sing-box.txt resources/bin/
+          $v = $env:SINGBOX_VERSION
+          Invoke-WebRequest "https://github.com/SagerNet/sing-box/releases/download/v$v/sing-box-$v-windows-amd64.zip" -OutFile sb.zip
+          Expand-Archive sb.zip -DestinationPath sbtmp
+          Copy-Item "sbtmp/sing-box-$v-windows-amd64/sing-box.exe" resources/bin/
+      - name: Set version and publish target
+        shell: bash
+        run: |
+          V="${{ github.event.inputs.version }}"
+          [ -z "$V" ] && V="${GITHUB_REF_NAME#v}"
+          node scripts/ci-prepare.js "$V" "$GITHUB_REPOSITORY"
+          echo "VERSION=$V" >> "$GITHUB_ENV"
+      - run: npm ci
+      - name: Build & publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx electron-builder --win --publish always
+      - name: Upload server binaries to release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "v$VERSION" out/nodedeck-sing-box-linux-*.gz --clobber

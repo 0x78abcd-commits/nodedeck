@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'" />
+  <title>NodeDeck</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="app">
+    <aside id="sidebar">
+      <div class="brand"><span class="logo">◆</span><div><b>NodeDeck</b><small>节点控制台</small></div></div>
+      <nav id="nav"></nav>
+      <div class="side-foot" id="sideFoot"></div>
+    </aside>
+    <main>
+      <div id="banner" class="banner hidden"></div>
+      <div id="view"></div>
+    </main>
+  </div>
+  <div id="modalRoot"></div>
+  <div id="toasts"></div>
+  <script src="ui.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
