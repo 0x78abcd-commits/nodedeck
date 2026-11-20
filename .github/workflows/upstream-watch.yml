@@ -1,0 +1,65 @@
+name: 参考仓库更新提醒
+
+# 每周检查参考仓库 Teminuosi/tms-client 的新版本，
+# 有新版就在本仓库开一个 Issue，列出它的更新说明，方便决定要不要跟进。
+on:
+  schedule:
+    - cron: '41 23 * * 0'   # 每周日 23:41 UTC（北京时间周一 07:41）
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  contents: read
+
+env:
+  UPSTREAM: Teminuosi/tms-client
+  LABEL: upstream-tms
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: 检查新版本并开 Issue
+        run: |
+          set -e
+          gh label create "$LABEL" --repo "$GITHUB_REPOSITORY" --color 1d76db --description "参考仓库的更新" --force >/dev/null
+
+          # 上次已经提醒到的版本，记在最近一个 Issue 的 <!-- last: x --> 里
+          LAST=$(gh issue list --repo "$GITHUB_REPOSITORY" --label "$LABEL" --state all --limit 1 --json body \
+                 --jq '.[0].body // ""' | grep -oP '(?<=<!-- last: )[^ ]+' || true)
+          echo "上次提醒到：${LAST:-无}"
+
+          gh api "repos/$UPSTREAM/releases?per_page=30" > releases.json
+          # 从新到旧取，遇到上次的版本就停；第一次运行只取最新一个，避免刷屏
+          jq -r --arg last "$LAST" '
+            [ .[] | select(.draft|not) ] as $r
+            | if $last == "" then [$r[0]]
+              else [ $r | to_entries[] | select(.key < ([$r[] | .tag_name] | index($last) // 30)) | .value ]
+              end
+            | .[] | @base64' releases.json > new.txt
+
+          if [ ! -s new.txt ]; then echo "没有新版本"; exit 0; fi
+
+          NEWEST=$(head -1 new.txt | base64 -d | jq -r .tag_name)
+          OLDEST=$(tail -1 new.txt | base64 -d | jq -r .tag_name)
+          COUNT=$(wc -l < new.txt)
+          {
+            echo "参考仓库 [$UPSTREAM](https://github.com/$UPSTREAM/releases) 发布了 $COUNT 个新版本。"
+            echo
+            echo "看完后，想要的功能可以找 Claude 实现（每周的定时跟进也会自动处理）。"
+            echo "参考仓库不公开源码，这里只看更新说明，自己实现，不复制它的代码或安装包。"
+            echo
+            while read -r line; do
+              r=$(echo "$line" | base64 -d)
+              echo "## $(echo "$r" | jq -r .tag_name)（$(echo "$r" | jq -r '.published_at[:10]')）"
+              echo
+              echo "$r" | jq -r '.body // "（无说明）"'
+              echo
+            done < new.txt
+            echo "<!-- last: $NEWEST -->"
+          } > body.md
+
+          if [ "$COUNT" = 1 ]; then TITLE="[参考仓库] TMS $NEWEST 更新说明"; else TITLE="[参考仓库] TMS $OLDEST ~ $NEWEST 更新说明"; fi
+          gh issue create --repo "$GITHUB_REPOSITORY" --label "$LABEL" --title "$TITLE" --body-file body.md

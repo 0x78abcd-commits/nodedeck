@@ -68,6 +68,13 @@ Windows 上的 NodeDeck ──SSH──▶ VPS
 
 > GitHub 规定：仓库连续 60 天没有任何提交，定时工作流会被自动暂停（会给你发邮件）。到 Actions 页面点一下 Enable 就能恢复，或者随便提交一次代码。
 
+## 跟进参考仓库
+
+- `参考仓库更新提醒` 工作流每周检查 [Teminuosi/tms-client](https://github.com/Teminuosi/tms-client/releases) 的新版本，有新版就在本仓库开一个带 `upstream-tms` 标签的 Issue，列出它的更新说明。
+- Claude 的每周定时任务会读这些更新说明，判断哪些值得加，自己实现后提交 Pull Request，你审核合并后再发版。
+- 参考仓库不公开源码，所以只参考它的功能描述，自己实现，不复制它的代码或安装包。
+- 已处理过的版本记录在 `docs/upstream-tracking.md`。
+
 ## 本地开发
 
 ```bash
@@ -91,7 +98,7 @@ src/main/updater.js   自动更新
 src/main/store.js     本地数据（Windows DPAPI 加密）
 src/renderer/         界面（原生 JS，无需构建）
 agent/                VPS 端 agent（Go，仅标准库；update.go 是内核自动升级）
-.github/workflows/    release.yml 发布软件；singbox.yml 每天自动构建 sing-box 内核
+.github/workflows/    release.yml 发布软件；singbox.yml 每天自动构建 sing-box 内核；upstream-watch.yml 每周提醒参考仓库更新
 ```
 
 ## 注意
