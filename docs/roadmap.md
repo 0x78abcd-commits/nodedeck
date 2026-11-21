@@ -31,11 +31,39 @@
 | 15 | 更新提示显示改动 + "这一版不再提醒" | TMS 0.1.21 / 0.1.77 | 更新横幅列出本次改动，可忽略某个版本；加更新日志页 | ⬜ |
 | 16 | 部分成功的黄色提示、更具体的报错 | TMS 0.1.24 / 0.1.25 / 0.1.27 | 同步全部时区分成功/失败台数；SSH、下载等常见错误给出排查步骤 | ⬜ |
 
+## 同类开源项目借鉴（2026-11-22 调研）
+
+参考：3X-UI、S-UI、Marzban / Marzneshin、Remnawave、Hiddify、sing-box-yg / argosbx、fscarmen/sing-box、raven-subscribe。只借鉴思路。
+
+| # | 功能 | 来源 | 说明 | 状态 |
+|---|---|---|---|---|
+| R1 | sing-box 订阅格式 | Marzban、Hiddify | 除 v2rayN / Clash 外再出 sing-box JSON（SFA / SFI / Hiddify / NekoBox），按客户端自动识别 | ⬜ |
+| R2 | 流量重置周期 | Marzneshin、Remnawave | 每天 / 每周 / 每月 / 滚动 30 天（并入 #4） | ⬜ |
+| R3 | 首次使用才开始计时 | x-ui、Marzban on_hold | 到期时间从用户第一次连上开始算，适合卖"30 天卡" | ⬜ |
+| R4 | 订阅信息页 | x-ui、Hiddify | 浏览器打开订阅地址时显示用量、到期、二维码、各客户端一键导入；响应头带 profile-web-page-url | ⬜ |
+| R5 | Telegram 通知 | 3X-UI | 每日流量报告、用户快到期 / 快用完提醒、用户被停用、内核升级结果；由 VPS 上的 agent 发送，电脑关机也能收到 | ⬜ |
+| R6 | WARP 出站分流 | 3X-UI、argosbx | ChatGPT / Netflix / Google 等走 Cloudflare WARP，解决机房 IP 被拒、Google 验证码 | ⬜ |
+| R7 | 路由规则：屏蔽 BT / 广告 / 回国流量 | 3X-UI | 防止 VPS 被投诉或 IP 被标记 | ⬜ |
+| R8 | Hysteria2 端口跳跃 | fscarmen/sing-box | 一段 UDP 端口都转到 Hy2，抗 QoS / 封端口 | ⬜ |
+| R9 | 节点被墙一键换新 | raven-subscribe | 一键换端口 + Reality 密钥 + ID 并同步，用户刷新订阅即可 | ⬜ |
+| R10 | 订阅接口限流 | S-UI-X | 订阅地址按 IP 限频，防扫描 | ⬜ |
+| R11 | Reality 目标自动扫描 | Hiddify-Reality-Scanner | 在 VPS 附近 IP 段里找支持 TLS1.3 + H2 的网站，自动推荐最佳 SNI | ⬜ |
+
+## 实施批次
+
+| 版本 | 主题 | 包含 |
+|---|---|---|
+| 0.2.0 | 排障与稳定 | #1 #2 #3 #15 #16 R9 R10 |
+| 0.3.0 | 用户与订阅 | #4/R2 #8 #13 #14 R1 R3 R4 R5 |
+| 0.4.0 | 协议与出口 | #5 #9 #10 #12 R6 R7 R8 |
+| 0.5.0 | 平台与监控 | #6 #7 #11 R11 |
+
 ## P3 / 暂缓：工作量大，或需要先决定方向
 
 | # | 功能 | 来源 | 为什么暂缓 | 状态 |
 |---|---|---|---|---|
 | 17 | 每用户限速 | TMS 0.1.24 | sing-box 没有按用户限速，要另想办法（每用户独立端口 + tc 等） | ⏸ |
+| 24 | 每用户在线 IP 数限制 | 3X-UI | 需要解析连接日志 + 防火墙封禁，sing-box 的统计接口拿不到用户 IP | ⏸ |
 | 18 | VLESS + XHTTP + Reality | TMS 0.1.58 | 需要加 Xray 内核；XHTTP 只有 v2rayN/v2rayNG 等 Xray 系客户端能用 | ⏸ |
 | 19 | 本机连接节点（系统代理 / TUN / 仅本地端口） | TMS 0.1.36 / 0.1.38 | 等于再做一个客户端，和 v2rayN 重叠 | ⏸ |
 | 20 | 每节点固定本地代理口 + 指纹浏览器 | TMS 0.1.67 | 面向跨境电商多账号，工作量大 | ⏸ |
