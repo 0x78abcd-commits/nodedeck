@@ -93,6 +93,14 @@ for (const l of sampleLinks) {
 const withLink = { ...state, landings: [{ id: 'l2', type: 'link', link: sampleLinks[0], name: '机场' }] };
 const exitSrv = core.newServer({ name: 'EXIT', host: '7.7.7.7', exit: { type: 'landing', landingId: 'l2' } });
 check('server-with-link-landing', core.buildServerConfig({ ...withLink, servers: [exitSrv] }, exitSrv));
+// 0.5.0：Cloudflare 隧道
+const cf = core.newServer({ name: 'CF1', host: '6.6.6.6', cfTunnel: { enabled: true, token: Buffer.from(JSON.stringify({ a: 'acct', t: '00000000-0000-0000-0000-000000000000', s: 'c2VjcmV0c2VjcmV0c2VjcmV0c2VjcmV0c2VjcmV0' })).toString('base64'), hostname: 'tunnel.example.com', cdnHosts: ['www.visa.com.sg', 'icook.tw'] } });
+const st5 = { ...state, servers: [...state.servers, cf] };
+check('server-cf-main', core.buildServerConfig(st5, cf));
+check('server-cf-tunnel', core.buildTunnelConfig(cf));
+if (core.buildServerConfig(st5, cf).inbounds.some((x) => x.type === 'cloudflared')) { console.log('FAIL cloudflared 不应在主配置里'); process.exitCode = 1; }
+for (const e of core.nodeEntries(st5, cf).filter((x) => x.cf)) check('client-' + e.label, core.clientTestConfig(core.clientOutbound(st5, e, owner), 18083));
+check('singbox-client-cf', core.buildSingboxClient(st5, owner));
 const sub = core.buildSubscription(state, owner);
 console.log(sub.links.join('\n'));
 console.log(sub.clash.split('\n').slice(0, 8).join('\n'));

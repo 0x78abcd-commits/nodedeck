@@ -14,8 +14,8 @@
 | 3 | SSH 直连不通自动走本机代理 | TMS 0.1.32 | 国内直连 VPS 的 SSH 常被干扰；超时且检测到 V2rayN/Clash 本地端口时经代理重连，密码错误不重试 | ✅ 0.2.0 |
 | 4 | 每月流量自动重置 + 「在用」状态 | TMS 0.1.27 / 0.1.58 | 用户可设每月重置日，agent 到点清零；用户列表显示最近 30 秒是否在用 / 最后在用时间 | ✅ 0.3.0 |
 | 5 | 落地支持机场节点 + 批量导入 + 分组 | TMS 0.1.21 / 0.1.33 / 0.1.58 | 落地除 SOCKS5/HTTP 外支持 vless/vmess/trojan/ss/hy2 链接或订阅；一次粘贴多条；按国家分组筛选；改落地后自动同步相关服务器 | ✅ 0.4.0 |
-| 6 | Cloudflare 隧道模式 | newsuoha.sh | VPS 不开端口、IP 被墙也能用；用 sing-box 1.14 内置的 cloudflared 入站（需自有域名 + 隧道令牌）；配合优选 CDN 地址生成多个入口 | ⬜ |
-| 7 | 支持 Alpine / OpenRC、armv7 | newsuoha.sh | 很多便宜 NAT 小鸡是 Alpine；部署脚本和 agent 支持 OpenRC，CI 增加 armv7 构建 | ⬜ |
+| 6 | Cloudflare 隧道模式 | newsuoha.sh | VPS 不开端口、IP 被墙也能用；用 sing-box 1.14 内置的 cloudflared 入站（需自有域名 + 隧道令牌）；配合优选 CDN 地址生成多个入口 | ✅ 0.5.0 |
+| 7 | 支持 Alpine / OpenRC、armv7 | newsuoha.sh | 很多便宜 NAT 小鸡是 Alpine；部署脚本和 agent 支持 OpenRC，CI 增加 armv7 构建 | ✅ 0.5.0 |
 | 8 | 内核升级时间段 | 自己的需求 | 只在设定时段（如凌晨 3–5 点）自动升级 sing-box，避免白天断线 | ✅ 0.3.0 |
 
 ## P2：值得做，工作量中等
@@ -24,7 +24,7 @@
 |---|---|---|---|---|
 | 9 | 域名 + Let's Encrypt 正式证书 | TMS 0.1.34 | 填域名后检查解析，用 sing-box ACME 自动申请；Trojan/Hy2/TUIC/AnyTLS 不再需要"跳过证书验证" | ✅ 0.4.0 |
 | 10 | Shadowsocks 2022 + Hysteria2 混淆 | TMS 0.1.33 / 0.1.34、newsuoha.sh | 新增 SS2022 协议；Hy2 可选 salamander 混淆 | ✅ 0.4.0 |
-| 11 | 服务器监控 | TMS 0.1.28 | CPU、内存、网速、三网延迟（电信/联通/移动），1 小时–30 天曲线，本月流量，VPS 到期提醒（agent 采集） | ⬜ |
+| 11 | 服务器监控 | TMS 0.1.28 | CPU、内存、网速、三网延迟（电信/联通/移动），1 小时–30 天曲线，本月流量，VPS 到期提醒（agent 采集） | ✅ 0.5.0 |
 | 12 | IPv6 线路 | TMS 0.1.66 | 服务器有公网 IPv6 时额外生成 v6 入口；可选"只出 IPv6" | ✅ 0.4.0 |
 | 13 | 用户批量操作 | TMS 0.1.23 / 0.1.70 | 搜索、翻页、勾选多人批量分配线路 / 续期 / 改流量 | ✅ 0.3.0 |
 | 14 | 订阅地址不依赖单台服务器 | 自己发现的问题 | 现在订阅地址用的是用户第一台服务器的 IP，那台换掉订阅就变；改为可设订阅域名，多台服务器都能提供 | ✅ 0.3.0 |
@@ -47,7 +47,7 @@
 | R8 | Hysteria2 端口跳跃 | fscarmen/sing-box | 一段 UDP 端口都转到 Hy2，抗 QoS / 封端口 | ✅ 0.4.0 |
 | R9 | 节点被墙一键换新 | raven-subscribe | 一键换端口 + Reality 密钥 + ID 并同步，用户刷新订阅即可 | ✅ 0.2.0 |
 | R10 | 订阅接口限流 | S-UI-X | 订阅地址按 IP 限频，防扫描 | ✅ 0.2.0 |
-| R11 | Reality 目标自动扫描 | Hiddify-Reality-Scanner | 在 VPS 附近 IP 段里找支持 TLS1.3 + H2 的网站，自动推荐最佳 SNI | ⬜ |
+| R11 | Reality 目标自动扫描 | Hiddify-Reality-Scanner | 在 VPS 附近 IP 段里找支持 TLS1.3 + H2 的网站，自动推荐最佳 SNI | ✅ 0.5.0 |
 
 ## 实施批次
 

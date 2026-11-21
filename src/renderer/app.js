@@ -170,7 +170,7 @@ async function viewServers(v) {
     const exit = s.exit?.type === 'landing' ? h('span', { class: 'tag blue' }, '落地: ' + (S.landings.find((l) => l.id === s.exit.landingId)?.name || '?')) : h('span', { class: 'tag' }, '直连');
     const fw = S.forwards.filter((f) => f.relayServerId === s.id).length;
     tb.append(h('tr', {},
-      h('td', {}, h('b', {}, s.name), h('div', { class: 'muted mono', style: { wordBreak: 'normal', whiteSpace: 'nowrap' } }, s.host), s.role === 'relay' ? h('span', { class: 'tag blue' }, '中转机') : null),
+      h('td', {}, h('b', {}, s.name), h('div', { class: 'muted mono', style: { wordBreak: 'normal', whiteSpace: 'nowrap' } }, s.host), s.role === 'relay' ? h('span', { class: 'tag blue' }, '中转机') : null, vpsExpireTag(s), core_cf(s) && s.deployedAt ? h('span', { class: 'tag ' + (s.lastStatus?.cf ? 'blue' : 'warn'), title: s.lastStatus?.cf ? '' : '隧道服务没在运行：检查令牌是否正确、VPS 能否连上 Cloudflare' }, s.lastStatus?.cf ? 'CF 隧道' : 'CF 隧道未连通') : null),
       h('td', {}, status, agentOutdated(s) ? h('span', { class: 'tag warn', title: '点「同步」自动升级' }, 'agent 待升级') : null, st?.version ? h('div', { class: 'muted' }, 'sing-box ' + st.version) : null, st?.mem ? h('div', { class: 'muted' }, `内存 ${st.mem} · 负载 ${st.load}`) : null),
       h('td', {}, protos.length ? protos : h('span', { class: 'muted' }, '无'), fw ? h('span', { class: 'tag blue' }, `转发 ${fw}`) : null),
       h('td', {}, exit),
@@ -180,6 +180,7 @@ async function viewServers(v) {
         h('button', { class: 'small', title: '一步步检查 SSH、服务、端口、是否被墙、节点真连', onclick: () => diagnoseServer(s) }, '体检'),
         h('button', { class: 'small', onclick: () => editServer(s) }, '编辑'),
         h('button', { class: 'small', onclick: (e) => menu(e.currentTarget, [
+          s.deployedAt && { label: '监控面板', onClick: () => showMonitor(s) },
           s.deployedAt && { label: '刷新状态', onClick: async () => { await api.call('server:status', s.id); toast('已刷新', 'ok'); render(); } },
           s.deployedAt && { label: '查看日志', onClick: () => showLogs(s) },
           s.deployedAt && { label: '升级 sing-box 内核', onClick: async () => { toast('正在检查内核更新…'); const m = await api.call('server:updateSingbox', s.id); toast(m, 'ok'); render(); } },
@@ -226,6 +227,19 @@ async function editServer(orig) {
   const syncWarp = () => warpBox.classList.toggle('hidden', !warpOn.checked);
   warpOn.onchange = syncWarp; syncWarp();
 
+  const vpsExp = I(s.vpsExpireAt ? new Date(s.vpsExpireAt - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10) : '', { type: 'date' });
+  const cft = s.cfTunnel || {};
+  const cfOn = h('input', { type: 'checkbox', checked: !!cft.enabled });
+  const cfToken = I(cft.token, { type: 'password', placeholder: 'eyJhIjoi…（Cloudflare Zero Trust 里新建隧道后给的令牌）' });
+  const cfHost = I(cft.hostname, { placeholder: 'cf.example.com' });
+  const cfCdn = h('textarea', { placeholder: '每行一个优选域名或 IP，例如：\nwww.visa.com.sg\nicook.tw\n104.16.1.1', style: { minHeight: '70px' } }, (cft.cdnHosts || []).join('\n'));
+  const cfBox = h('div', { style: { margin: '-4px 0 10px 24px' } },
+    h('p', { class: 'muted', style: { fontSize: '12px', marginTop: 0 } }, '用法：Cloudflare 控制台 → Zero Trust → Networks → Tunnels → 新建隧道（选 Cloudflared），复制令牌；在隧道的 Public Hostname 里添加域名，服务填 ', h('code', {}, 'http://localhost:<VMess 端口>'), '。VPS 不用开放任何端口，IP 被墙也能用。需要勾选 VMess-WS。'),
+    h('div', { class: 'row' }, field('隧道令牌', cfToken), field('隧道域名', cfHost)),
+    field('优选地址（可选）', cfCdn, '每个地址会多生成一个节点，客户端连优选地址、SNI 用隧道域名，常用于提速'));
+  const syncCf = () => cfBox.classList.toggle('hidden', !cfOn.checked);
+  cfOn.onchange = syncCf; syncCf();
+
   const protoEls = {};
   const grid = h('div', { class: 'proto-grid' });
   for (const [k, label, netw] of PROTOS) {
@@ -258,7 +272,7 @@ async function editServer(orig) {
     h('div', { class: 'row' }, field('名称', name), field('地址', host)),
     h('div', { class: 'row' }, field('SSH 端口', port), field('用户名', user), field('认证方式', auth)),
     pwdBox, keyBox,
-    h('div', { class: 'row' }, field('角色', role), field('出口', exit)),
+    h('div', { class: 'row' }, field('角色', role), field('出口', exit), field('VPS 到期日（可选）', vpsExp, '到期前 7 天和 1 天会 Telegram 提醒续费')),
     field('自签证书域名（Trojan/Hy2/TUIC/AnyTLS 的 SNI）', sni),
     h('h4', {}, '协议'), grid,
     h('h4', {}, '正式证书（可选）'),
@@ -271,7 +285,10 @@ async function editServer(orig) {
     h('label', { class: 'f' }, blockAds, ' 屏蔽广告域名'),
     h('label', { class: 'f' }, blockCN, ' 禁止访问国内网站和 IP（防止 VPS 被用来回国、IP 被标记）'),
     h('label', { class: 'f' }, warpOn, ' 指定网站走 Cloudflare WARP（解决 ChatGPT / Netflix 等拒绝机房 IP、Google 验证码）', h('span', { class: 'tag warn', style: { marginLeft: '6px', display: 'inline-block' } }, '实验性')),
-    warpBox);
+    warpBox,
+    h('h4', {}, 'Cloudflare 隧道'),
+    h('label', { class: 'f' }, cfOn, ' 通过 Cloudflare Tunnel 接入 VMess-WS（IP 被墙或不想暴露端口时用）'),
+    cfBox);
 
   const collect = () => {
     s.name = name.value.trim() || host.value.trim();
@@ -297,6 +314,12 @@ async function editServer(orig) {
         if (hv && !/^\d+-\d+$/.test(hv)) throw new Error('端口跳跃范围格式应为 20000-30000');
         s.protocols[k].hopPorts = hv;
       }
+    }
+    s.vpsExpireAt = vpsExp.value ? new Date(vpsExp.value + 'T23:59:59').getTime() : 0;
+    s.cfTunnel = { enabled: cfOn.checked, token: cfToken.value.trim(), hostname: cfHost.value.trim().replace(/^https?:\/\//, '').replace(/\/.*$/, ''), cdnHosts: cfCdn.value.split(/[\s,]+/).map((x) => x.trim()).filter(Boolean) };
+    if (cfOn.checked) {
+      if (!s.cfTunnel.token || !s.cfTunnel.hostname) throw new Error('开启 Cloudflare 隧道需要填令牌和域名');
+      if (!s.protocols.vmess?.enabled) throw new Error('Cloudflare 隧道需要勾选 VMess-WS 协议');
     }
     if (!s.host) throw new Error('请填写地址');
     return s;
@@ -349,6 +372,90 @@ function diagnoseServer(s) {
       h('ul', { style: { margin: 0, paddingLeft: '20px', lineHeight: 1.8 } }, r.advice.map((a) => h('li', {}, a))),
       r.blocked ? h('div', { style: { marginTop: '8px' } }, h('button', { class: 'primary', onclick: () => rotateServer(s) }, '一键换新')) : null));
   }).catch((e) => { running.remove(); summary.append(h('p', {}, '体检出错：' + e.message)); });
+}
+
+function core_cf(s) { const t = s.cfTunnel; return t?.enabled && t.token && t.hostname && s.protocols?.vmess?.enabled; }
+function vpsExpireTag(s) {
+  if (!s.vpsExpireAt) return null;
+  const d = Math.ceil((s.vpsExpireAt - Date.now()) / 86400000);
+  if (d > 15) return h('div', { class: 'muted', style: { fontSize: '12px' } }, `VPS 到期 ${new Date(s.vpsExpireAt).toLocaleDateString('zh-CN')}`);
+  return h('span', { class: 'tag ' + (d <= 3 ? 'bad' : 'warn') }, d < 0 ? 'VPS 已过期' : `VPS ${d} 天后到期`);
+}
+
+// ---------- 监控面板 ----------
+function fmtRate(b) { return fmtBytes(b >= 1024 ? b : Math.round(b)).replace(/ (\w+)$/, ' $1/s'); }
+function fmtDur(sec) { const d = Math.floor(sec / 86400), hh = Math.floor((sec % 86400) / 3600); return d ? `${d} 天 ${hh} 小时` : `${hh} 小时 ${Math.floor((sec % 3600) / 60)} 分`; }
+const CHART_COLORS = ['#4f8cff', '#22c3a6', '#f2a93b', '#ef5b6b'];
+function lineChart(title, series, { unit = '', fmt = (v) => v.toFixed(1) + unit, max, empty } = {}) {
+  // series: [{ name, points: [[t, v]] }]
+  const W = 390, H = 150, L = 62, R = 8, T = 10, B = 22;
+  const all = series.flatMap((x) => x.points);
+  const box = h('div', { class: 'card chart' }, h('div', { class: 'chart-head' }, h('b', {}, title), h('span', { class: 'legend' }, series.map((x, i) => h('span', {}, h('i', { style: { background: CHART_COLORS[i] } }), x.name, x.points.length ? ' ' + fmt(x.points[x.points.length - 1][1]) : '')))));
+  if (Math.max(0, ...series.map((x) => x.points.length)) < 2) { box.append(h('div', { class: 'muted', style: { padding: '30px 0', textAlign: 'center' } }, empty || '数据还不够，agent 每分钟采集一次，过一会儿再看')); return box; }
+  const t0 = Math.min(...all.map((p) => p[0])), t1 = Math.max(...all.map((p) => p[0]));
+  const vmax = max || Math.max(1e-9, ...all.map((p) => p[1])) * 1.1;
+  const x = (t) => L + ((t - t0) / Math.max(1, t1 - t0)) * (W - L - R);
+  const y = (v) => T + (1 - Math.min(v, vmax) / vmax) * (H - T - B);
+  let svg = `<svg viewBox="0 0 ${W} ${H}" width="100%" preserveAspectRatio="none" style="display:block">`;
+  for (let i = 0; i <= 3; i++) {
+    const v = (vmax * i) / 3, yy = y(v);
+    svg += `<line x1="${L}" x2="${W - R}" y1="${yy}" y2="${yy}" stroke="#24304f" stroke-width="1"/><text x="${L - 4}" y="${yy + 4}" fill="#8592b3" font-size="10" text-anchor="end">${esc(fmt(v))}</text>`;
+  }
+  const span = t1 - t0;
+  const nl = span < 600 ? 1 : 4; // 时间跨度太短只标首尾，免得标签挤在一起
+  for (let i = 0; i <= nl; i++) {
+    const t = t0 + (span * i) / nl, d = new Date(t * 1000);
+    const lab = span > 2 * 86400 ? `${d.getMonth() + 1}/${d.getDate()}` : d.toTimeString().slice(0, 5);
+    svg += `<text x="${x(t)}" y="${H - 6}" fill="#8592b3" font-size="10" text-anchor="${i === 0 ? 'start' : i === nl ? 'end' : 'middle'}">${lab}</text>`;
+  }
+  series.forEach((sr, i) => {
+    if (!sr.points.length) return;
+    // 时间间隔超过 3 倍正常间隔就断开（agent 停过）
+    const gap = (span / Math.max(1, sr.points.length)) * 3;
+    let d = '', prev = null;
+    for (const [t, v] of sr.points) { d += (prev === null || t - prev > gap ? 'M' : 'L') + x(t).toFixed(1) + ',' + y(v).toFixed(1); prev = t; }
+    svg += `<path d="${d}" fill="none" stroke="${CHART_COLORS[i]}" stroke-width="1.6" stroke-linejoin="round"/>`;
+  });
+  svg += '</svg>';
+  box.append(h('div', { html: svg }));
+  return box;
+}
+function esc(t) { return String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+function gauge(label, pct, text) {
+  const cls = pct >= 90 ? 'full' : '';
+  return h('div', { class: 'card stat' }, h('div', { class: 'n', style: { fontSize: '20px' } }, text), h('div', { class: 'l' }, label), pct >= 0 ? h('div', { class: 'progress' }, h('i', { class: cls, style: { width: Math.min(100, pct) + '%' } })) : null);
+}
+function showMonitor(s) {
+  let range = '24h';
+  const body = h('div', {});
+  const load = async () => {
+    body.innerHTML = '';
+    body.append(h('div', { class: 'muted' }, h('span', { class: 'spin' }), ' 正在读取…'));
+    let m;
+    try { m = await api.call('server:metrics', s.id, range); } catch (e) { body.innerHTML = ''; body.append(h('p', {}, h('span', { class: 'tag bad' }, '读取失败'), ' ', e.message, h('div', { class: 'muted' }, '监控需要 0.5.0 以上的 agent，先点「同步」升级。'))); return; }
+    body.innerHTML = '';
+    const n = m.now || {};
+    const dpct = m.diskTotal ? (m.diskUsed / m.diskTotal) * 100 : -1;
+    const expDays = s.vpsExpireAt ? Math.ceil((s.vpsExpireAt - Date.now()) / 86400000) : null;
+    body.append(
+      h('div', { class: 'tabs' }, [['1h', '1 小时'], ['24h', '24 小时'], ['7d', '7 天'], ['30d', '30 天']].map(([k, l]) => h('a', { class: range === k ? 'active' : '', onclick: () => { range = k; load(); } }, l))),
+      h('div', { class: 'grid g4' },
+        gauge(`CPU（${m.cores || '?'} 核）`, n.cpu ?? -1, n.cpu != null ? n.cpu.toFixed(1) + '%' : '—'),
+        gauge('内存', n.mem ?? -1, n.mem != null ? n.mem.toFixed(1) + '%' : '—'),
+        gauge('硬盘', dpct, m.diskTotal ? `${fmtBytes(m.diskUsed)} / ${fmtBytes(m.diskTotal)}` : '—'),
+        gauge('本月流量（' + (m.month?.month || '') + '）', -1, `↑${fmtBytes(m.month?.tx)} ↓${fmtBytes(m.month?.rx)}`)),
+      h('p', { class: 'muted', style: { margin: '8px 0' } }, `已运行 ${fmtDur(m.uptime || 0)} · 负载 ${n.load != null ? n.load.toFixed(2) : '—'} · 网速 ↑${fmtRate(n.tx || 0)} ↓${fmtRate(n.rx || 0)}`,
+        expDays != null ? [' · ', h('span', { class: expDays <= 7 ? 'tag warn' : '' }, expDays < 0 ? 'VPS 已过期' : `VPS 还有 ${expDays} 天到期`)] : ' · 没填 VPS 到期日（编辑服务器里可以填）'));
+    const pts = (k) => (m.series || []).map((x) => [x.t, x[k] || 0]);
+    const latKeys = [...new Set((m.series || []).flatMap((x) => Object.keys(x.lat || {})))];
+    body.append(h('div', { class: 'grid g2' },
+      lineChart('CPU / 内存', [{ name: 'CPU', points: pts('cpu') }, { name: '内存', points: pts('mem') }], { unit: '%', max: 100, fmt: (v) => v.toFixed(0) + '%' }),
+      lineChart('网速', [{ name: '上行', points: pts('tx') }, { name: '下行', points: pts('rx') }], { fmt: (v) => fmtRate(v) }),
+      lineChart('三网延迟（TCP）', latKeys.map((k) => ({ name: k, points: (m.series || []).filter((x) => x.lat && x.lat[k] > 0).map((x) => [x.t, x.lat[k]]) })), { fmt: (v) => v.toFixed(0) + 'ms', empty: '暂无数据（VPS 连不上国内测速点，或刚开始采集）' }),
+      lineChart('负载', [{ name: '1 分钟', points: pts('load') }], { fmt: (v) => v.toFixed(2) })));
+  };
+  modal({ title: `监控 · ${s.name}`, wide: true, body, buttons: [{ label: '刷新', close: false, onClick: load }, { label: '关闭' }] });
+  load();
 }
 
 async function rotateServer(s) {
@@ -860,6 +967,25 @@ const TOOLS = {
         else out.append(h('div', { class: 'kv', style: { marginTop: '12px' } }, kv('结论', h('span', { class: 'tag ' + (l.ok ? 'ok' : 'bad') }, l.ok ? '适合做 Reality 目标' : '不适合')), kv('本机握手', l.ms + ' ms'), l.checks.map((c) => kv(c.name, h('span', { class: 'tag ' + (c.ok ? 'ok' : 'bad') }, (c.ok ? '✔ ' : '✘ ') + c.value))), kv('证书', `${l.subject} 到期 ${l.validTo}`)));
         if (r.remote) out.append(h('div', { class: 'kv', style: { marginTop: '10px' } }, kv('服务器端', r.remote.ok ? `TCP ${r.remote.connectMs} ms · TLS 完成 ${r.remote.tlsMs} ms · HTTP/${r.remote.http}` : h('span', { class: 'tag bad' }, r.remote.error))));
       }) }, '检测')), out);
+    // 从服务器扫描附近的 Reality 目标
+    const scanSrv = h('select', { class: 'auto', style: { width: '220px' } }, S.servers.filter((x) => x.deployedAt).map((x) => h('option', { value: x.id }, x.name)));
+    const scanOut = h('div', {});
+    box.append(h('h4', { style: { marginTop: '22px' } }, '从服务器扫描附近目标'),
+      h('p', { class: 'muted' }, '在 VPS 上扫描同网段的 IP，找出支持 TLS 1.3 + HTTP/2 的网站。同机房的网站延迟最低，最适合做 Reality 目标。需要 1~2 分钟。'),
+      S.servers.some((x) => x.deployedAt) ? h('div', { class: 'row' }, scanSrv, h('button', { class: 'primary auto', onclick: (e) => busy(e.currentTarget, async () => {
+        scanOut.innerHTML = '';
+        const list = await api.call('tools:realityScan', scanSrv.value);
+        if (!list.length) { scanOut.append(h('p', { class: 'muted' }, '附近没找到合适的网站，可以用上面手动检测 www.microsoft.com、www.apple.com 这类大站。')); return; }
+        const srv = S.servers.find((x) => x.id === scanSrv.value);
+        scanOut.append(h('table', { style: { marginTop: '10px' } }, h('thead', {}, h('tr', {}, ['域名', 'IP', '延迟', '证书签发', '到期', ''].map((t) => h('th', {}, t)))),
+          h('tbody', {}, list.map((r) => h('tr', {}, h('td', { class: 'mono' }, r.domain), h('td', { class: 'mono muted' }, r.ip), h('td', {}, r.ms + ' ms'), h('td', { class: 'muted' }, r.issuer), h('td', { class: 'muted' }, r.notAfter),
+            h('td', {}, h('button', { class: 'small', onclick: async () => {
+              const cur = S.servers.find((x) => x.id === srv.id);
+              cur.protocols.vlessReality = { ...cur.protocols.vlessReality, sni: r.domain };
+              await api.call('col:upsert', 'servers', cur); markDirty();
+              toast(`${srv.name} 的 Reality 目标改成 ${r.domain}，同步后生效`, 'ok');
+            } }, '用这个')))))));
+      }) }, '开始扫描')) : h('p', { class: 'muted' }, '先部署一台服务器'), scanOut);
   },
   socks(box) {
     const ta = h('textarea', { placeholder: '每行一个，支持：\nip:端口:用户:密码\n用户:密码@ip:端口\nsocks5://用户:密码@ip:端口#名称' });

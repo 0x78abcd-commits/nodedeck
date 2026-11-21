@@ -29,7 +29,7 @@ permissions:
 
 env:
   # 改这里的编译选项后，即使版本号没变也会自动重新构建
-  SB_TAGS: with_quic,with_utls,with_acme,with_v2ray_api,with_wireguard
+  SB_TAGS: with_quic,with_utls,with_acme,with_v2ray_api,with_wireguard,with_cloudflared
 
 concurrency:
   group: singbox-build
@@ -78,8 +78,8 @@ jobs:
           mkdir -p out
           cd /tmp/sb
           LDF="$(cat release/LDFLAGS 2>/dev/null || true)"
-          for a in amd64 arm64; do
-            CGO_ENABLED=0 GOOS=linux GOARCH=$a go build -trimpath \
+          for a in amd64 arm64 arm 386; do
+            CGO_ENABLED=0 GOOS=linux GOARCH=$a GOARM=7 go build -trimpath \
               -tags "$SB_TAGS" \
               -ldflags "-X 'github.com/sagernet/sing-box/constant.Version=$V' $LDF -s -w -buildid=" \
               -o "$GITHUB_WORKSPACE/out/nodedeck-sing-box-linux-$a" ./cmd/sing-box
@@ -87,11 +87,10 @@ jobs:
           done
           cp LICENSE "$GITHUB_WORKSPACE/out/LICENSE-sing-box.txt"
           cd "$GITHUB_WORKSPACE/out"
-          jq -n --arg v "$V" \
-            --arg a "$(sha256sum nodedeck-sing-box-linux-amd64.gz | cut -d' ' -f1)" \
-            --arg b "$(sha256sum nodedeck-sing-box-linux-arm64.gz | cut -d' ' -f1)" \
-            --arg t "$SB_TAGS" \
-            '{version:$v, tags:$t, sha256:{amd64:$a, arm64:$b}}' > manifest.json
+          sum() { sha256sum "nodedeck-sing-box-linux-$1.gz" | cut -d' ' -f1; }
+          jq -n --arg v "$V" --arg t "$SB_TAGS" \
+            --arg a "$(sum amd64)" --arg b "$(sum arm64)" --arg c "$(sum arm)" --arg d "$(sum 386)" \
+            '{version:$v, tags:$t, sha256:{amd64:$a, arm64:$b, arm:$c, "386":$d}}' > manifest.json
           cat manifest.json
 
       - name: 发布

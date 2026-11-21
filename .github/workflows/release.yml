@@ -39,8 +39,8 @@ jobs:
         run: |
           mkdir -p out
           cd agent
-          for a in amd64 arm64; do
-            CGO_ENABLED=0 GOOS=linux GOARCH=$a go build -trimpath -ldflags "-s -w -X main.version=${{ steps.v.outputs.version }}" -o ../out/nodedeck-agent-linux-$a .
+          for a in amd64 arm64 arm 386; do
+            CGO_ENABLED=0 GOOS=linux GOARCH=$a GOARM=7 go build -trimpath -ldflags "-s -w -X main.version=${{ steps.v.outputs.version }}" -o ../out/nodedeck-agent-linux-$a .
             gzip -9 ../out/nodedeck-agent-linux-$a
           done
       - uses: actions/upload-artifact@v4

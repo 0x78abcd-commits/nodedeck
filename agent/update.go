@@ -177,10 +177,6 @@ func (a *Agent) setUpdate(f func(*UpdateState)) {
 	a.mu.Unlock()
 }
 
-func serviceActive(name string) bool {
-	return exec.Command("systemctl", "is-active", "--quiet", name).Run() == nil
-}
-
 // updateSingbox 检查并升级；返回给人看的结果说明
 func (a *Agent) updateSingbox() (string, error) {
 	updateMu.Lock()
@@ -226,14 +222,18 @@ func (a *Agent) updateSingbox() (string, error) {
 		os.Rename(oldBin, bin)
 		return fail(err)
 	}
-	restart := func() { exec.Command("systemctl", "restart", a.cfg.Service).Run() }
+	restart := func() { _ = a.svcRestart(a.cfg.Service) }
 	restart()
 	time.Sleep(4 * time.Second)
-	if !serviceActive(a.cfg.Service) {
+	if !a.svcActive(a.cfg.Service) {
 		os.Rename(bin, bin+".bad")
 		os.Rename(oldBin, bin)
 		restart()
 		return fail(fmt.Errorf("新版 %s 启动失败，已回滚到 %s", m.Version, cur))
+	}
+	// Cloudflare 隧道是同一个内核跑的独立服务，也要重启才会用上新内核
+	if _, err := os.Stat(a.path("cf.json")); err == nil && a.svcActive("nodedeck-cf") {
+		_ = a.svcRestart("nodedeck-cf")
 	}
 	msg := fmt.Sprintf("已从 %s 升级到 %s", cur, m.Version)
 	if cur == m.Version {

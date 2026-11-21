@@ -101,9 +101,9 @@ class SSH {
     throw new Error(msg);
   }
 
-  // 执行命令；root 权限需要时自动加 sudo -n
+  // 执行命令（POSIX sh，兼容没有 bash 的 Alpine）；root 权限需要时自动加 sudo -n
   exec(cmd, { input, onData, root = true, timeout = 600000 } = {}) {
-    const full = root && this.sudo ? `sudo -n bash -c ${shq(cmd)}` : `bash -c ${shq(cmd)}`;
+    const full = root && this.sudo ? `sudo -n sh -c ${shq(cmd)}` : `sh -c ${shq(cmd)}`;
     return new Promise((resolve, reject) => {
       this.conn.exec(full, (err, stream) => {
         if (err) return reject(err);

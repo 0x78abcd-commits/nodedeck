@@ -114,3 +114,10 @@ pre.log { background: #070b17; border: 1px solid var(--line); border-radius: 8px
 .banner .notes { color: var(--text); font-size: 12px; white-space: pre-wrap; max-height: 80px; overflow: auto; }
 a { color: var(--accent); }
 .tag.blue { color: var(--accent); }
+
+/* 0.5.0 监控图表 */
+.grid.g2 { grid-template-columns: repeat(2, 1fr); }
+.chart { padding: 10px 12px; }
+.chart-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; gap: 8px; flex-wrap: wrap; }
+.chart .legend { font-size: 12px; color: var(--muted); display: flex; gap: 10px; flex-wrap: wrap; }
+.chart .legend i { display: inline-block; width: 10px; height: 3px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }

@@ -97,7 +97,7 @@ async function autoFixPorts(id, log) {
     if (first[i].ok) continue;
     const k = keys[i];
     const label = core.PROTOCOLS[k].label;
-    if (getServer(id).protocols[k].fixedPort) { log(`⚠ ${label} 端口 ${getServer(id).protocols[k].port} 不通，但它是固定端口，没有自动更换`); continue; }
+    if (getServer(id).protocols[k].fixedPort || (k === 'vmess' && core.cfTunnelOf(getServer(id)))) { log(`⚠ ${label} 端口 ${getServer(id).protocols[k].port} 不通，但它是固定端口，没有自动更换`); continue; }
     const original = getServer(id).protocols[k].port;
     let fixed = false;
     const tried = [original];
@@ -293,6 +293,8 @@ function registerIpc() {
     }
     return { changes: r.changes, synced, error };
   });
+  handle('server:metrics', (id, range) => deploy.fetchMetrics(getServer(id), range));
+  handle('tools:realityScan', (serverId) => deploy.scanReality(getServer(serverId)));
   handle('server:logs', (id) => deploy.serverLogs(getServer(id)));
   handle('server:uninstall', async (id) => {
     await deploy.uninstall(getServer(id));

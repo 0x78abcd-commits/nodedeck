@@ -171,7 +171,7 @@ function tlsSelfSigned(server, alpn) {
 // 远程规则集（SagerNet 官方，GitHub 托管；VPS 在境外可以直接下载）
 function remoteRuleSet(tag) {
   const repo = tag.startsWith('geoip-') ? 'sing-geoip' : 'sing-geosite';
-  return { type: 'remote', tag, format: 'binary', url: `https://raw.githubusercontent.com/SagerNet/${repo}/rule-set/${tag}.srs`, download_detour: 'direct' };
+  return { type: 'remote', tag, format: 'binary', url: `https://raw.githubusercontent.com/SagerNet/${repo}/rule-set/${tag}.srs`, http_client: { detour: 'direct' } };
 }
 
 const WARP_SITES = {
@@ -345,6 +345,26 @@ function resolveForwardTarget(state, f) {
 }
 
 // ---------- 节点入口（直连 + 经中转） ----------
+// Cloudflare 隧道配置（需要启用 VMess-WS、填了令牌和域名才算生效）
+function cfTunnelOf(server) {
+  const t = server.cfTunnel;
+  if (!t?.enabled || !t.token || !t.hostname || !server.protocols?.vmess?.enabled) return null;
+  return { token: t.token.trim(), hostname: t.hostname.trim(), cdnHosts: (t.cdnHosts || []).map((x) => String(x).trim()).filter(Boolean) };
+}
+
+// Cloudflare 隧道单独跑一个 sing-box 进程（nodedeck-cf 服务）：令牌错了或连不上 Cloudflare 时
+// 只影响隧道本身，不会把主服务拖垮。隧道里进来的连接按 Cloudflare 后台配置的 localhost:端口 直连本机 VMess-WS。
+function buildTunnelConfig(server) {
+  const cft = cfTunnelOf(server);
+  if (!cft) return null;
+  return {
+    log: { level: 'warn', timestamp: true },
+    inbounds: [{ type: 'cloudflared', tag: 'cf-in', token: cft.token }],
+    outbounds: [{ type: 'direct', tag: 'direct' }],
+    route: { final: 'direct' },
+  };
+}
+
 // 服务器的入口地址：只 IPv4 / 双栈 / 只 IPv6（没填 IPv6 地址时自动退回 IPv4）
 function serverHosts(server) {
   const mode = server.ipMode || 'v4';
@@ -374,6 +394,11 @@ function nodeEntries(state, server) {
       label: `${server.name}-${PROTOCOLS[f.target.protocol].label}-经${relay.name}`, via: relay.id,
     });
   }
+  const cft = cfTunnelOf(server);
+  if (cft) {
+    out.push({ serverId: server.id, protocol: 'vmess', host: cft.hostname, port: 443, label: `${server.name}-CF隧道`, cf: cft.hostname });
+    for (const h of cft.cdnHosts) out.push({ serverId: server.id, protocol: 'vmess', host: h, port: 443, label: `${server.name}-CF优选-${h}`, cf: cft.hostname });
+  }
   return out;
 }
 
@@ -402,7 +427,8 @@ function shareLink(state, entry, user) {
     case 'trojan':
       return `trojan://${encodeURIComponent(user.password)}@${host}:${port}?security=tls&sni=${sni}&allowInsecure=${ins}&type=tcp#${name}`;
     case 'vmess': {
-      const j = { v: '2', ps: entry.label, add: entry.host, port: String(port), id: user.uuid, aid: '0', scy: 'auto', net: 'ws', type: 'none', host: '', path: pc.path || '/', tls: '' };
+      const j = { v: '2', ps: entry.label, add: entry.host, port: String(port), id: user.uuid, aid: '0', scy: 'auto', net: 'ws', type: 'none', host: entry.cf || '', path: pc.path || '/', tls: entry.cf ? 'tls' : '' };
+      if (entry.cf) { j.sni = entry.cf; j.fp = 'chrome'; }
       return 'vmess://' + Buffer.from(JSON.stringify(j)).toString('base64');
     }
     case 'hysteria2': {
@@ -437,6 +463,7 @@ function clashProxy(state, entry, user) {
     case 'trojan':
       return { ...base, type: 'trojan', password: user.password, sni, 'skip-cert-verify': skip, udp: true };
     case 'vmess':
+      if (entry.cf) return { ...base, type: 'vmess', uuid: user.uuid, alterId: 0, cipher: 'auto', network: 'ws', tls: true, servername: entry.cf, 'client-fingerprint': 'chrome', 'ws-opts': { path: pc.path || '/', headers: { Host: entry.cf } }, udp: true };
       return { ...base, type: 'vmess', uuid: user.uuid, alterId: 0, cipher: 'auto', network: 'ws', 'ws-opts': { path: pc.path || '/' }, udp: true };
     case 'hysteria2': {
       const o = { ...base, type: 'hysteria2', password: user.password, sni, 'skip-cert-verify': skip };
@@ -469,6 +496,7 @@ function clientOutbound(state, entry, user, tag = 'proxy') {
     case 'trojan':
       return { ...base, type: 'trojan', password: user.password, tls: tlsOf() };
     case 'vmess':
+      if (entry.cf) return { ...base, type: 'vmess', uuid: user.uuid, security: 'auto', alter_id: 0, tls: { enabled: true, server_name: entry.cf, utls: { enabled: true, fingerprint: 'chrome' } }, transport: { type: 'ws', path: pc.path || '/', headers: { Host: entry.cf } } };
       return { ...base, type: 'vmess', uuid: user.uuid, security: 'auto', alter_id: 0, transport: { type: 'ws', path: pc.path || '/' } };
     case 'hysteria2': {
       const o = { ...base, type: 'hysteria2', password: user.password, tls: tlsOf(['h3']) };
@@ -733,7 +761,7 @@ function rotateServer(state, server) {
   for (const key of Object.keys(PROTOCOLS)) {
     const pc = p[key];
     if (!pc?.enabled) continue;
-    if (!pc.fixedPort) {
+    if (!pc.fixedPort && !(key === 'vmess' && cfTunnelOf(s))) {
       const old = pc.port;
       pc.port = 0; // 先腾出旧端口，避免挑到自己
       pc.port = pickFreePort(tmpState, s, key, [old]);
@@ -758,5 +786,5 @@ module.exports = {
   buildServerConfig, nodeEntries, shareLink, clashProxy, clientOutbound, clientTestConfig,
   userEntries, buildSubscription, buildAgentUsers, buildAgentSubs, subscriptionUrl,
   serverPorts, checkPortConflicts, resolveForwardTarget, landingOutbound, pickFreePort, rotateServer,
-  netsOf, ensureProtocols, ssUserKey, usesAcme, tlsSniFor, hopRange, serverHosts, WARP_SITES,
+  netsOf, ensureProtocols, ssUserKey, cfTunnelOf, buildTunnelConfig, usesAcme, tlsSniFor, hopRange, serverHosts, WARP_SITES,
 };
