@@ -36,6 +36,11 @@ const owner = state.users[0];
 for (const e of core.userEntries(state, owner)) {
   check('client-' + e.label, core.clientTestConfig(core.clientOutbound(state, e, owner), 18080));
 }
+check('singbox-client-sub', core.buildSingboxClient(state, owner));
+// 重名服务器也要能通过（名称去重）
+const dup = core.newServer({ name: 'HK1', host: '9.8.7.6' });
+const st2 = { ...state, servers: [...state.servers, dup] };
+check('singbox-client-dup-names', core.buildSingboxClient(st2, owner));
 const sub = core.buildSubscription(state, owner);
 console.log(sub.links.join('\n'));
 console.log(sub.clash.split('\n').slice(0, 8).join('\n'));

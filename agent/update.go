@@ -207,13 +207,38 @@ func (a *Agent) updateSingbox() (string, error) {
 	return msg, nil
 }
 
+// inWindow 当前是否在允许自动升级的时间段内
+func (a *Agent) inWindow(now time.Time) bool {
+	w := a.cfg.UpgradeWindow
+	if len(w) != 2 || w[0] == w[1] {
+		return true
+	}
+	h := now.In(a.loc()).Hour()
+	if w[0] < w[1] {
+		return h >= w[0] && h < w[1]
+	}
+	return h >= w[0] || h < w[1] // 跨零点，如 23-5
+}
+
 func (a *Agent) updateLoop() {
 	if !a.cfg.SingboxAutoUpdate {
 		return
 	}
 	time.Sleep(2 * time.Minute)
+	var last time.Time
 	for {
-		a.updateSingbox()
-		time.Sleep(6 * time.Hour)
+		now := time.Now()
+		if a.inWindow(now) && now.Sub(last) >= 6*time.Hour {
+			last = now
+			msg, err := a.updateSingbox()
+			a.mu.Lock()
+			if err != nil {
+				a.notifyOnce("sb-err:"+a.update.Latest+":"+err.Error(), "⚠️ sing-box 自动升级没有完成："+err.Error())
+			} else if strings.HasPrefix(msg, "已从") {
+				a.notifyOnce("sb-ok:"+a.update.Current, "⬆️ sing-box "+msg)
+			}
+			a.mu.Unlock()
+		}
+		time.Sleep(30 * time.Minute)
 	}
 }

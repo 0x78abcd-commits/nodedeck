@@ -96,9 +96,16 @@ function userUsedBytes(user) {
 }
 
 // 用户当前是否可用（启用、未到期、未超额）
+// 实际到期时间：「首次使用后 N 天」的用户在第一次使用前不计时
+function userExpireAt(user) {
+  if (user.expireAfterDays > 0) return user.firstUsedAt ? user.firstUsedAt + user.expireAfterDays * 86400000 : null;
+  return user.expireAt || null;
+}
+
 function userStatus(user, now = Date.now()) {
   if (!user.enabled) return { active: false, reason: '已停用' };
-  if (user.expireAt && now >= user.expireAt) return { active: false, reason: '已到期' };
+  const exp = userExpireAt(user);
+  if (exp && now >= exp) return { active: false, reason: '已到期' };
   if (user.limitGB > 0 && userUsedBytes(user) >= user.limitGB * GB) return { active: false, reason: '流量用尽' };
   return { active: true, reason: '正常' };
 }
@@ -388,8 +395,60 @@ function clashYaml(proxies) {
   return lines.join('\n');
 }
 
+// 节点名去重（不同服务器起了同名时加序号），Clash / sing-box 要求名称唯一
+function uniqueEntries(entries) {
+  const seen = new Map();
+  return entries.map((e) => {
+    const n = (seen.get(e.label) || 0) + 1;
+    seen.set(e.label, n);
+    return n === 1 ? e : { ...e, label: `${e.label}-${n}` };
+  });
+}
+
+// sing-box 客户端配置（SFA / SFI / SFM 等，需 sing-box 1.12 及以上）
+function buildSingboxClient(state, user) {
+  const entries = uniqueEntries(userEntries(state, user));
+  const outs = entries.map((e) => clientOutbound(state, e, user, e.label)).filter(Boolean);
+  const names = outs.map((o) => o.tag);
+  const ruleSet = (tag, repo) => ({ type: 'remote', tag, format: 'binary', url: `https://raw.githubusercontent.com/SagerNet/${repo}/rule-set/${tag}.srs`, download_detour: '节点选择' });
+  return {
+    log: { level: 'warn', timestamp: true },
+    dns: {
+      servers: [
+        { type: 'https', tag: 'remote', server: '1.1.1.1', detour: '节点选择' },
+        { type: 'udp', tag: 'local', server: '223.5.5.5' },
+      ],
+      rules: [{ rule_set: 'geosite-cn', server: 'local' }],
+      final: 'remote',
+    },
+    inbounds: [
+      { type: 'tun', tag: 'tun-in', address: ['172.19.0.1/30', 'fdfe:dcba:9876::1/126'], auto_route: true, strict_route: true },
+      { type: 'mixed', tag: 'mixed-in', listen: '127.0.0.1', listen_port: 2080 },
+    ],
+    outbounds: [
+      { type: 'selector', tag: '节点选择', outbounds: names.length ? ['自动选择', ...names, 'direct'] : ['direct'], default: names.length ? '自动选择' : 'direct' },
+      ...(names.length ? [{ type: 'urltest', tag: '自动选择', outbounds: names, url: 'https://www.gstatic.com/generate_204', interval: '10m' }] : []),
+      ...outs,
+      { type: 'direct', tag: 'direct' },
+    ],
+    route: {
+      rules: [
+        { action: 'sniff' },
+        { protocol: 'dns', action: 'hijack-dns' },
+        { ip_is_private: true, outbound: 'direct' },
+        { rule_set: ['geosite-cn', 'geoip-cn'], outbound: 'direct' },
+      ],
+      rule_set: [ruleSet('geosite-cn', 'sing-geosite'), ruleSet('geoip-cn', 'sing-geoip')],
+      final: '节点选择',
+      auto_detect_interface: true,
+      default_domain_resolver: 'local',
+    },
+    experimental: { cache_file: { enabled: true } },
+  };
+}
+
 function buildSubscription(state, user) {
-  const entries = userEntries(state, user);
+  const entries = uniqueEntries(userEntries(state, user));
   const links = entries.map((e) => shareLink(state, e, user)).filter(Boolean);
   const proxies = entries.map((e) => clashProxy(state, e, user)).filter(Boolean);
   return {
@@ -405,13 +464,21 @@ function buildAgentUsers(state, server) {
   return users.map((u) => {
     const local = u.usage?.[server.id] || { up: 0, down: 0 };
     const baseUsed = Math.max(0, userUsedBytes(u) - (local.up || 0) - (local.down || 0));
+    const home = homeServerId(state, u);
     return {
       id: u.id,
       name: u.name,
       enabled: !!u.enabled,
       limitBytes: u.limitGB > 0 ? Math.round(u.limitGB * GB) : 0,
       baseUsed,
-      expireAt: u.expireAt ? Math.floor(u.expireAt / 1000) : 0,
+      baseUsedAt: u.usageAt ? Math.floor(u.usageAt / 1000) : 0,
+      expireAt: u.expireAfterDays > 0 ? 0 : (u.expireAt ? Math.floor(u.expireAt / 1000) : 0),
+      resetPeriod: u.resetPeriod || 'none',
+      resetDay: u.resetDay || 1,
+      resetAnchor: Math.floor((u.resetAnchor || u.createdAt || 0) / 1000),
+      expireAfterDays: u.expireAfterDays || 0,
+      firstUsedAt: u.firstUsedAt ? Math.floor(u.firstUsedAt / 1000) : 0,
+      notify: home === server.id && u.id !== 'owner',
     };
   });
 }
@@ -422,24 +489,48 @@ function buildAgentSubs(state, server) {
   for (const u of state.users || []) {
     if (!userHasServer(u, server.id)) continue;
     const sub = buildSubscription(state, u);
+    const exp = userExpireAt(u);
     subs[u.token] = {
       userId: u.id,
       name: u.name,
       v2ray: sub.v2ray,
       clash: sub.clash,
+      singbox: JSON.stringify(buildSingboxClient(state, u), null, 2),
+      url: subscriptionUrl(state, u),
       total: u.limitGB > 0 ? Math.round(u.limitGB * GB) : 0,
-      expire: u.expireAt ? Math.floor(u.expireAt / 1000) : 0,
+      expire: exp ? Math.floor(exp / 1000) : 0,
+      expireAfterDays: u.expireAfterDays && !u.firstUsedAt ? u.expireAfterDays : 0,
     };
   }
   return subs;
 }
 
+// 用户的"主服务器"：分配到的第一台已部署的服务器（中转机优先级最低），负责发提醒、默认提供订阅
+function homeServerId(state, user) {
+  const list = (state.servers || []).filter((s) => userHasServer(user, s.id));
+  const pick = list.find((s) => s.deployedAt && s.role !== 'relay') || list.find((s) => s.deployedAt) || list[0];
+  return pick ? pick.id : null;
+}
+
+function subBase(host, port) {
+  const h = String(host).trim();
+  if (/^https?:\/\//i.test(h)) return h.replace(/\/+$/, ''); // 填了完整地址（如 https://sub.example.com）
+  return `http://${hostForUri(h)}:${port}`;
+}
+
+// 订阅地址：设置了订阅域名就用域名（换服务器地址不变），否则用主服务器
 function subscriptionUrl(state, user) {
-  const sid = user.serverIds === '*' ? state.servers?.[0]?.id : user.serverIds?.[0];
-  const s = (state.servers || []).find((x) => x.id === sid);
-  if (!s) return '';
   const port = state.settings?.subPort || 2096;
-  return `http://${hostForUri(s.host)}:${port}/sub/${user.token}`;
+  if (state.settings?.subDomain) return `${subBase(state.settings.subDomain, port)}/sub/${user.token}`;
+  const s = (state.servers || []).find((x) => x.id === homeServerId(state, user));
+  if (!s) return '';
+  return `${subBase(s.host, port)}/sub/${user.token}`;
+}
+
+// 备用订阅地址：用户的每台已部署服务器都能提供同样的订阅
+function subscriptionUrls(state, user) {
+  const port = state.settings?.subPort || 2096;
+  return (state.servers || []).filter((s) => s.deployedAt && userHasServer(user, s.id)).map((s) => ({ server: s.name, url: `${subBase(s.host, port)}/sub/${user.token}` }));
 }
 
 function serverPorts(state, server) {
@@ -512,7 +603,7 @@ function rotateServer(state, server) {
 module.exports = {
   PROTOCOLS, REMOTE_DIR, GB,
   randId, randHex, randPassword, uuid, realityKeypair, defaultProtocols,
-  newServer, newUser, userStatus, userUsedBytes, userHasServer, usersForServer,
+  newServer, newUser, userStatus, userExpireAt, homeServerId, subscriptionUrls, buildSingboxClient, uniqueEntries, userUsedBytes, userHasServer, usersForServer,
   buildServerConfig, nodeEntries, shareLink, clashProxy, clientOutbound, clientTestConfig,
   userEntries, buildSubscription, buildAgentUsers, buildAgentSubs, subscriptionUrl,
   serverPorts, checkPortConflicts, resolveForwardTarget, landingOutbound, pickFreePort, rotateServer,

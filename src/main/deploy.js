@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const core = require('./core');
 const { withSSH, shq } = require('./ssh');
+const QRCode = require('qrcode');
 
 const DIR = core.REMOTE_DIR;
 const SB_BIN = '/usr/local/bin/nodedeck-sing-box';
@@ -41,9 +42,15 @@ WantedBy=multi-user.target
 
 function singboxBase(state) { return String(state.settings?.singboxBase || '').replace(/\/+$/, ''); }
 
-function agentConfig(state) {
+function agentConfig(state, server = {}) {
   const st = state.settings || {};
+  const tg = st.telegram || {};
+  const win = st.upgradeWindow && st.upgradeWindow.enabled ? [Number(st.upgradeWindow.start) || 0, Number(st.upgradeWindow.end) || 0] : [];
   return {
+    serverName: server.name || '',
+    timezone: st.timezone || 'Asia/Shanghai',
+    upgradeWindow: win,
+    telegram: tg.enabled ? { botToken: tg.botToken || '', chatId: String(tg.chatId || ''), daily: tg.daily !== false, dailyHour: Number(tg.dailyHour ?? 9), warnDays: Number(tg.warnDays ?? 3), warnPercent: Number(tg.warnPercent ?? 90), ...(tg.apiBase ? { apiBase: tg.apiBase } : {}) } : {},
     singboxManifest: `${singboxBase(state)}/manifest.json`,
     singboxAutoUpdate: st.singboxAutoUpdate !== false,
     statsApi: `127.0.0.1:${st.statsPort || 9092}`,
@@ -124,7 +131,7 @@ if [ ! -f ${DIR}/cert.pem ] || [ "$(cat ${DIR}/cert.sni 2>/dev/null)" != ${shq(s
   ${AGENT_BIN} gencert -host ${shq(sni)} -dir ${DIR} && printf %s ${shq(sni)} > ${DIR}/cert.sni
 fi`);
 
-    await ssh.writeFile(`${DIR}/agent.json`, JSON.stringify(agentConfig(state), null, 2));
+    await ssh.writeFile(`${DIR}/agent.json`, JSON.stringify(agentConfig(state, server), null, 2));
     await ssh.writeFile('/etc/systemd/system/nodedeck-singbox.service', SB_UNIT, '644');
     await ssh.writeFile('/etc/systemd/system/nodedeck-agent.service', AGENT_UNIT, '644');
 
@@ -152,7 +159,9 @@ async function pushConfig(ssh, state, server, log = () => {}) {
   const full = core.buildServerConfig(state, server);
   await ssh.writeFile(`${DIR}/config.full.json`, JSON.stringify(full, null, 2));
   await ssh.writeFile(`${DIR}/users.json`, JSON.stringify(core.buildAgentUsers(state, server)));
-  await ssh.writeFile(`${DIR}/subs.json`, JSON.stringify(core.buildAgentSubs(state, server)));
+  const subs = core.buildAgentSubs(state, server);
+  for (const sub of Object.values(subs)) if (sub.url) sub.qr = await QRCode.toDataURL(sub.url, { margin: 1, width: 240 });
+  await ssh.writeFile(`${DIR}/subs.json`, JSON.stringify(subs));
   // 校验
   const r = await ssh.exec(`${SB_BIN} check -c ${DIR}/config.full.json`);
   if (r.code !== 0) throw new Error('sing-box 配置校验失败：' + (r.stderr || r.stdout));
@@ -180,7 +189,7 @@ async function syncServer(state, server, { log = () => {}, resourcesDir, appVers
     await pushConfig(ssh, state, server, log);
     await openFirewall(ssh, state, server);
     let restart = false;
-    const cfgText = JSON.stringify(agentConfig(state), null, 2);
+    const cfgText = JSON.stringify(agentConfig(state, server), null, 2);
     const curCfg = (await ssh.exec(`cat ${DIR}/agent.json`)).stdout;
     if (curCfg.trim() !== cfgText.trim()) { await ssh.writeFile(`${DIR}/agent.json`, cfgText); restart = true; }
     const agv = (await ssh.exec(`${AGENT_BIN} version`)).stdout.trim();
@@ -211,6 +220,16 @@ async function updateSingbox(server) {
     try { j = JSON.parse(r.stdout); } catch (_) { /* ignore */ }
     if (r.code !== 0) throw new Error(j.error || r.stderr || r.stdout);
     return { message: j.message, status: await status(ssh) };
+  });
+}
+
+async function notifyTest(server) {
+  return withSSH(server, async (ssh) => {
+    const r = await ssh.exec(`${AGENT_BIN} notify-test -c ${DIR}/agent.json`);
+    let j = {};
+    try { j = JSON.parse(r.stdout); } catch (_) { /* ignore */ }
+    if (r.code !== 0) throw new Error(j.error || r.stderr || r.stdout || '发送失败');
+    return true;
   });
 }
 
@@ -290,4 +309,4 @@ async function remoteTlsCheck(server, domain) {
   });
 }
 
-module.exports = { deployServer, syncServer, updateSingbox, serverSelfCheck, serverStatus, fetchStats, resetTraffic, serverLogs, uninstall, testSSH, remoteTlsCheck, agentConfig };
+module.exports = { deployServer, syncServer, updateSingbox, serverSelfCheck, notifyTest, serverStatus, fetchStats, resetTraffic, serverLogs, uninstall, testSSH, remoteTlsCheck, agentConfig };

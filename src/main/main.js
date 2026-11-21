@@ -120,6 +120,36 @@ async function autoFixPorts(id, log) {
   return changes;
 }
 
+// 从各服务器拉取本周期流量、在用时间、首次使用时间
+let refreshing = null;
+async function refreshUsage() {
+  if (refreshing) return refreshing;
+  refreshing = (async () => {
+    const s = state();
+    const errors = [];
+    const now = Date.now();
+    for (const srv of s.servers.filter((x) => x.deployedAt)) {
+      try {
+        const st = await deploy.fetchStats(srv, s);
+        srv.lastStats = { today: st.today, yesterday: st.yesterday, at: now };
+        for (const u of s.users) {
+          if (!core.userHasServer(u, srv.id)) continue;
+          const t = st.traffic?.[u.id] || { up: 0, down: 0 };
+          u.usage = { ...(u.usage || {}), [srv.id]: { up: t.up || 0, down: t.down || 0 } };
+          u.usageAt = now;
+          const la = (st.lastActive?.[u.id] || 0) * 1000;
+          if (la > (u.lastActive || 0)) u.lastActive = la;
+          const fu = (st.firstUsed?.[u.id] || 0) * 1000;
+          if (fu && u.expireAfterDays > 0 && (!u.firstUsedAt || fu < u.firstUsedAt)) u.firstUsedAt = fu;
+        }
+      } catch (e) { errors.push(`${srv.name}: ${e.message}`); }
+    }
+    store.save();
+    return { errors, users: state().users };
+  })();
+  try { return await refreshing; } finally { refreshing = null; }
+}
+
 function readChangelog() {
   try { return fs.readFileSync(path.join(__dirname, '..', '..', 'CHANGELOG.md'), 'utf8'); } catch (_) { return ''; }
 }
@@ -249,24 +279,43 @@ function registerIpc() {
     if (!u) throw new Error('用户不存在');
     const url = core.subscriptionUrl(s, u);
     const sub = core.buildSubscription(s, u);
-    return { url, clashUrl: url ? url + '?format=clash' : '', links: sub.links, qr: url ? await tools.qr(url) : null, status: core.userStatus(u), used: core.userUsedBytes(u) };
+    return {
+      url, clashUrl: url ? url + '?format=clash' : '', singboxUrl: url ? url + '?format=singbox' : '', pageUrl: url ? url + '?format=html' : '',
+      backups: core.subscriptionUrls(s, u).filter((x) => x.url !== url),
+      links: sub.links, qr: url ? await tools.qr(url) : null, status: core.userStatus(u), used: core.userUsedBytes(u), expireAt: core.userExpireAt(u),
+    };
   });
-  handle('users:refreshUsage', async () => {
+  handle('users:refreshUsage', () => refreshUsage());
+  handle('users:batch', async (ids, op) => {
     const s = state();
-    const errors = [];
-    for (const srv of s.servers.filter((x) => x.deployedAt)) {
-      try {
-        const st = await deploy.fetchStats(srv, s);
-        for (const u of s.users) {
-          if (!core.userHasServer(u, srv.id)) continue;
-          const t = st.traffic?.[u.id] || { up: 0, down: 0 };
-          u.usage = { ...(u.usage || {}), [srv.id]: { up: t.up || 0, down: t.down || 0 } };
-        }
-      } catch (e) { errors.push(`${srv.name}: ${e.message}`); }
+    const set = new Set(ids);
+    let n = 0;
+    for (const u of s.users) {
+      if (!set.has(u.id)) continue;
+      n++;
+      if (op.type === 'addServers') {
+        if (u.serverIds !== '*') u.serverIds = [...new Set([...(u.serverIds || []), ...op.serverIds])];
+      } else if (op.type === 'removeServers') {
+        if (u.serverIds === '*') u.serverIds = s.servers.map((x) => x.id);
+        u.serverIds = u.serverIds.filter((x) => !op.serverIds.includes(x));
+      } else if (op.type === 'extend') {
+        const base = Math.max(Date.now(), u.expireAt || 0);
+        u.expireAt = base + op.days * 86400000;
+        u.expireAfterDays = 0;
+      } else if (op.type === 'limit') {
+        u.limitGB = Number(op.limitGB) || 0;
+      } else if (op.type === 'enable') {
+        u.enabled = !!op.enabled;
+      } else if (op.type === 'delete') {
+        if (u.id === 'owner') { n--; continue; }
+        u._delete = true;
+      }
     }
+    s.users = s.users.filter((u) => !u._delete);
     store.save();
-    return { errors, users: state().users };
+    return n;
   });
+  handle('telegram:test', async (serverId) => deploy.notifyTest(getServer(serverId)));
   handle('users:resetUsage', async (id) => {
     const s = state();
     const u = s.users.find((x) => x.id === id);
@@ -326,5 +375,9 @@ app.whenReady().then(() => {
   registerIpc();
   createWindow();
   if (state().settings.autoUpdate !== false) updater.startSchedule(win);
+  // 打开软件后每 10 分钟自动刷新一次流量和在用状态
+  const tick = () => { if (state().servers.some((x) => x.deployedAt)) refreshUsage().then(() => send('usage-updated', Date.now())).catch(() => {}); };
+  setTimeout(tick, 15000);
+  setInterval(tick, 10 * 60 * 1000);
 });
 app.on('window-all-closed', () => app.quit());

@@ -113,3 +113,4 @@ pre.log { background: #070b17; border: 1px solid var(--line); border-radius: 8px
 .diag-step .tag { grid-row: span 2; align-self: start; text-align: center; }
 .banner .notes { color: var(--text); font-size: 12px; white-space: pre-wrap; max-height: 80px; overflow: auto; }
 a { color: var(--accent); }
+.tag.blue { color: var(--accent); }

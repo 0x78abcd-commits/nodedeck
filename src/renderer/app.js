@@ -36,12 +36,26 @@ function markDirty() { dirty = true; renderBanner(); }
 const serverName = (id) => S.servers.find((s) => s.id === id)?.name || '（已删除）';
 
 function userUsed(u) { return Object.values(u.usage || {}).reduce((a, v) => a + (v.up || 0) + (v.down || 0), 0); }
+function userExpire(u) {
+  if (u.expireAfterDays > 0) return u.firstUsedAt ? u.firstUsedAt + u.expireAfterDays * 86400000 : null;
+  return u.expireAt || null;
+}
 function userState(u) {
+  const exp = userExpire(u);
   if (!u.enabled) return ['已停用', 'bad'];
-  if (u.expireAt && Date.now() >= u.expireAt) return ['已到期', 'bad'];
+  if (exp && Date.now() >= exp) return ['已到期', 'bad'];
   if (u.limitGB > 0 && userUsed(u) >= u.limitGB * GB) return ['流量用尽', 'bad'];
-  if (u.expireAt && u.expireAt - Date.now() < 3 * 86400000) return ['即将到期', 'warn'];
+  if (u.expireAfterDays > 0 && !u.firstUsedAt) return ['未启用', 'blue'];
+  if (exp && exp - Date.now() < 3 * 86400000) return ['即将到期', 'warn'];
   return ['正常', 'ok'];
+}
+const RESET_LABEL = { none: '不重置', day: '每天', week: '每周一', month: '每月', rolling30: '每 30 天' };
+function ago(ms) {
+  const d = Date.now() - ms;
+  if (d < 90 * 1000) return '刚刚';
+  if (d < 3600 * 1000) return Math.round(d / 60000) + ' 分钟前';
+  if (d < 86400 * 1000) return Math.round(d / 3600000) + ' 小时前';
+  return Math.round(d / 86400000) + ' 天前';
 }
 
 // ---------- 框架 ----------
@@ -357,30 +371,101 @@ async function showQr(title, text) {
 }
 
 // ---------- 用户 ----------
+const userView = { q: '', page: 1, sel: new Set(), filter: 'all' };
+const PAGE_SIZE = 50;
+
 async function viewUsers(v) {
   await reload();
-  v.append(h('div', { class: 'toolbar' }, h('div', {}, h('h1', {}, '用户'), h('p', { class: 'sub' }, '按线路分配、限流量、限到期，每个用户一个订阅地址')), h('div', { class: 'spacer' }),
-    h('button', { onclick: (e) => busy(e.currentTarget, async () => { const r = await api.call('users:refreshUsage'); if (r.errors.length) toast(r.errors.join('\n'), 'err'); else toast('流量已刷新', 'ok'); render(); }) }, '刷新流量'),
+  v.append(h('div', { class: 'toolbar' }, h('div', {}, h('h1', {}, '用户'), h('p', { class: 'sub' }, '按线路分配、限流量、限到期、定期重置，每个用户一个订阅地址')), h('div', { class: 'spacer' }),
+    h('button', { onclick: (e) => busy(e.currentTarget, async () => { const r = await api.call('users:refreshUsage'); if (r.errors.length) toast('部分服务器读取失败：\n' + r.errors.join('\n'), 'warn'); else toast('流量已刷新', 'ok'); render(); }) }, '刷新流量'),
     h('button', { class: 'primary', onclick: () => editUser() }, '+ 添加用户')));
+
+  const search = h('input', { placeholder: '搜索名称 / 备注', value: userView.q, style: { maxWidth: '260px' } });
+  search.oninput = () => { userView.q = search.value; userView.page = 1; const pos = search.selectionStart; render().then(() => { const el = document.querySelector('#userSearch'); if (el) { el.focus(); el.setSelectionRange(pos, pos); } }); };
+  search.id = 'userSearch';
+  const filter = h('select', { style: { maxWidth: '140px' } }, [['all', '全部'], ['ok', '正常'], ['bad', '停用/到期/用尽'], ['warn', '即将到期'], ['online', '在用']].map(([k, l]) => h('option', { value: k }, l)));
+  filter.value = userView.filter;
+  filter.onchange = () => { userView.filter = filter.value; userView.page = 1; render(); };
+
+  const q = userView.q.trim().toLowerCase();
+  const online = (u) => u.lastActive && Date.now() - u.lastActive < 15 * 60 * 1000;
+  let list = S.users.filter((u) => !q || u.name.toLowerCase().includes(q) || (u.note || '').toLowerCase().includes(q));
+  if (userView.filter === 'online') list = list.filter(online);
+  else if (userView.filter !== 'all') list = list.filter((u) => userState(u)[1] === userView.filter);
+  const pages = Math.max(1, Math.ceil(list.length / PAGE_SIZE));
+  if (userView.page > pages) userView.page = pages;
+  const shown = list.slice((userView.page - 1) * PAGE_SIZE, userView.page * PAGE_SIZE);
+  for (const id of [...userView.sel]) if (!S.users.some((u) => u.id === id)) userView.sel.delete(id);
+
+  const selCount = userView.sel.size;
+  const batchBar = h('div', { class: 'toolbar', style: { marginBottom: '8px' } }, search, filter, h('div', { class: 'spacer' }),
+    selCount ? h('span', { class: 'muted' }, `已选 ${selCount} 人`) : null,
+    selCount ? h('button', { class: 'small', onclick: (e) => menu(e.currentTarget, [
+      { label: '分配线路…', onClick: () => batchServers('addServers') },
+      { label: '取消线路…', onClick: () => batchServers('removeServers') },
+      { label: '续期…', onClick: batchExtend },
+      { label: '设置流量上限…', onClick: batchLimit },
+      { label: '启用', onClick: () => doBatch({ type: 'enable', enabled: true }) },
+      { label: '停用', onClick: () => doBatch({ type: 'enable', enabled: false }) },
+      { label: '删除', danger: true, onClick: async () => { if (await confirmBox(`删除选中的 ${selCount} 个用户？同步后立即失效。`)) { await doBatch({ type: 'delete' }); userView.sel.clear(); } } },
+    ]) }, '批量操作 ▾') : null,
+    selCount ? h('button', { class: 'small', onclick: () => { userView.sel.clear(); render(); } }, '取消选择') : null);
+
+  const allCb = h('input', { type: 'checkbox', checked: shown.length > 0 && shown.every((u) => userView.sel.has(u.id)) });
+  allCb.onchange = () => { for (const u of shown) allCb.checked ? userView.sel.add(u.id) : userView.sel.delete(u.id); render(); };
   const tb = h('tbody');
-  for (const u of S.users) {
+  for (const u of shown) {
     const used = userUsed(u);
     const [stText, stCls] = userState(u);
     const pct = u.limitGB > 0 ? Math.min(100, (used / (u.limitGB * GB)) * 100) : 0;
+    const cb = h('input', { type: 'checkbox', checked: userView.sel.has(u.id) });
+    cb.onchange = () => { cb.checked ? userView.sel.add(u.id) : userView.sel.delete(u.id); render(); };
+    const exp = userExpire(u);
     tb.append(h('tr', {},
+      h('td', {}, cb),
       h('td', {}, h('b', {}, u.name), u.note ? h('div', { class: 'muted' }, u.note) : null),
       h('td', {}, h('span', { class: 'tag ' + stCls }, stText)),
-      h('td', {}, `${fmtBytes(used)} / ${u.limitGB > 0 ? u.limitGB + ' GB' : '不限'}`, u.limitGB > 0 ? h('div', { class: 'progress' }, h('i', { class: pct >= 100 ? 'full' : '', style: { width: pct + '%' } })) : null),
-      h('td', {}, u.expireAt ? fmtDate(u.expireAt) : '永久'),
+      h('td', {}, online(u) ? h('span', { class: 'tag ok' }, '● 在用') : h('span', { class: 'muted' }, u.lastActive ? ago(u.lastActive) : '从未使用')),
+      h('td', {}, `${fmtBytes(used)} / ${u.limitGB > 0 ? u.limitGB + ' GB' : '不限'}`, u.limitGB > 0 ? h('div', { class: 'progress' }, h('i', { class: pct >= 100 ? 'full' : '', style: { width: pct + '%' } })) : null,
+        u.resetPeriod && u.resetPeriod !== 'none' ? h('div', { class: 'muted', style: { fontSize: '12px' } }, '重置：' + RESET_LABEL[u.resetPeriod] + (u.resetPeriod === 'month' ? ` ${u.resetDay || 1} 号` : '')) : null),
+      h('td', {}, exp ? fmtDate(exp) : u.expireAfterDays > 0 ? `首次使用后 ${u.expireAfterDays} 天` : '永久'),
       h('td', {}, u.serverIds === '*' ? h('span', { class: 'tag blue' }, '全部') : (u.serverIds || []).map((id) => h('span', { class: 'tag' }, serverName(id)))),
       h('td', {}, h('div', { class: 'actions' },
         h('button', { class: 'small primary', onclick: () => showSub(u) }, '订阅'),
         h('button', { class: 'small', onclick: () => editUser(u) }, '编辑'),
-        h('button', { class: 'small', onclick: async () => { if (await confirmBox(`把「${u.name}」的已用流量清零？`)) { const r = await api.call('users:resetUsage', u.id); if (r.errors.length) toast(r.errors.join('\n'), 'err'); else toast('已重置', 'ok'); markDirty(); render(); } } }, '重置流量'),
-        u.id !== 'owner' ? h('button', { class: 'small danger', onclick: async () => { if (await confirmBox(`删除用户「${u.name}」？同步后立即失效。`)) { await api.call('col:remove', 'users', u.id); markDirty(); render(); } } }, '删除') : null))));
+        h('button', { class: 'small', onclick: (e) => menu(e.currentTarget, [
+          { label: '重置已用流量', onClick: async () => { if (await confirmBox(`把「${u.name}」的已用流量清零？`)) { const r = await api.call('users:resetUsage', u.id); if (r.errors.length) toast(r.errors.join('\n'), 'warn'); else toast('已重置', 'ok'); markDirty(); render(); } } },
+          { label: '续期 30 天', onClick: async () => { await api.call('users:batch', [u.id], { type: 'extend', days: 30 }); markDirty(); render(); toast('已续期 30 天，同步后生效', 'ok'); } },
+          { label: u.enabled ? '停用' : '启用', onClick: async () => { await api.call('users:batch', [u.id], { type: 'enable', enabled: !u.enabled }); markDirty(); render(); } },
+          u.id !== 'owner' && { label: '删除', danger: true, onClick: async () => { if (await confirmBox(`删除用户「${u.name}」？同步后立即失效。`)) { await api.call('col:remove', 'users', u.id); markDirty(); render(); } } },
+        ]) }, '更多 ▾')))));
   }
-  v.append(h('div', { class: 'card' }, h('table', {}, h('thead', {}, h('tr', {}, ['用户', '状态', '流量', '到期', '线路', '操作'].map((t) => h('th', {}, t)))), tb)));
-  v.append(h('p', { class: 'muted' }, '提示：流量由每台 VPS 上的 agent 精确统计，超额或到期会自动停用（不用开着本软件）。修改用户后记得同步。'));
+  const pager = pages > 1 ? h('div', { class: 'toolbar', style: { justifyContent: 'center', marginTop: '10px' } },
+    h('button', { class: 'small', disabled: userView.page <= 1, onclick: () => { userView.page--; render(); } }, '上一页'),
+    h('span', { class: 'muted' }, `${userView.page} / ${pages}（共 ${list.length} 人）`),
+    h('button', { class: 'small', disabled: userView.page >= pages, onclick: () => { userView.page++; render(); } }, '下一页')) : null;
+  v.append(batchBar, h('div', { class: 'card' }, shown.length ? h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, allCb), ['用户', '状态', '在用', '流量', '到期', '线路', '操作'].map((t) => h('th', {}, t)))), tb) : h('div', { class: 'empty' }, '没有符合条件的用户'), pager));
+  v.append(h('p', { class: 'muted' }, '提示：流量由每台 VPS 上的 agent 精确统计，超额、到期和周期重置都在 VPS 上自动执行（不用开着本软件）。打开软件时每 10 分钟自动刷新一次。修改用户后记得同步。'));
+}
+
+async function doBatch(op) {
+  const n = await api.call('users:batch', [...userView.sel], op);
+  toast(`已处理 ${n} 个用户，同步后生效`, 'ok'); markDirty(); render();
+}
+function batchServers(type) {
+  const boxes = S.servers.map((s) => ({ s, cb: h('input', { type: 'checkbox' }) }));
+  modal({ title: type === 'addServers' ? `给 ${userView.sel.size} 个用户分配线路` : `取消 ${userView.sel.size} 个用户的线路`, body: h('div', {}, boxes.map(({ s, cb }) => h('label', { style: { display: 'block', margin: '6px 0' } }, cb, ' ', s.name, h('span', { class: 'muted' }, ' ' + s.host))), type === 'addServers' ? h('p', { class: 'muted' }, '已经有这些线路的用户会自动跳过；「全部服务器」的用户不受影响。') : null), buttons: [
+    { label: '取消' },
+    { label: '确定', class: 'primary', onClick: () => doBatch({ type, serverIds: boxes.filter((b) => b.cb.checked).map((b) => b.s.id) }) },
+  ] });
+}
+function batchExtend() {
+  const days = h('input', { type: 'number', value: 30, min: 1 });
+  modal({ title: `给 ${userView.sel.size} 个用户续期`, body: h('div', {}, field('增加天数（从到期日或今天起算，取较晚的）', days)), buttons: [{ label: '取消' }, { label: '续期', class: 'primary', onClick: () => doBatch({ type: 'extend', days: Number(days.value) || 30 }) }] });
+}
+function batchLimit() {
+  const gb = h('input', { type: 'number', placeholder: '0 = 不限', min: 0, step: 'any' });
+  modal({ title: `设置 ${userView.sel.size} 个用户的流量上限`, body: field('流量上限（GB）', gb), buttons: [{ label: '取消' }, { label: '确定', class: 'primary', onClick: () => doBatch({ type: 'limit', limitGB: Number(gb.value) || 0 }) }] });
 }
 
 async function editUser(orig) {
@@ -388,12 +473,26 @@ async function editUser(orig) {
   const name = h('input', { value: u.name });
   const note = h('input', { value: u.note || '', placeholder: '备注（可选）' });
   const limit = h('input', { type: 'number', value: u.limitGB || '', placeholder: '0 = 不限', min: 0, step: 'any' });
+  const reset = h('select', {}, Object.entries(RESET_LABEL).map(([k, l]) => h('option', { value: k }, l)));
+  reset.value = u.resetPeriod || 'none';
+  const resetDay = h('input', { type: 'number', min: 1, max: 28, value: u.resetDay || Math.min(28, new Date().getDate()) });
+  const resetDayBox = field('每月几号重置（1–28）', resetDay);
+  const syncReset = () => resetDayBox.classList.toggle('hidden', reset.value !== 'month');
+  reset.onchange = syncReset; syncReset();
+
+  const expMode = h('select', {}, h('option', { value: 'date' }, '指定到期日期'), h('option', { value: 'first' }, '首次使用后开始计时'), h('option', { value: 'never' }, '永久'));
+  expMode.value = u.expireAfterDays > 0 ? 'first' : (u.expireAt ? 'date' : 'never');
   const exp = h('input', { type: 'date', value: u.expireAt ? new Date(u.expireAt - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10) : '' });
-  const quick = h('div', { class: 'actions' }, [['+30天', 30], ['+90天', 90], ['+365天', 365], ['永久', 0]].map(([l, d]) => h('button', { class: 'small', onclick: () => {
-    if (!d) { exp.value = ''; return; }
+  const quick = h('div', { class: 'actions' }, [['+30天', 30], ['+90天', 90], ['+365天', 365]].map(([l, d]) => h('button', { class: 'small', onclick: () => {
     const base = exp.value ? new Date(exp.value) : new Date();
     base.setDate(base.getDate() + d); exp.value = base.toISOString().slice(0, 10);
   } }, l)));
+  const days = h('input', { type: 'number', min: 1, value: u.expireAfterDays || 30 });
+  const dateBox = h('div', {}, field('到期日期', exp), quick);
+  const firstBox = h('div', {}, field('有效天数', days, u.firstUsedAt ? `已于 ${fmtDate(u.firstUsedAt)} 首次使用` : '用户第一次连上节点时开始计时，适合卖"30 天卡"'));
+  const syncExp = () => { dateBox.classList.toggle('hidden', expMode.value !== 'date'); firstBox.classList.toggle('hidden', expMode.value !== 'first'); };
+  expMode.onchange = syncExp; syncExp();
+
   const enabled = h('input', { type: 'checkbox', checked: u.enabled });
   const all = h('input', { type: 'checkbox', checked: u.serverIds === '*' });
   const boxes = S.servers.map((s) => ({ s, cb: h('input', { type: 'checkbox', checked: u.serverIds === '*' || (u.serverIds || []).includes(s.id) }) }));
@@ -402,14 +501,20 @@ async function editUser(orig) {
   all.onchange = toggleList; toggleList();
   modal({ title: orig ? '编辑用户' : '添加用户', body: h('div', {},
     h('div', { class: 'row' }, field('名称', name), field('备注', note)),
-    h('div', { class: 'row' }, field('流量上限（GB）', limit), field('到期日期', exp)), quick,
+    h('div', { class: 'row' }, field('流量上限（GB）', limit), field('流量重置', reset)), resetDayBox,
+    field('到期方式', expMode), dateBox, firstBox,
     h('label', { class: 'f', style: { marginTop: '10px' } }, enabled, ' 启用'),
     h('h4', {}, '可用线路'), h('label', {}, all, ' 全部服务器（以后新加的也包含）'), list), buttons: [
     { label: '取消' },
     { label: '保存', class: 'primary', onClick: async () => {
       u.name = name.value.trim() || '未命名'; u.note = note.value.trim();
       u.limitGB = Number(limit.value) || 0;
-      u.expireAt = exp.value ? new Date(exp.value + 'T23:59:59').getTime() : null;
+      if (reset.value !== (u.resetPeriod || 'none')) u.resetAnchor = Date.now();
+      u.resetPeriod = reset.value;
+      u.resetDay = Math.min(28, Math.max(1, Number(resetDay.value) || 1));
+      if (expMode.value === 'date') { u.expireAt = exp.value ? new Date(exp.value + 'T23:59:59').getTime() : null; u.expireAfterDays = 0; }
+      else if (expMode.value === 'first') { u.expireAfterDays = Math.max(1, Number(days.value) || 30); u.expireAt = null; }
+      else { u.expireAt = null; u.expireAfterDays = 0; }
       u.enabled = enabled.checked;
       u.serverIds = all.checked ? '*' : boxes.filter((b) => b.cb.checked).map((b) => b.s.id);
       await api.call('col:upsert', 'users', u); markDirty(); render();
@@ -420,16 +525,19 @@ async function editUser(orig) {
 async function showSub(u) {
   const r = await api.call('user:sub', u.id);
   const body = h('div', {});
+  const row = (label, val, hint) => field(label, h('div', { class: 'row' }, h('input', { value: val, readonly: true }), h('button', { class: 'auto', onclick: () => copy(val) }, '复制')), hint);
   if (!r.url) body.append(h('p', { class: 'muted' }, '该用户还没有分配到任何服务器。'));
   else {
     body.append(h('div', { class: 'row', style: { alignItems: 'flex-start' } },
       h('img', { class: 'qr auto', src: r.qr }),
       h('div', {},
-        field('订阅地址（v2rayN / Shadowrocket / NekoBox）', h('div', { class: 'row' }, h('input', { value: r.url, readonly: true }), h('button', { class: 'auto', onclick: () => copy(r.url) }, '复制'))),
-        field('Clash Meta / Mihomo', h('div', { class: 'row' }, h('input', { value: r.clashUrl, readonly: true }), h('button', { class: 'auto', onclick: () => copy(r.clashUrl) }, '复制'))),
-        h('p', { class: 'muted' }, `状态：${r.status.reason} · 已用 ${fmtBytes(r.used)}。订阅由 VPS 上的 agent 提供，同步后才会更新。`))));
+        row('订阅地址（通用，自动识别客户端）', r.url, 'v2rayN / v2rayNG / NekoBox / Shadowrocket / Hiddify 直接用；Clash 和 sing-box 客户端也会自动拿到对应格式'),
+        row('Clash Meta / Mihomo', r.clashUrl),
+        row('sing-box（SFA / SFI / SFM，1.12 及以上）', r.singboxUrl),
+        h('p', { class: 'muted' }, `状态：${r.status.reason} · 已用 ${fmtBytes(r.used)}${r.expireAt ? ' · 到期 ' + fmtDate(r.expireAt) : ''}。`, h('a', { href: r.pageUrl, target: '_blank' }, '打开订阅信息页'), '（用户在浏览器打开订阅地址会看到用量和一键导入按钮）'))));
+    if (r.backups.length) body.append(h('h4', {}, '备用订阅地址（主地址打不开时用）'), r.backups.map((b) => row(b.server, b.url)));
   }
-  body.append(h('h4', {}, `节点链接（${r.links.length}）`), h('textarea', { readonly: true, style: { minHeight: '140px' } }, r.links.join('\n')));
+  body.append(h('h4', {}, `节点链接（${r.links.length}）`), h('textarea', { readonly: true, style: { minHeight: '120px' } }, r.links.join('\n')));
   modal({ title: `${u.name} 的订阅`, wide: true, body, buttons: [{ label: '复制全部链接', onClick: () => copy(r.links.join('\n')) }, { label: '关闭' }] });
 }
 
@@ -682,19 +790,53 @@ async function viewSettings(v) {
   const syncProxy = () => proxyRow.classList.toggle('hidden', proxyMode.value !== 'custom');
   proxyMode.onchange = syncProxy; syncProxy();
   const detected = h('span', { class: 'muted' });
+  const subDomain = h('input', { value: st.subDomain || '', placeholder: '留空 = 用用户的主服务器 IP；可填 sub.example.com 或 https://sub.example.com' });
+  const tz = h('select', {}, [['Asia/Shanghai', '北京时间（UTC+8）'], ['Asia/Hong_Kong', '香港'], ['Asia/Taipei', '台北'], ['Asia/Tokyo', '东京（UTC+9）'], ['Asia/Singapore', '新加坡'], ['Europe/London', '伦敦'], ['America/Los_Angeles', '洛杉矶'], ['America/New_York', '纽约'], ['UTC', 'UTC']].map(([k, l]) => h('option', { value: k }, l)));
+  tz.value = st.timezone || 'Asia/Shanghai';
+  const uw = st.upgradeWindow || {};
+  const uwOn = h('input', { type: 'checkbox', checked: !!uw.enabled });
+  const uwStart = h('input', { type: 'number', min: 0, max: 23, value: uw.start ?? 3 });
+  const uwEnd = h('input', { type: 'number', min: 0, max: 23, value: uw.end ?? 5 });
+  const tg = st.telegram || {};
+  const tgOn = h('input', { type: 'checkbox', checked: !!tg.enabled });
+  const tgToken = h('input', { value: tg.botToken || '', placeholder: '123456:ABC-DEF…（找 @BotFather 创建机器人获得）' });
+  const tgChat = h('input', { value: tg.chatId || '', placeholder: '你的 Telegram 用户 ID（找 @userinfobot 获得）' });
+  const tgDaily = h('input', { type: 'checkbox', checked: tg.daily !== false });
+  const tgHour = h('input', { type: 'number', min: 0, max: 23, value: tg.dailyHour ?? 9 });
+  const tgDays = h('input', { type: 'number', min: 0, value: tg.warnDays ?? 3 });
+  const tgPct = h('input', { type: 'number', min: 0, max: 100, value: tg.warnPercent ?? 90 });
+  const tgServer = h('select', { style: { width: 'auto', maxWidth: '200px' } }, S.servers.filter((x) => x.deployedAt).map((x) => h('option', { value: x.id }, x.name)));
+  const saveTg = async () => {
+    await api.call('settings:set', { telegram: { enabled: tgOn.checked, botToken: tgToken.value.trim(), chatId: tgChat.value.trim(), daily: tgDaily.checked, dailyHour: Number(tgHour.value) || 0, warnDays: Number(tgDays.value) || 0, warnPercent: Number(tgPct.value) || 0 } });
+  };
   v.append(h('h1', {}, '设置'), h('p', { class: 'sub' }, `数据目录：${info.dataDir}`));
   v.append(h('div', { class: 'grid g2' },
     h('div', { class: 'card' }, h('h3', {}, '服务器端'),
       field('订阅端口（对外开放）', subPort),
       h('div', { class: 'row' }, field('统计 API 端口（仅本机）', statsPort), field('agent 管理端口（仅本机）', adminPort)),
+      field('订阅域名（可选）', subDomain, '把一个域名解析到任意一台已部署的服务器，订阅地址就不会因为换服务器而改变'),
+      field('时区', tz, '流量重置、日报、升级时间段都按这个时区计算'),
       field('sing-box 内核渠道', sbBase, '默认是你仓库里名为 singbox 的 Release，GitHub Actions 每天自动构建官方最新正式版'),
       h('label', { class: 'f' }, sbAuto, ' VPS 自动升级 sing-box 内核（每 6 小时检查，升级前校验配置，失败自动回滚）'),
+      h('label', { class: 'f' }, uwOn, ' 只在指定时间段升级（避免白天断线）'),
+      h('div', { class: 'row' }, field('从几点', uwStart), field('到几点', uwEnd)),
       h('label', { class: 'f' }, autoUp, ' 自动检查软件更新'),
       h('button', { class: 'primary', onclick: async () => {
-        await api.call('settings:set', { subPort: Number(subPort.value) || 2096, statsPort: Number(statsPort.value) || 9092, adminPort: Number(adminPort.value) || 9091, singboxBase: sbBase.value.trim(), singboxAutoUpdate: sbAuto.checked, autoUpdate: autoUp.checked });
+        await api.call('settings:set', { subPort: Number(subPort.value) || 2096, statsPort: Number(statsPort.value) || 9092, adminPort: Number(adminPort.value) || 9091, singboxBase: sbBase.value.trim(), singboxAutoUpdate: sbAuto.checked, autoUpdate: autoUp.checked,
+          subDomain: subDomain.value.trim(), timezone: tz.value, upgradeWindow: { enabled: uwOn.checked, start: Number(uwStart.value) || 0, end: Number(uwEnd.value) || 0 } });
         toast('已保存，点「同步全部」后对各 VPS 生效（改了端口需要重新部署）', 'ok'); markDirty();
       } }, '保存')),
     h('div', {}, updateCard(),
+      h('div', { class: 'card' }, h('h3', {}, 'Telegram 通知'),
+        h('p', { class: 'muted' }, '由各台 VPS 上的 agent 直接发送，电脑关机也能收到：用户快到期 / 流量快用完 / 被停用、内核升级结果、每日流量报告。'),
+        h('label', { class: 'f' }, tgOn, ' 开启'),
+        field('机器人 Token', tgToken), field('接收消息的 Chat ID', tgChat),
+        h('label', { class: 'f' }, tgDaily, ' 每日报告'),
+        h('div', { class: 'row' }, field('日报时间（几点）', tgHour), field('提前几天提醒到期', tgDays), field('用到百分之几提醒', tgPct)),
+        h('div', { class: 'actions' },
+          h('button', { class: 'primary', onclick: async () => { await saveTg(); toast('已保存，点「同步全部」后各服务器生效', 'ok'); markDirty(); } }, '保存'),
+          tgServer.options.length ? tgServer : null,
+          tgServer.options.length ? h('button', { onclick: (e) => busy(e.currentTarget, async () => { await saveTg(); await api.call('server:sync', tgServer.value); await api.call('telegram:test', tgServer.value); toast('测试消息已发送，去 Telegram 看看', 'ok'); }) }, '从这台服务器发测试消息') : h('span', { class: 'muted' }, '部署服务器后可以发测试消息'))),
       h('div', { class: 'card' }, h('h3', {}, 'SSH 连接'),
         field('经本机代理连接 VPS', proxyMode, '国内直连 VPS 的 SSH 常被干扰；自动模式下直连失败会改走代理（密码错误不会重试）'), proxyRow,
         h('div', { class: 'actions' },
@@ -727,6 +869,7 @@ const VIEWS = { dash: viewDash, servers: viewServers, nodes: viewNodes, users: v
   renderBanner();
   render();
   showWhatsNew();
+  api.on('usage-updated', () => { if (page === 'users' || page === 'dash') { if (!document.querySelector('.modal-bg')) render(); } });
 })();
 
 // 更新后第一次打开：显示这次更新了什么（读取随软件打包的 CHANGELOG.md）

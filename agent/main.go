@@ -20,6 +20,7 @@ import (
 	"log"
 	"math/big"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -45,6 +46,11 @@ type Config struct {
 	// sing-box 自动升级
 	SingboxManifest   string `json:"singboxManifest"`
 	SingboxAutoUpdate bool   `json:"singboxAutoUpdate"`
+	// 内核自动升级时间段（本地小时，[开始, 结束)），为空表示随时
+	UpgradeWindow []int          `json:"upgradeWindow"`
+	Timezone      string         `json:"timezone"`
+	ServerName    string         `json:"serverName"`
+	Telegram      TelegramConfig `json:"telegram"`
 }
 
 type User struct {
@@ -54,6 +60,14 @@ type User struct {
 	LimitBytes int64  `json:"limitBytes"`
 	BaseUsed   int64  `json:"baseUsed"`
 	ExpireAt   int64  `json:"expireAt"`
+	// 流量重置：none / day / week / month / rolling30
+	ResetPeriod     string `json:"resetPeriod"`
+	ResetDay        int    `json:"resetDay"`
+	ResetAnchor     int64  `json:"resetAnchor"`
+	BaseUsedAt      int64  `json:"baseUsedAt"`
+	ExpireAfterDays int    `json:"expireAfterDays"`
+	FirstUsedAt     int64  `json:"firstUsedAt"`
+	Notify          bool   `json:"notify"` // 由这台服务器负责发该用户的提醒
 }
 
 type Sub struct {
@@ -63,6 +77,11 @@ type Sub struct {
 	Clash  string `json:"clash"`
 	Total  int64  `json:"total"`
 	Expire int64  `json:"expire"`
+	// 0.3.0 起
+	Singbox         string `json:"singbox"`
+	QR              string `json:"qr"`
+	URL             string `json:"url"`
+	ExpireAfterDays int    `json:"expireAfterDays"`
 }
 
 type Traffic struct {
@@ -82,6 +101,8 @@ type Agent struct {
 	started  time.Time
 	update   UpdateState
 	dirty    bool
+	st       AgentState
+	primed   bool // 启动后是否已完成第一次检查
 }
 
 func (a *Agent) path(name string) string { return filepath.Join(a.cfg.DataDir, name) }
@@ -134,10 +155,14 @@ func (a *Agent) saveTraffic() {
 		return
 	}
 	b, _ := json.Marshal(a.traffic)
+	sb := a.stateBytes()
 	a.dirty = false
 	a.mu.Unlock()
 	if err := writeFileAtomic(a.path("traffic.json"), b, 0600); err != nil {
 		log.Printf("保存流量失败: %v", err)
+	}
+	if err := writeFileAtomic(a.path("state.json"), sb, 0600); err != nil {
+		log.Printf("保存状态失败: %v", err)
 	}
 }
 
@@ -261,6 +286,7 @@ func (a *Agent) poll() {
 		return
 	}
 	a.lastErr = ""
+	now := time.Now().Unix()
 	for name, v := range stats {
 		// user>>>ID>>>traffic>>>uplink|downlink
 		parts := strings.Split(name, ">>>")
@@ -274,8 +300,10 @@ func (a *Agent) poll() {
 		}
 		if parts[3] == "uplink" {
 			t.Up += v
+			a.markActive(parts[1], v, 0, now)
 		} else {
 			t.Down += v
+			a.markActive(parts[1], 0, v, now)
 		}
 		a.dirty = true
 	}
@@ -288,15 +316,11 @@ func (a *Agent) computeDisabled() map[string]string {
 	defer a.mu.Unlock()
 	out := map[string]string{}
 	for id, u := range a.users {
-		t := a.traffic[id]
-		var used int64 = u.BaseUsed
-		if t != nil {
-			used += t.Up + t.Down
-		}
+		used, expire := a.effective(u)
 		switch {
 		case !u.Enabled:
 			out[id] = "disabled"
-		case u.ExpireAt > 0 && now >= u.ExpireAt:
+		case expire > 0 && now >= expire:
 			out[id] = "expired"
 		case u.LimitBytes > 0 && used >= u.LimitBytes:
 			out[id] = "quota"
@@ -360,12 +384,18 @@ func (a *Agent) reloadSingBox() error {
 
 // apply 根据当前禁用集合生成 config.json；force=true 时无论是否变化都重载
 func (a *Agent) apply(force bool) error {
+	now := time.Now()
+	a.mu.Lock()
+	a.rollPeriods(now)
+	a.rollDay(now)
+	a.mu.Unlock()
 	disabled := a.computeDisabled()
 	sig := signature(disabled)
 	a.mu.Lock()
 	changed := sig != a.applied
 	prev := a.disabled
 	a.disabled = disabled
+	a.checkNotices(now, prev, disabled)
 	a.mu.Unlock()
 	if !changed && !force {
 		return nil
@@ -452,13 +482,16 @@ func (a *Agent) handleSub(w http.ResponseWriter, r *http.Request) {
 	token := strings.TrimPrefix(r.URL.Path, "/sub/")
 	a.mu.Lock()
 	s, ok := a.subs[token]
-	var up, down int64
+	var up, down, used, expire int64
+	var reason string
 	if ok {
 		if t := a.traffic[s.UserID]; t != nil {
 			up, down = t.Up, t.Down
 		}
 		if u, ok2 := a.users[s.UserID]; ok2 {
-			down += u.BaseUsed
+			used, expire = a.effective(u)
+			down = used - up
+			reason = a.disabled[s.UserID]
 		}
 	}
 	a.mu.Unlock()
@@ -466,23 +499,32 @@ func (a *Agent) handleSub(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	format := r.URL.Query().Get("format")
-	if format == "" {
-		ua := strings.ToLower(r.UserAgent())
-		if strings.Contains(ua, "clash") || strings.Contains(ua, "mihomo") || strings.Contains(ua, "stash") {
-			format = "clash"
-		}
-	}
-	w.Header().Set("subscription-userinfo", fmt.Sprintf("upload=%d; download=%d; total=%d; expire=%d", up, down, s.Total, s.Expire))
-	w.Header().Set("profile-update-interval", "12")
-	w.Header().Set("Content-Disposition", "attachment; filename*=UTF-8''NodeDeck")
-	if format == "clash" {
-		w.Header().Set("Content-Type", "text/yaml; charset=utf-8")
-		io.WriteString(w, s.Clash)
+	format := detectFormat(r)
+	if format == "html" {
+		a.renderSubPage(w, r, s, used, s.Total, expire, reason)
 		return
 	}
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	io.WriteString(w, s.V2ray)
+	w.Header().Set("subscription-userinfo", fmt.Sprintf("upload=%d; download=%d; total=%d; expire=%d", up, down, s.Total, expire))
+	w.Header().Set("profile-update-interval", "12")
+	if s.URL != "" {
+		w.Header().Set("profile-web-page-url", s.URL+"?format=html")
+	}
+	w.Header().Set("Content-Disposition", "attachment; filename*=UTF-8''"+url.PathEscape(s.Name))
+	switch format {
+	case "clash":
+		w.Header().Set("Content-Type", "text/yaml; charset=utf-8")
+		io.WriteString(w, s.Clash)
+	case "singbox":
+		if s.Singbox == "" {
+			http.Error(w, "该订阅还没有 sing-box 格式，请在 NodeDeck 里同步一次", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		io.WriteString(w, s.Singbox)
+	default:
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		io.WriteString(w, s.V2ray)
+	}
 }
 
 type statsResp struct {
@@ -492,6 +534,12 @@ type statsResp struct {
 	Uptime   int64               `json:"uptime"`
 	LastErr  string              `json:"lastErr"`
 	Singbox  UpdateState         `json:"singbox"`
+	// 0.3.0 起
+	LastActive  map[string]int64 `json:"lastActive"`
+	FirstUsed   map[string]int64 `json:"firstUsed"`
+	PeriodStart map[string]int64 `json:"periodStart"`
+	Today       DayStat          `json:"today"`
+	Yesterday   DayStat          `json:"yesterday"`
 }
 
 func (a *Agent) handleAdmin(w http.ResponseWriter, r *http.Request) {
@@ -499,7 +547,8 @@ func (a *Agent) handleAdmin(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
 	case "/admin/stats":
 		a.mu.Lock()
-		resp := statsResp{Version: version, Traffic: a.traffic, Disabled: a.disabled, Uptime: int64(time.Since(a.started).Seconds()), LastErr: a.lastErr, Singbox: a.update}
+		resp := statsResp{Version: version, Traffic: a.traffic, Disabled: a.disabled, Uptime: int64(time.Since(a.started).Seconds()), LastErr: a.lastErr, Singbox: a.update,
+			LastActive: a.st.LastActive, FirstUsed: a.st.FirstUsed, PeriodStart: a.st.PeriodStart, Today: a.st.Day, Yesterday: a.st.Yesterday}
 		b, _ := json.Marshal(resp)
 		a.mu.Unlock()
 		w.Write(b)
@@ -519,6 +568,14 @@ func (a *Agent) handleAdmin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		json.NewEncoder(w).Encode(map[string]string{"message": msg})
+	case "/admin/notify-test":
+		err := a.sendTG(fmt.Sprintf("【%s】✅ NodeDeck 通知测试成功", a.serverName()))
+		if err != nil {
+			w.WriteHeader(500)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 	case "/admin/reset":
 		user := r.URL.Query().Get("user")
 		a.mu.Lock()
@@ -548,6 +605,7 @@ func loadConfig(path string) Config {
 func run(cfgPath string) {
 	a := &Agent{cfg: loadConfig(cfgPath), disabled: map[string]string{}, started: time.Now()}
 	a.loadTraffic()
+	a.loadState()
 	a.loadData()
 	if err := a.apply(true); err != nil {
 		log.Printf("启动时应用配置失败: %v", err)
@@ -674,6 +732,8 @@ func main() {
 		fmt.Println("sing-box", v)
 	case "update-singbox":
 		adminCall(*cfgPath, "/admin/update-singbox")
+	case "notify-test":
+		adminCall(*cfgPath, "/admin/notify-test")
 	case "gencert":
 		genCert(*host, *dir)
 	case "version":

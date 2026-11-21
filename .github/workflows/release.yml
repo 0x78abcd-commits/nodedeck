@@ -33,6 +33,8 @@ jobs:
           V="${{ github.event.inputs.version }}"
           [ -z "$V" ] && V="${GITHUB_REF_NAME#v}"
           echo "version=$V" >> "$GITHUB_OUTPUT"
+      - name: Test agent
+        run: cd agent && go vet ./... && go test ./...
       - name: Build agent
         run: |
           mkdir -p out
