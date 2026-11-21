@@ -75,6 +75,24 @@ command -v wget >/dev/null && echo WGET=1 || echo WGET=0
   return kv;
 }
 
+// 放行防火墙端口（ufw / firewalld），部署和每次同步都会执行，保证新加的端口也能通
+async function openFirewall(ssh, state, server) {
+  const ports = core.serverPorts(state, server);
+  const fw = ports.map(({ port, net, range }) => {
+    const nets = net === 'both' || !net ? ['tcp', 'udp'] : [net];
+    const spec = range ? `${range[0]}:${range[1]}` : String(port);
+    const fspec = range ? `${range[0]}-${range[1]}` : String(port);
+    return nets.map((n) => `[ -n "$UFW" ] && ufw allow ${spec}/${n} >/dev/null 2>&1; [ -n "$FWD" ] && firewall-cmd -q --permanent --add-port=${fspec}/${n} 2>/dev/null`).join('; ');
+  }).join('\n');
+  await ssh.run(`
+UFW=; FWD=
+if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then UFW=1; fi
+if command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; then FWD=1; fi
+${fw}
+[ -n "$FWD" ] && firewall-cmd -q --reload
+true`);
+}
+
 // 完整部署：安装依赖、sing-box、agent、证书、systemd、防火墙，然后同步配置
 async function deployServer(state, server, { resourcesDir, log }) {
   const errs = core.checkPortConflicts(state, server);
@@ -111,19 +129,10 @@ fi`);
     await ssh.writeFile('/etc/systemd/system/nodedeck-agent.service', AGENT_UNIT, '644');
 
     log('开启 BBR、放行防火墙端口 …');
-    const ports = core.serverPorts(state, server);
-    const fw = ports.map(({ port, net }) => {
-      const nets = net === 'both' || !net ? ['tcp', 'udp'] : [net];
-      return nets.map((n) => `ufw allow ${port}/${n} >/dev/null 2>&1 || true; firewall-cmd -q --permanent --add-port=${port}/${n} 2>/dev/null || true`).join('; ');
-    }).join('\n');
     await ssh.run(`
 grep -q nodedeck-bbr /etc/sysctl.conf 2>/dev/null || printf '\\n# nodedeck-bbr\\nnet.core.default_qdisc=fq\\nnet.ipv4.tcp_congestion_control=bbr\\n' >> /etc/sysctl.conf
-sysctl -p >/dev/null 2>&1 || true
-if command -v ufw >/dev/null && ufw status | grep -q active; then UFW=1; fi
-if command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; then FWD=1; fi
-${fw}
-[ -n "$FWD" ] && firewall-cmd -q --reload || true
-true`);
+sysctl -p >/dev/null 2>&1 || true`);
+    await openFirewall(ssh, state, server);
 
     await pushConfig(ssh, state, server, log);
     await ssh.run('systemctl daemon-reload && systemctl enable nodedeck-singbox nodedeck-agent >/dev/null 2>&1');
@@ -136,7 +145,7 @@ true`);
     }
     log('部署完成 ✔');
     return st;
-  });
+  }, { log });
 }
 
 async function pushConfig(ssh, state, server, log = () => {}) {
@@ -169,6 +178,7 @@ echo UP=$(uptime -p 2>/dev/null)
 async function syncServer(state, server, { log = () => {}, resourcesDir, appVersion } = {}) {
   return withSSH(server, async (ssh) => {
     await pushConfig(ssh, state, server, log);
+    await openFirewall(ssh, state, server);
     let restart = false;
     const cfgText = JSON.stringify(agentConfig(state), null, 2);
     const curCfg = (await ssh.exec(`cat ${DIR}/agent.json`)).stdout;
@@ -191,7 +201,7 @@ async function syncServer(state, server, { log = () => {}, resourcesDir, appVers
       }
     }
     return status(ssh);
-  });
+  }, { log });
 }
 
 async function updateSingbox(server) {
@@ -241,6 +251,36 @@ async function testSSH(server) {
   });
 }
 
+// 体检用：服务器上的服务状态、出网和出口 IP、本机监听的端口
+async function serverSelfCheck(server, { log } = {}) {
+  return withSSH(server, async (ssh) => {
+    const st = await status(ssh);
+    const r = await ssh.exec(`
+T=$( (curl -s -o /dev/null -w '%{http_code} %{time_total}' --max-time 8 https://www.gstatic.com/generate_204 || wget -q -T 8 -O /dev/null https://www.gstatic.com/generate_204 && echo '204 0') 2>/dev/null)
+echo "NET=$T"
+echo "IP=$(curl -s --max-time 8 'http://ip-api.com/line/?fields=query,country,isp' 2>/dev/null | tr '\\n' '|')"
+echo "LISTEN=$( (ss -lntuH 2>/dev/null || netstat -lntu 2>/dev/null) | awk '{print $1"/"$5}' | sed -E 's#/.*:#/#' | sort -u | tr '\\n' ' ')"
+echo "TIME=$(date +%s)"
+`, { root: false });
+    const kv = {};
+    for (const line of r.stdout.split('\n')) { const i = line.indexOf('='); if (i > 0) kv[line.slice(0, i)] = line.slice(i + 1).trim(); }
+    const [code, secs] = (kv.NET || '').split(' ');
+    const ipParts = (kv.IP || '').split('|');
+    const listening = new Set();
+    for (const t of (kv.LISTEN || '').split(' ')) { const m = t.match(/^(tcp|udp)\/(\d+)$/); if (m) listening.add(`${m[1]}/${m[2]}`); }
+    return {
+      status: st,
+      via: ssh.via,
+      netOk: code === '204',
+      netMs: secs ? Math.round(Number(secs) * 1000) : null,
+      // ip-api 的 line 格式按固定顺序输出：country, isp, query
+      exitCountry: ipParts[0] || '', exitIsp: ipParts[1] || '', exitIp: ipParts[2] || '',
+      listening: [...listening],
+      clockSkew: kv.TIME ? Math.round(Number(kv.TIME) - Date.now() / 1000) : null,
+    };
+  }, { log });
+}
+
 // 在服务器上测试 Reality 目标域名（延迟应尽量低）
 async function remoteTlsCheck(server, domain) {
   return withSSH(server, async (ssh) => {
@@ -250,4 +290,4 @@ async function remoteTlsCheck(server, domain) {
   });
 }
 
-module.exports = { deployServer, syncServer, updateSingbox, serverStatus, fetchStats, resetTraffic, serverLogs, uninstall, testSSH, remoteTlsCheck, agentConfig };
+module.exports = { deployServer, syncServer, updateSingbox, serverSelfCheck, serverStatus, fetchStats, resetTraffic, serverLogs, uninstall, testSSH, remoteTlsCheck, agentConfig };

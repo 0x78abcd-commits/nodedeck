@@ -17,6 +17,7 @@ function defaults() {
       singboxBase: '',
       singboxAutoUpdate: true,
       autoUpdate: true,
+      sshProxy: 'auto',
     },
     servers: [],
     landings: [],

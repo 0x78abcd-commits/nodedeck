@@ -469,11 +469,51 @@ function checkPortConflicts(state, server) {
   return errs;
 }
 
+// 给某个协议挑一个不冲突的随机端口（10000-60000，避开 20000-20100 等常见保留段以外不做特殊处理）
+function pickFreePort(state, server, protocolKey, avoid = []) {
+  const net = PROTOCOLS[protocolKey]?.net || 'tcp';
+  const used = new Set();
+  for (const { port, net: n } of serverPorts(state, server)) {
+    for (const x of (n === 'both' || !n ? ['tcp', 'udp'] : [n])) used.add(`${x}/${port}`);
+  }
+  for (const p of avoid) used.add(`${net}/${p}`);
+  for (let i = 0; i < 200; i++) {
+    const port = 10000 + crypto.randomInt(50000);
+    if (!used.has(`${net}/${port}`)) return port;
+  }
+  throw new Error('找不到空闲端口');
+}
+
+// 节点被墙后"一键换新"：换端口（固定端口的不换）、Reality 密钥和 short id、VMess 路径
+function rotateServer(state, server) {
+  const s = JSON.parse(JSON.stringify(server));
+  const p = s.protocols || {};
+  const changes = [];
+  const tmpState = { ...state, servers: (state.servers || []).map((x) => (x.id === s.id ? s : x)) };
+  for (const key of Object.keys(PROTOCOLS)) {
+    const pc = p[key];
+    if (!pc?.enabled) continue;
+    if (!pc.fixedPort) {
+      const old = pc.port;
+      pc.port = 0; // 先腾出旧端口，避免挑到自己
+      pc.port = pickFreePort(tmpState, s, key, [old]);
+      changes.push(`${PROTOCOLS[key].label} 端口 ${old} → ${pc.port}`);
+    }
+  }
+  if (p.vlessReality?.enabled) {
+    const kp = realityKeypair();
+    Object.assign(p.vlessReality, { privateKey: kp.privateKey, publicKey: kp.publicKey, shortId: randHex(4) });
+    changes.push('Reality 密钥和 short id 已更换');
+  }
+  if (p.vmess?.enabled) { p.vmess.path = '/' + randId(6); changes.push('VMess 路径已更换'); }
+  return { server: s, changes };
+}
+
 module.exports = {
   PROTOCOLS, REMOTE_DIR, GB,
   randId, randHex, randPassword, uuid, realityKeypair, defaultProtocols,
   newServer, newUser, userStatus, userUsedBytes, userHasServer, usersForServer,
   buildServerConfig, nodeEntries, shareLink, clashProxy, clientOutbound, clientTestConfig,
   userEntries, buildSubscription, buildAgentUsers, buildAgentSubs, subscriptionUrl,
-  serverPorts, checkPortConflicts, resolveForwardTarget, landingOutbound,
+  serverPorts, checkPortConflicts, resolveForwardTarget, landingOutbound, pickFreePort, rotateServer,
 };

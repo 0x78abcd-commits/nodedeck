@@ -92,8 +92,13 @@ jobs:
           # latest.yml + blockmap 是安装版自动更新必需的
           FILES=(dist/NodeDeck-Setup-$VERSION.exe dist/NodeDeck-Setup-$VERSION.exe.blockmap dist/NodeDeck-$VERSION-portable.exe dist/latest.yml)
           ls -la "${FILES[@]}"
+          # Release 说明取 CHANGELOG.md 里对应版本的一节
+          awk -v v="$VERSION" '/^## /{p = index($0, "## " v) == 1; next} p' CHANGELOG.md > notes.md
+          [ -s notes.md ] || echo "NodeDeck $VERSION" > notes.md
+          cat notes.md
           if gh release view "v$VERSION" >/dev/null 2>&1; then
             gh release upload "v$VERSION" "${FILES[@]}" --clobber
+            gh release edit "v$VERSION" --notes-file notes.md
           else
-            gh release create "v$VERSION" "${FILES[@]}" --title "NodeDeck $VERSION" --generate-notes --target "$GITHUB_SHA"
+            gh release create "v$VERSION" "${FILES[@]}" --title "NodeDeck $VERSION" --notes-file notes.md --target "$GITHUB_SHA"
           fi

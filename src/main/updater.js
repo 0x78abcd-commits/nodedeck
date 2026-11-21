@@ -27,6 +27,13 @@ function cmpVer(a, b) {
   return 0;
 }
 
+function notesText(n) {
+  if (!n) return '';
+  if (typeof n === 'string') return n;
+  if (Array.isArray(n)) return n.map((x) => x.note || '').join('\n');
+  return '';
+}
+
 class Updater {
   constructor(send) {
     this.send = send; // (status) => void
@@ -37,7 +44,7 @@ class Updater {
       autoUpdater.autoDownload = false;
       autoUpdater.autoInstallOnAppQuit = true;
       autoUpdater.on('checking-for-update', () => this.set({ state: 'checking' }));
-      autoUpdater.on('update-available', (info) => this.set({ state: 'available', latest: info.version, notes: info.releaseNotes || '' }));
+      autoUpdater.on('update-available', (info) => this.set({ state: 'available', latest: info.version, notes: notesText(info.releaseNotes) }));
       autoUpdater.on('update-not-available', (info) => this.set({ state: 'latest', latest: info.version }));
       autoUpdater.on('download-progress', (p) => this.set({ state: 'downloading', percent: Math.round(p.percent) }));
       autoUpdater.on('update-downloaded', (info) => this.set({ state: 'downloaded', latest: info.version }));

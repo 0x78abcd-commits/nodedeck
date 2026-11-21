@@ -64,9 +64,24 @@ function renderFoot() {
   if (st === 'downloaded') f.append(h('div', { class: 'upd', onclick: () => api.call('update:install') }, '● 更新已就绪，点此重启'));
 }
 
+let updSnoozed = false;
+function plainNotes(t) { return String(t || '').replace(/<li[^>]*>/gi, '• ').replace(/<\/(li|p|h\d|div)>|<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&').replace(/^#+\s*/gm, '').replace(/\*\*/g, '').replace(/\n{3,}/g, '\n\n').trim(); }
+
 function renderBanner() {
   const b = document.getElementById('banner');
   b.innerHTML = '';
+  const u = updateStatus;
+  if ((u.state === 'available' || u.state === 'downloaded') && u.latest && u.latest !== S.settings.skipVersion && !updSnoozed) {
+    b.classList.remove('hidden');
+    const notes = plainNotes(u.notes);
+    b.append(h('div', { style: { flex: 1 } }, h('b', {}, u.state === 'downloaded' ? `新版本 ${u.latest} 已下载好` : `发现新版本 ${u.latest}`), notes ? h('div', { class: 'notes' }, notes) : null),
+      u.state === 'downloaded'
+        ? h('button', { class: 'small primary', onclick: () => api.call('update:install') }, '重启并更新')
+        : h('button', { class: 'small primary', onclick: () => { api.call('update:download'); updSnoozed = true; renderBanner(); } }, info.portable ? '下载新版' : '立即更新'),
+      h('button', { class: 'small', onclick: async () => { await api.call('settings:set', { skipVersion: u.latest }); S.settings.skipVersion = u.latest; renderBanner(); toast('这一版不再提醒，有更新的版本时会再提示；也可以在「设置」里手动更新'); } }, '这一版不再提醒'),
+      h('button', { class: 'small', onclick: () => { updSnoozed = true; renderBanner(); } }, '稍后'));
+    return;
+  }
   const outdated = S.servers.filter(agentOutdated).length;
   if ((!dirty && (!outdated || snoozed)) || !S.servers.some((s) => s.deployedAt)) { b.classList.add('hidden'); return; }
   b.classList.remove('hidden');
@@ -78,8 +93,9 @@ function renderBanner() {
 async function syncAll() {
   const r = await api.call('server:syncAll');
   const bad = r.filter((x) => !x.ok);
-  if (bad.length) toast('部分服务器同步失败：\n' + bad.map((x) => `${x.name}: ${x.error}`).join('\n'), 'err');
-  else toast(`已同步 ${r.length} 台服务器`, 'ok');
+  if (bad.length === r.length && r.length) toast('同步失败：\n' + bad.map((x) => `${x.name}: ${x.error}`).join('\n'), 'err');
+  else if (bad.length) toast(`部分成功：${r.length - bad.length} 台已同步，${bad.length} 台失败\n` + bad.map((x) => `${x.name}: ${x.error}`).join('\n'), 'warn');
+  else toast(r.length ? `已同步 ${r.length} 台服务器` : '没有已部署的服务器', 'ok');
   if (!bad.length) dirty = false;
   await reload(); renderBanner();
   if (['servers', 'dash'].includes(page)) render();
@@ -144,11 +160,15 @@ async function viewServers(v) {
       h('td', {}, h('div', { class: 'actions' },
         h('button', { class: 'small primary', onclick: () => deployServer(s) }, s.deployedAt ? '重新部署' : '部署'),
         s.deployedAt ? h('button', { class: 'small', onclick: (e) => busy(e.currentTarget, async () => { await api.call('server:sync', s.id); toast('已同步', 'ok'); dirty = false; renderBanner(); render(); }) }, '同步') : null,
-        s.deployedAt ? h('button', { class: 'small', onclick: (e) => busy(e.currentTarget, async () => { await api.call('server:status', s.id); render(); }) }, '状态') : null,
-        s.deployedAt ? h('button', { class: 'small', onclick: (e) => busy(e.currentTarget, () => showLogs(s)) }, '日志') : null,
-        s.deployedAt ? h('button', { class: 'small', title: '立即检查并升级 sing-box 内核', onclick: (e) => busy(e.currentTarget, async () => { const m = await api.call('server:updateSingbox', s.id); toast(m, 'ok'); render(); }) }, '升级内核') : null,
+        h('button', { class: 'small', title: '一步步检查 SSH、服务、端口、是否被墙、节点真连', onclick: () => diagnoseServer(s) }, '体检'),
         h('button', { class: 'small', onclick: () => editServer(s) }, '编辑'),
-        h('button', { class: 'small danger', onclick: () => removeServer(s) }, '删除')))));
+        h('button', { class: 'small', onclick: (e) => menu(e.currentTarget, [
+          s.deployedAt && { label: '刷新状态', onClick: async () => { await api.call('server:status', s.id); toast('已刷新', 'ok'); render(); } },
+          s.deployedAt && { label: '查看日志', onClick: () => showLogs(s) },
+          s.deployedAt && { label: '升级 sing-box 内核', onClick: async () => { toast('正在检查内核更新…'); const m = await api.call('server:updateSingbox', s.id); toast(m, 'ok'); render(); } },
+          { label: '一键换新（被墙时用）', onClick: () => rotateServer(s) },
+          { label: '删除', danger: true, onClick: () => removeServer(s) },
+        ]) }, '更多 ▾')))));
   }
   v.append(h('div', { class: 'card' }, h('table', {}, h('thead', {}, h('tr', {}, ['服务器', '状态', '协议 / 端口', '出口', '操作'].map((t) => h('th', {}, t)))), tb)));
 }
@@ -177,8 +197,9 @@ async function editServer(orig) {
     const pc = s.protocols[k] || {};
     const en = h('input', { type: 'checkbox', checked: pc.enabled });
     const pt = I(pc.port, { type: 'number' });
+    const fixed = h('input', { type: 'checkbox', checked: !!pc.fixedPort });
     const extra = [];
-    const els = { en, pt };
+    const els = { en, pt, fixed };
     if (k === 'vlessReality') {
       els.rsni = I(pc.sni, { placeholder: 'www.microsoft.com' });
       extra.push(field('Reality 目标域名（可在工具箱检测）', els.rsni));
@@ -187,7 +208,7 @@ async function editServer(orig) {
     if (k === 'vmess') { els.path = I(pc.path); extra.push(field('WS 路径', els.path)); }
     if (k === 'hysteria2') { els.up = I(pc.upMbps || '', { type: 'number', placeholder: '不限' }); els.down = I(pc.downMbps || '', { type: 'number', placeholder: '不限' }); extra.push(h('div', { class: 'row' }, field('上行 Mbps', els.up), field('下行 Mbps', els.down))); }
     protoEls[k] = els;
-    grid.append(h('div', { class: 'proto' }, h('div', { class: 'head' }, h('label', {}, en, ' ', h('b', {}, label)), h('span', { class: 'muted' }, netw.toUpperCase())), field('端口', pt), extra));
+    grid.append(h('div', { class: 'proto' }, h('div', { class: 'head' }, h('label', {}, en, ' ', h('b', {}, label)), h('span', { class: 'muted' }, netw.toUpperCase())), field('端口', pt), h('label', { class: 'muted', style: { fontSize: '12px', display: 'block', margin: '-4px 0 8px' }, title: '勾上后，部署后端口不通或一键换新时都不会自动换这个端口' }, fixed, ' 固定端口（不自动更换）'), extra));
   }
 
   const body = h('div', {},
@@ -208,7 +229,7 @@ async function editServer(orig) {
     s.exit = exit.value ? { type: 'landing', landingId: exit.value } : { type: 'direct' };
     for (const [k] of PROTOS) {
       const e = protoEls[k];
-      s.protocols[k] = { ...s.protocols[k], enabled: e.en.checked, port: Number(e.pt.value) };
+      s.protocols[k] = { ...s.protocols[k], enabled: e.en.checked, port: Number(e.pt.value), fixedPort: e.fixed.checked };
       if (e.rsni) s.protocols[k].sni = e.rsni.value.trim() || 'www.microsoft.com';
       if (e.path) s.protocols[k].path = e.path.value.trim().startsWith('/') ? e.path.value.trim() : '/' + e.path.value.trim();
       if (e.up) { s.protocols[k].upMbps = Number(e.up.value) || 0; s.protocols[k].downMbps = Number(e.down.value) || 0; }
@@ -234,10 +255,46 @@ function deployServer(s) {
     { label: '开始部署', class: 'primary', close: false, onClick: async () => {
       if (running) return;
       running = true; append('开始部署 …');
-      try { await api.call('server:deploy', s.id); append('✔ 完成'); toast('部署成功', 'ok'); dirty = false; renderBanner(); render(); } catch (e) { append('✘ ' + e.message); } finally { running = false; }
+      try {
+        const r = await api.call('server:deploy', s.id);
+        append('✔ 完成');
+        if (r.portChanges?.length) append('以下端口因为不通已自动更换：' + r.portChanges.join('；'));
+        toast('部署成功', 'ok'); dirty = false; renderBanner(); render();
+      } catch (e) { append('✘ ' + e.message); } finally { running = false; }
     } },
   ] });
   return m;
+}
+
+const LEVEL_TAG = { ok: ['ok', '✔ 正常'], warn: ['warn', '⚠ 注意'], fail: ['bad', '✘ 异常'], skip: ['', '— 跳过'] };
+
+function diagnoseServer(s) {
+  const list = h('div', {});
+  const summary = h('div', {});
+  const addStep = (st) => {
+    const [cls, txt] = LEVEL_TAG[st.level] || ['', st.level];
+    list.append(h('div', { class: 'diag-step' }, h('span', { class: 'tag ' + cls }, txt), h('b', {}, st.title), h('div', { class: 'muted' }, st.text, st.link ? [' ', h('a', { href: st.link, target: '_blank' }, '查看详情')] : null)));
+  };
+  const off = api.on('task-log', (m) => { if (m.task === 'diag:' + s.id) { try { addStep(JSON.parse(m.line)); } catch (_) { /* ignore */ } } });
+  const running = h('p', { class: 'muted' }, h('span', { class: 'spin' }), ' 体检中…（本机不通的端口会从海外复核，大约要 20–40 秒；会把 IP 和端口发给 check-host.net）');
+  modal({ title: `体检 ${s.name}`, wide: true, body: h('div', {}, running, list, summary), onClose: off, buttons: [{ label: '关闭' }] });
+  api.call('server:diagnose', s.id).then((r) => {
+    running.remove();
+    const [cls, txt] = LEVEL_TAG[r.level];
+    summary.append(h('div', { class: 'card', style: { marginTop: '12px' } }, h('h3', {}, '结论 ', h('span', { class: 'tag ' + cls }, txt)),
+      h('ul', { style: { margin: 0, paddingLeft: '20px', lineHeight: 1.8 } }, r.advice.map((a) => h('li', {}, a))),
+      r.blocked ? h('div', { style: { marginTop: '8px' } }, h('button', { class: 'primary', onclick: () => rotateServer(s) }, '一键换新')) : null));
+  }).catch((e) => { running.remove(); summary.append(h('p', {}, '体检出错：' + e.message)); });
+}
+
+async function rotateServer(s) {
+  const ok = await confirmBox(`给「${s.name}」一键换新？\n\n会更换所有协议的端口（勾了「固定端口」的不换）、Reality 密钥和 VMess 路径，然后自动同步。\n用户的账号密码不变，但需要刷新订阅（或重新导入链接）才能继续用。\n\n如果是整个 IP 被墙，换新没有用，需要中转或换 IP。`, '换新');
+  if (!ok) return;
+  toast('正在换新并同步…');
+  const r = await api.call('server:rotate', s.id);
+  if (r.error) toast('已换新，但同步失败：' + r.error + '\n请稍后点「同步」', 'err');
+  else toast('已换新' + (r.synced ? '并同步' : '（服务器还没部署，部署时生效）') + '：\n' + r.changes.join('\n'), 'ok');
+  render();
 }
 
 async function showLogs(s) {
@@ -503,7 +560,7 @@ let toolTab = 'ip';
 async function viewTools(v) {
   await reload();
   v.append(h('h1', {}, '工具箱'), h('p', { class: 'sub' }, '无需登录即可使用'));
-  const tabs = [['ip', 'IP 画像'], ['ports', '端口检测'], ['dns', 'DNS 查询'], ['trace', '路由追踪'], ['reality', 'Reality 域名检测'], ['socks', 'SOCKS5 转二维码']];
+  const tabs = [['ip', 'IP 画像'], ['ports', '端口检测'], ['dns', 'DNS 查询'], ['trace', '路由追踪'], ['block', '被墙检测'], ['reality', 'Reality 域名检测'], ['socks', 'SOCKS5 转二维码']];
   const box = h('div', { class: 'card' });
   const tabBar = h('div', { class: 'tabs' }, tabs.map(([id, l]) => h('a', { class: toolTab === id ? 'active' : '', onclick: () => { toolTab = id; render(); } }, l)));
   v.append(tabBar, box);
@@ -530,6 +587,20 @@ const TOOLS = {
       out.append(h('p', { class: 'muted' }, '从本机发起 TCP 连接。国内测不通而 VPS 本身正常，通常说明端口或 IP 被墙。UDP 协议（Hy2/TUIC）无法这样检测，请用节点测试。'),
         h('div', {}, r.map((x) => h('span', { class: 'tag ' + (x.ok ? 'ok' : 'bad') }, `${x.port} ${x.ok ? x.ms + 'ms' : x.error}`))));
     }) }, '检测')), out);
+  },
+  block(box) {
+    const host = h('input', { placeholder: 'IP 或域名' }), port = h('input', { placeholder: '端口，例如 443', style: { maxWidth: '140px' } });
+    const out = h('div', {});
+    box.append(h('p', { class: 'muted' }, '同时从本机（国内）和海外多个节点（check-host.net）测 TCP 端口：海外通、本机不通 = 很可能被墙。会把 IP 和端口发给 check-host.net，大约需要 20 秒。'),
+      h('div', { class: 'row' }, host, port, h('button', { class: 'primary auto', onclick: (e) => busy(e.currentTarget, async () => {
+        out.innerHTML = '';
+        const r = await api.call('tools:block', host.value, port.value || 443);
+        out.append(h('div', { class: 'kv', style: { marginTop: '14px' } },
+          kv('结论', h('span', { class: 'tag ' + (r.verdict.level === 'ok' ? 'ok' : r.verdict.level === 'warn' ? 'warn' : 'bad') }, r.verdict.text)),
+          kv('本机', r.local.ok ? `通 · ${r.local.ms} ms` : `不通（${r.local.error}）`),
+          kv('海外', r.overseas ? h('div', {}, r.overseas.nodes.map((n) => h('span', { class: 'tag ' + (n.ok ? 'ok' : 'bad') }, `${n.country || n.node} ${n.city || ''} ${n.ok ? n.ms + 'ms' : '✘'}`))) : h('span', { class: 'muted' }, '检测失败：' + r.overseasError)),
+          kv('复核', h('a', { href: r.pingpe, target: '_blank' }, '在 ping.pe 多地测试'))));
+      }) }, '检测')), out);
   },
   dns(box) {
     const name = h('input', { placeholder: '域名' });
@@ -603,6 +674,14 @@ async function viewSettings(v) {
   const sbBase = h('input', { value: st.singboxBase });
   const sbAuto = h('input', { type: 'checkbox', checked: st.singboxAutoUpdate !== false });
   const autoUp = h('input', { type: 'checkbox', checked: st.autoUpdate !== false });
+  const mode = st.sshProxy && st.sshProxy !== 'auto' && st.sshProxy !== 'off' ? 'custom' : (st.sshProxy || 'auto');
+  const proxyMode = h('select', {}, h('option', { value: 'auto' }, '自动（直连不通时找本机 V2rayN / Clash 代理）'), h('option', { value: 'custom' }, '指定代理地址'), h('option', { value: 'off' }, '关闭（只直连）'));
+  proxyMode.value = mode;
+  const proxyUrl = h('input', { value: mode === 'custom' ? st.sshProxy : '', placeholder: 'socks5://127.0.0.1:10808 或 http://127.0.0.1:10809' });
+  const proxyRow = field('代理地址', proxyUrl);
+  const syncProxy = () => proxyRow.classList.toggle('hidden', proxyMode.value !== 'custom');
+  proxyMode.onchange = syncProxy; syncProxy();
+  const detected = h('span', { class: 'muted' });
   v.append(h('h1', {}, '设置'), h('p', { class: 'sub' }, `数据目录：${info.dataDir}`));
   v.append(h('div', { class: 'grid g2' },
     h('div', { class: 'card' }, h('h3', {}, '服务器端'),
@@ -616,6 +695,15 @@ async function viewSettings(v) {
         toast('已保存，点「同步全部」后对各 VPS 生效（改了端口需要重新部署）', 'ok'); markDirty();
       } }, '保存')),
     h('div', {}, updateCard(),
+      h('div', { class: 'card' }, h('h3', {}, 'SSH 连接'),
+        field('经本机代理连接 VPS', proxyMode, '国内直连 VPS 的 SSH 常被干扰；自动模式下直连失败会改走代理（密码错误不会重试）'), proxyRow,
+        h('div', { class: 'actions' },
+          h('button', { onclick: async () => {
+            const val = proxyMode.value === 'custom' ? proxyUrl.value.trim() : proxyMode.value;
+            if (proxyMode.value === 'custom' && !/^(socks5?h?|http):\/\/.+:\d+$/i.test(val)) { toast('代理地址格式应为 socks5://127.0.0.1:10808', 'err'); return; }
+            await api.call('settings:set', { sshProxy: val }); toast('已保存', 'ok');
+          } }, '保存'),
+          h('button', { onclick: (e) => busy(e.currentTarget, async () => { const l = await api.call('tools:localProxies'); detected.textContent = l.length ? '检测到：' + l.join('、') : '没有检测到本机代理'; }) }, '检测本机代理'), detected)),
       h('div', { class: 'card' }, h('h3', {}, '备份'), h('p', { class: 'muted' }, '备份文件包含服务器密码等敏感信息，请妥善保存。本地数据已用 Windows DPAPI 加密。'),
         h('div', { class: 'actions' },
           h('button', { onclick: async () => { const p = await api.call('data:export'); if (p) toast('已导出到 ' + p, 'ok'); } }, '导出备份'),
@@ -631,12 +719,25 @@ const VIEWS = { dash: viewDash, servers: viewServers, nodes: viewNodes, users: v
   api.on('update-status', (st) => {
     const prev = updateStatus.state;
     updateStatus = st; renderFoot();
-    if (st.state === 'available' && prev !== 'available') toast(`发现新版本 ${st.latest}，可在「设置」里更新`);
-    if (st.state === 'downloaded' && prev !== 'downloaded') toast('更新已下载，点击左下角重启安装', 'ok');
+    if (prev !== st.state) renderBanner();
     if (prev !== st.state && (page === 'settings' || page === 'dash')) render();
   });
   await reload();
   renderNav();
   renderBanner();
   render();
+  showWhatsNew();
 })();
+
+// 更新后第一次打开：显示这次更新了什么（读取随软件打包的 CHANGELOG.md）
+function verCmp(a, b) { const x = a.split('.').map(Number), y = b.split('.').map(Number); for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) - (y[i] || 0); return 0; }
+async function showWhatsNew() {
+  const last = S.settings.lastSeenVersion;
+  if (last === info.version) return;
+  await api.call('settings:set', { lastSeenVersion: info.version });
+  if (!last || !info.packaged) return;
+  const md = await api.call('app:changelog');
+  const parts = md.split(/^## /m).slice(1).map((sec) => ({ ver: (sec.match(/^(\d+\.\d+\.\d+)/) || [])[1], text: sec })).filter((x) => x.ver && verCmp(x.ver, last) > 0 && verCmp(x.ver, info.version) <= 0);
+  if (!parts.length) return;
+  modal({ title: `已更新到 ${info.version}`, wide: true, body: h('div', { style: { whiteSpace: 'pre-wrap', lineHeight: 1.7 } }, parts.map((p) => plainNotes('## ' + p.text)).join('\n\n')), buttons: [{ label: '知道了', class: 'primary' }] });
+}

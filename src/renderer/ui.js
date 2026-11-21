@@ -77,3 +77,16 @@ async function busy(btn, fn) {
   btn.innerHTML = '<span class="spin"></span> ' + old;
   try { return await fn(); } finally { btn.disabled = false; btn.innerHTML = old; }
 }
+
+// 下拉菜单：items = [{ label, onClick, danger }]，假值会被忽略
+function menu(anchor, items) {
+  document.querySelectorAll('.menu-pop').forEach((m) => m.remove());
+  const r = anchor.getBoundingClientRect();
+  const pop = h('div', { class: 'menu-pop', style: { top: r.bottom + 4 + 'px', left: Math.max(8, r.right - 180) + 'px' } },
+    items.filter(Boolean).map((it) => h('div', { class: 'menu-item' + (it.danger ? ' danger' : ''), onclick: async () => {
+      pop.remove();
+      try { await it.onClick(); } catch (e) { toast(e.message, 'err'); }
+    } }, it.label)));
+  document.body.append(pop);
+  setTimeout(() => document.addEventListener('mousedown', function close(e) { if (!pop.contains(e.target)) { pop.remove(); document.removeEventListener('mousedown', close); } }), 0);
+}

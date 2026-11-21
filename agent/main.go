@@ -402,7 +402,53 @@ func (a *Agent) apply(force bool) error {
 }
 
 // ---------- HTTP ----------
+// 订阅接口按 IP 限频：每分钟最多 30 次（防扫描、防暴力猜 token）
+type rateLimiter struct {
+	mu   sync.Mutex
+	hits map[string][]time.Time
+}
+
+func (l *rateLimiter) allow(ip string, limit int, window time.Duration) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := time.Now()
+	if l.hits == nil {
+		l.hits = map[string][]time.Time{}
+	}
+	if len(l.hits) > 10000 { // 防止内存无限增长
+		l.hits = map[string][]time.Time{}
+	}
+	list := l.hits[ip]
+	kept := list[:0]
+	for _, t := range list {
+		if now.Sub(t) < window {
+			kept = append(kept, t)
+		}
+	}
+	if len(kept) >= limit {
+		l.hits[ip] = kept
+		return false
+	}
+	l.hits[ip] = append(kept, now)
+	return true
+}
+
+var subLimiter rateLimiter
+
+func clientIP(r *http.Request) string {
+	host := r.RemoteAddr
+	if i := strings.LastIndex(host, ":"); i > 0 {
+		host = host[:i]
+	}
+	return strings.Trim(host, "[]")
+}
+
 func (a *Agent) handleSub(w http.ResponseWriter, r *http.Request) {
+	if !subLimiter.allow(clientIP(r), 30, time.Minute) {
+		w.Header().Set("Retry-After", "60")
+		http.Error(w, "too many requests", http.StatusTooManyRequests)
+		return
+	}
 	token := strings.TrimPrefix(r.URL.Path, "/sub/")
 	a.mu.Lock()
 	s, ok := a.subs[token]

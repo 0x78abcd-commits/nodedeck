@@ -6,6 +6,9 @@ const core = require('./core');
 const tools = require('./tools');
 const deploy = require('./deploy');
 const nodetest = require('./nodetest');
+const diagnose = require('./diagnose');
+const proxy = require('./proxy');
+const { setProxyProvider } = require('./ssh');
 const { Store } = require('./store');
 const { Updater, publish } = require('./updater');
 
@@ -47,7 +50,79 @@ async function fetchVia(port, url, timeoutMs) {
   return ses.fetch(url, { signal: AbortSignal.timeout(timeoutMs), cache: 'no-store' });
 }
 
-function sysFetch(url) { return net.fetch(url, { signal: AbortSignal.timeout(10000) }); }
+function sysFetch(url, opts = {}) { return net.fetch(url, { signal: AbortSignal.timeout(15000), ...opts }); }
+
+// SSH 直连不通时用的本机代理：设置里可选 自动 / 关闭 / 指定地址
+async function sshProxies(server) {
+  const mode = state().settings.sshProxy || 'auto';
+  if (mode === 'off') return [];
+  if (mode !== 'auto') { const p = proxy.parseProxyUrl(mode); return p ? [p] : []; }
+  let pac = '';
+  try { pac = await session.defaultSession.resolveProxy(`https://${server.host}`); } catch (_) { /* ignore */ }
+  return proxy.localCandidates(pac);
+}
+
+function testEntryFor(userId = 'owner') {
+  return (entry) => {
+    const s = state();
+    const user = s.users.find((u) => u.id === userId) || s.users.find((u) => u.id === 'owner');
+    return nodetest.testOutbound({ singboxPath, outbound: core.clientOutbound(s, entry, user), fetchVia });
+  };
+}
+
+function appVersionForAgent() { return app.isPackaged ? app.getVersion() : ''; }
+
+async function syncOne(id, log) {
+  const st = await deploy.syncServer(state(), getServer(id), { log, resourcesDir, appVersion: appVersionForAgent() });
+  store.upsert('servers', { id, lastStatus: st, syncedAt: Date.now() });
+  return st;
+}
+
+// 部署后从本机测 TCP 协议端口，不通的自动换端口（每个最多 3 次）；全部不通时不改动
+async function autoFixPorts(id, log) {
+  const tcpKeys = () => Object.entries(core.PROTOCOLS).filter(([k, m]) => m.net === 'tcp' && getServer(id).protocols?.[k]?.enabled).map(([k]) => k);
+  const keys = tcpKeys();
+  if (!keys.length) return [];
+  const srv = getServer(id);
+  log('从本机测试协议端口 …');
+  const first = await Promise.all(keys.map((k) => tools.tcpPing(srv.host, srv.protocols[k].port, 5000)));
+  if (first.every((r) => r.ok)) { log('端口自测通过 ✔'); return []; }
+  if (first.every((r) => !r.ok)) {
+    log('⚠ 所有 TCP 协议端口从本机都连不通：多半是云厂商安全组没放行，或 IP 被墙。已保留原端口，可以点「体检」查看原因（UDP 协议无法这样测）');
+    return [];
+  }
+  const changes = [];
+  for (let i = 0; i < keys.length; i++) {
+    if (first[i].ok) continue;
+    const k = keys[i];
+    const label = core.PROTOCOLS[k].label;
+    if (getServer(id).protocols[k].fixedPort) { log(`⚠ ${label} 端口 ${getServer(id).protocols[k].port} 不通，但它是固定端口，没有自动更换`); continue; }
+    const original = getServer(id).protocols[k].port;
+    let fixed = false;
+    const tried = [original];
+    for (let attempt = 1; attempt <= 3 && !fixed; attempt++) {
+      const cur = getServer(id);
+      const port = core.pickFreePort(state(), cur, k, tried);
+      tried.push(port);
+      store.upsert('servers', { id, protocols: { ...cur.protocols, [k]: { ...cur.protocols[k], port } } });
+      log(`${label} 端口 ${original} 不通，换成 ${port} 再试（第 ${attempt} 次）…`);
+      await syncOne(id, () => {});
+      const r = await tools.tcpPing(getServer(id).host, port, 5000);
+      if (r.ok) { fixed = true; changes.push(`${label}：${original} → ${port}`); log(`✔ ${label} 已换到端口 ${port}`); }
+    }
+    if (!fixed) {
+      const cur = getServer(id);
+      store.upsert('servers', { id, protocols: { ...cur.protocols, [k]: { ...cur.protocols[k], port: original } } });
+      await syncOne(id, () => {});
+      log(`⚠ ${label} 换了 3 个端口都不通，已改回 ${original}`);
+    }
+  }
+  return changes;
+}
+
+function readChangelog() {
+  try { return fs.readFileSync(path.join(__dirname, '..', '..', 'CHANGELOG.md'), 'utf8'); } catch (_) { return ''; }
+}
 
 function createWindow() {
   win = new BrowserWindow({
@@ -99,7 +174,7 @@ function registerIpc() {
     if (!fs.existsSync(singboxPath)) throw new Error('找不到内置 sing-box：' + singboxPath);
     const s = state();
     const user = s.users.find((u) => u.id === userId) || s.users.find((u) => u.id === 'owner');
-    return nodetest.testOutbound({ singboxPath, outbound: core.clientOutbound(s, entry, user), fetchVia });
+    return testEntryFor(user.id)(entry);
   });
   handle('landing:test', async (id) => {
     if (!fs.existsSync(singboxPath)) throw new Error('找不到内置 sing-box：' + singboxPath);
@@ -113,22 +188,21 @@ function registerIpc() {
   handle('server:testSsh', (srv) => deploy.testSSH(srv));
   handle('server:deploy', async (id) => {
     const srv = getServer(id);
-    const st = await deploy.deployServer(state(), srv, { resourcesDir, log: taskLogger('deploy:' + id) });
+    const log = taskLogger('deploy:' + id);
+    const st = await deploy.deployServer(state(), srv, { resourcesDir, log });
     store.upsert('servers', { id, deployedAt: Date.now(), lastStatus: st });
-    return st;
+    let portChanges = [];
+    try { portChanges = await autoFixPorts(id, log); } catch (e) { log('端口自测出错：' + e.message); }
+    return { ...st, portChanges };
   });
   handle('server:sync', async (id) => {
-    const srv = getServer(id);
-    const st = await deploy.syncServer(state(), srv, { log: taskLogger('sync:' + id), resourcesDir, appVersion: app.isPackaged ? app.getVersion() : '' });
-    store.upsert('servers', { id, lastStatus: st, syncedAt: Date.now() });
-    return st;
+    return syncOne(id, taskLogger('sync:' + id));
   });
   handle('server:syncAll', async () => {
     const results = [];
     for (const srv of state().servers.filter((x) => x.deployedAt)) {
       try {
-        const st = await deploy.syncServer(state(), srv, { resourcesDir, appVersion: app.isPackaged ? app.getVersion() : '' });
-        store.upsert('servers', { id: srv.id, lastStatus: st, syncedAt: Date.now() });
+        await syncOne(srv.id, () => {});
         results.push({ id: srv.id, name: srv.name, ok: true });
       } catch (e) { results.push({ id: srv.id, name: srv.name, ok: false, error: e.message }); }
     }
@@ -143,6 +217,23 @@ function registerIpc() {
     const r = await deploy.updateSingbox(getServer(id));
     store.upsert('servers', { id, lastStatus: r.status });
     return r.message;
+  });
+  handle('server:diagnose', async (id) => {
+    const log = taskLogger('diag:' + id);
+    return diagnose.diagnoseServer(state(), getServer(id), {
+      deploy, fetchFn: sysFetch, log: (step) => log(JSON.stringify(step)),
+      testEntry: fs.existsSync(singboxPath) ? testEntryFor('owner') : null,
+    });
+  });
+  handle('server:rotate', async (id) => {
+    const r = core.rotateServer(state(), getServer(id));
+    store.upsert('servers', r.server);
+    let synced = false;
+    let error = '';
+    if (getServer(id).deployedAt) {
+      try { await syncOne(id, taskLogger('sync:' + id)); synced = true; } catch (e) { error = e.message; }
+    }
+    return { changes: r.changes, synced, error };
   });
   handle('server:logs', (id) => deploy.serverLogs(getServer(id)));
   handle('server:uninstall', async (id) => {
@@ -200,12 +291,15 @@ function registerIpc() {
     return { local, remote };
   });
   handle('tools:socks', (text) => tools.socksToQr(text));
+  handle('tools:block', (host, port) => diagnose.blockCheck(sysFetch, host, port));
+  handle('tools:localProxies', async () => (await proxy.localCandidates('')).map(proxy.proxyLabel));
 
   // 更新
   handle('update:check', () => updater.check(true));
   handle('update:download', () => updater.download());
   handle('update:install', () => updater.install());
   handle('update:status', () => updater.status);
+  handle('app:changelog', () => readChangelog());
 
   // 备份
   handle('data:export', async () => {
@@ -227,6 +321,7 @@ function registerIpc() {
 app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(); win.focus(); } });
 app.whenReady().then(() => {
   store = new Store();
+  setProxyProvider(sshProxies);
   updater = new Updater((st) => send('update-status', st));
   registerIpc();
   createWindow();

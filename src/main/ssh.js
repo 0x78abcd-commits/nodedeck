@@ -1,26 +1,54 @@
 'use strict';
 const { Client } = require('ssh2');
+const { openTunnel, proxyLabel } = require('./proxy');
 
 function shq(s) { return `'${String(s).replace(/'/g, `'\\''`)}'`; }
+
+// 由主进程注入：返回可用的本机代理列表（[{type,host,port}]），没有则返回 []
+let proxyProvider = async () => [];
+function setProxyProvider(fn) { proxyProvider = fn; }
+
+// 记住哪些服务器上次是经代理连上的，下次先走代理
+const preferProxy = new Map();
+
+function isAuthError(e) {
+  return /authentication methods failed|Cannot parse privateKey|passphrase|Encrypted private key|bad decrypt/i.test(String(e && e.message));
+}
+
+function friendlyError(e, server) {
+  const m = String(e && e.message ? e.message : e);
+  const where = `${server.host}:${server.sshPort || 22}`;
+  if (/authentication methods failed/i.test(m)) return `SSH 登录失败：用户名、密码或私钥不对（这里要填 VPS 的 SSH 账号，root 居多）`;
+  if (/passphrase|Encrypted private key|bad decrypt/i.test(m)) return '私钥带密码短语，请在「私钥密码」里填写（或填写有误）';
+  if (/Cannot parse privateKey|Unsupported key format/i.test(m)) return '私钥格式不对：请粘贴完整的私钥内容（-----BEGIN … PRIVATE KEY----- 开头）';
+  if (/ECONNREFUSED/.test(m)) return `${where} 拒绝连接：SSH 端口填错，或服务器上 SSH 服务没开`;
+  if (/ENOTFOUND|EAI_AGAIN/.test(m)) return `找不到 ${server.host}：IP 或域名填错了`;
+  if (/EHOSTUNREACH|ENETUNREACH/.test(m)) return `到 ${server.host} 的网络不可达：检查本机网络，或这个 IP 是不是 IPv6 而本机没有 IPv6`;
+  if (/ECONNRESET/.test(m)) return `连接被重置：常见于国内到 VPS 的 SSH 被干扰，可开着代理软件再试`;
+  if (/timed? ?out|超时/i.test(m)) return `连不上 ${where}：服务器关机、IP 被墙，或云厂商安全组/防火墙没放行 SSH 端口`;
+  return 'SSH 连接失败：' + m;
+}
 
 class SSH {
   constructor(server) {
     this.server = server;
     this.conn = null;
+    this.via = null; // 经过的代理
     this.sudo = server.username && server.username !== 'root';
   }
 
-  connect() {
+  connect({ sock, readyTimeout = 15000 } = {}) {
     const s = this.server;
     return new Promise((resolve, reject) => {
       const conn = new Client();
-      const timer = setTimeout(() => { conn.end(); reject(new Error('SSH 连接超时')); }, 25000);
+      const timer = setTimeout(() => { conn.end(); reject(new Error('SSH 连接超时')); }, readyTimeout + 5000);
       conn.on('ready', () => { clearTimeout(timer); this.conn = conn; resolve(this); });
-      conn.on('error', (e) => { clearTimeout(timer); reject(new Error('SSH 连接失败：' + e.message)); });
+      conn.on('error', (e) => { clearTimeout(timer); reject(e); });
       const opts = {
         host: s.host, port: Number(s.sshPort) || 22, username: s.username || 'root',
-        readyTimeout: 20000, keepaliveInterval: 15000,
+        readyTimeout, keepaliveInterval: 15000,
       };
+      if (sock) opts.sock = sock;
       if (s.authType === 'key') {
         opts.privateKey = s.privateKey;
         if (s.passphrase) opts.passphrase = s.passphrase;
@@ -29,8 +57,48 @@ class SSH {
         opts.tryKeyboard = true;
         conn.on('keyboard-interactive', (_n, _i, _l, _p, finish) => finish([s.password]));
       }
-      conn.connect(opts);
+      try { conn.connect(opts); } catch (e) { clearTimeout(timer); reject(e); }
     });
+  }
+
+  // 先直连；超时或被重置时自动改走本机代理（密码错误不重试）
+  async connectSmart(log = () => {}) {
+    const s = this.server;
+    const port = Number(s.sshPort) || 22;
+    const key = `${s.host}:${port}`;
+    const order = preferProxy.get(key) ? ['proxy', 'direct'] : ['direct', 'proxy'];
+    let lastErr = null;
+    let triedProxy = false;
+    for (const mode of order) {
+      if (mode === 'direct') {
+        try { await this.connect({ readyTimeout: 12000 }); preferProxy.delete(key); return this; } catch (e) {
+          if (isAuthError(e)) throw new Error(friendlyError(e, s));
+          lastErr = e;
+          continue;
+        }
+      }
+      const proxies = await proxyProvider(s).catch(() => []);
+      for (const p of proxies) {
+        triedProxy = true;
+        let sock;
+        try {
+          sock = await openTunnel(p, s.host, port);
+          await this.connect({ sock, readyTimeout: 20000 });
+          this.via = proxyLabel(p);
+          preferProxy.set(key, true);
+          log(`直连不通，已改走本机代理 ${this.via}`);
+          return this;
+        } catch (e) {
+          if (sock) sock.destroy();
+          if (isAuthError(e)) throw new Error(friendlyError(e, s));
+          if (!lastErr) lastErr = e;
+        }
+      }
+    }
+    let msg = friendlyError(lastErr, s);
+    if (!triedProxy) msg += '（本机没有检测到代理软件；国内连 VPS 不稳定时，可以先打开 V2rayN / Clash 再试）';
+    else msg += '（直连和经本机代理都失败了）';
+    throw new Error(msg);
   }
 
   // 执行命令；root 权限需要时自动加 sudo -n
@@ -68,10 +136,10 @@ class SSH {
   end() { try { this.conn && this.conn.end(); } catch (_) { /* ignore */ } }
 }
 
-async function withSSH(server, fn) {
+async function withSSH(server, fn, { log } = {}) {
   const ssh = new SSH(server);
-  await ssh.connect();
+  await ssh.connectSmart(log);
   try { return await fn(ssh); } finally { ssh.end(); }
 }
 
-module.exports = { SSH, withSSH, shq };
+module.exports = { SSH, withSSH, shq, setProxyProvider, friendlyError };

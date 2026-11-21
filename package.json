@@ -34,7 +34,8 @@
     "files": [
       "src/**/*",
       "build/icon.png",
-      "package.json"
+      "package.json",
+      "CHANGELOG.md"
     ],
     "extraResources": [
       {
