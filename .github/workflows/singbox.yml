@@ -27,6 +27,10 @@ on:
 permissions:
   contents: write
 
+env:
+  # 改这里的编译选项后，即使版本号没变也会自动重新构建
+  SB_TAGS: with_quic,with_utls,with_acme,with_v2ray_api,with_wireguard
+
 concurrency:
   group: singbox-build
   cancel-in-progress: false
@@ -48,12 +52,14 @@ jobs:
             WANT="${WANT#v}"
           fi
           HAVE=""
+          HAVE_TAGS=""
           if gh release download singbox -p manifest.json -O /tmp/manifest.json 2>/dev/null; then
             HAVE=$(jq -r .version /tmp/manifest.json)
+            HAVE_TAGS=$(jq -r '.tags // ""' /tmp/manifest.json)
           fi
-          echo "官方最新: $WANT，当前: ${HAVE:-无}"
+          echo "官方最新: $WANT，当前: ${HAVE:-无}（编译选项: ${HAVE_TAGS:-未知}）"
           echo "version=$WANT" >> "$GITHUB_OUTPUT"
-          if [ "$WANT" = "$HAVE" ] && [ "${{ inputs.force }}" != "true" ]; then
+          if [ "$WANT" = "$HAVE" ] && [ "$HAVE_TAGS" = "$SB_TAGS" ] && [ "${{ inputs.force }}" != "true" ]; then
             echo "build=false" >> "$GITHUB_OUTPUT"
           else
             echo "build=true" >> "$GITHUB_OUTPUT"
@@ -74,7 +80,7 @@ jobs:
           LDF="$(cat release/LDFLAGS 2>/dev/null || true)"
           for a in amd64 arm64; do
             CGO_ENABLED=0 GOOS=linux GOARCH=$a go build -trimpath \
-              -tags "with_quic,with_utls,with_acme,with_v2ray_api" \
+              -tags "$SB_TAGS" \
               -ldflags "-X 'github.com/sagernet/sing-box/constant.Version=$V' $LDF -s -w -buildid=" \
               -o "$GITHUB_WORKSPACE/out/nodedeck-sing-box-linux-$a" ./cmd/sing-box
             gzip -9 "$GITHUB_WORKSPACE/out/nodedeck-sing-box-linux-$a"
@@ -84,7 +90,8 @@ jobs:
           jq -n --arg v "$V" \
             --arg a "$(sha256sum nodedeck-sing-box-linux-amd64.gz | cut -d' ' -f1)" \
             --arg b "$(sha256sum nodedeck-sing-box-linux-arm64.gz | cut -d' ' -f1)" \
-            '{version:$v, sha256:{amd64:$a, arm64:$b}}' > manifest.json
+            --arg t "$SB_TAGS" \
+            '{version:$v, tags:$t, sha256:{amd64:$a, arm64:$b}}' > manifest.json
           cat manifest.json
 
       - name: 发布

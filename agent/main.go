@@ -51,6 +51,7 @@ type Config struct {
 	Timezone      string         `json:"timezone"`
 	ServerName    string         `json:"serverName"`
 	Telegram      TelegramConfig `json:"telegram"`
+	UDPHops       []UDPHop       `json:"udpHops"`
 }
 
 type User struct {
@@ -607,6 +608,7 @@ func run(cfgPath string) {
 	a.loadTraffic()
 	a.loadState()
 	a.loadData()
+	a.applyHops()
 	if err := a.apply(true); err != nil {
 		log.Printf("启动时应用配置失败: %v", err)
 	}
@@ -702,7 +704,7 @@ func genCert(host, dir string) {
 func main() {
 	log.SetFlags(log.LstdFlags)
 	if len(os.Args) < 2 {
-		fmt.Println("用法: nodedeck-agent run|stats|apply|reset [user]|update-singbox|gencert|version  [-c /etc/nodedeck/agent.json]")
+		fmt.Println("用法: nodedeck-agent run|stats|apply|reset [user]|update-singbox|install-singbox|warp-register|apply-hops|notify-test|gencert|version  [-c /etc/nodedeck/agent.json]")
 		os.Exit(2)
 	}
 	cmd := os.Args[1]
@@ -712,6 +714,9 @@ func main() {
 	dir := fs.String("dir", "/etc/nodedeck", "证书目录")
 	manifest := fs.String("manifest", "", "sing-box manifest.json 地址")
 	bin := fs.String("bin", "/usr/local/bin/nodedeck-sing-box", "sing-box 安装路径")
+	out := fs.String("out", "/etc/nodedeck/warp.json", "WARP 账号保存位置")
+	force := fs.Bool("force", false, "重新注册 WARP")
+	warpURL := fs.String("api", warpAPI, "WARP 注册接口")
 	fs.Parse(os.Args[2:])
 	switch cmd {
 	case "run":
@@ -723,6 +728,12 @@ func main() {
 	case "reset":
 		user := fs.Arg(0)
 		adminCall(*cfgPath, "/admin/reset?user="+user)
+	case "warp-register":
+		warpRegisterCmd(*out, *force, *warpURL)
+	case "apply-hops":
+		a := &Agent{cfg: loadConfig(*cfgPath)}
+		a.applyHops()
+		fmt.Println("ok")
 	case "install-singbox":
 		v, err := installSingbox(*manifest, *bin)
 		if err != nil {

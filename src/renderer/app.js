@@ -9,7 +9,10 @@ const PROTOS = [
   ['hysteria2', 'Hysteria2', 'udp'],
   ['tuic', 'TUIC v5', 'udp'],
   ['anytls', 'AnyTLS', 'tcp'],
+  ['shadowsocks', 'Shadowsocks-2022', 'tcp+udp'],
 ];
+const WARP_SITE_LABELS = { openai: 'ChatGPT / OpenAI', anthropic: 'Claude', google: 'Google / Gemini', netflix: 'Netflix', disney: 'Disney+', spotify: 'Spotify', tiktok: 'TikTok' };
+function randStr(n = 16) { const c = 'abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789'; let r = ''; const a = crypto.getRandomValues(new Uint8Array(n)); for (const x of a) r += c[x % c.length]; return r; }
 const PROTO_LABEL = Object.fromEntries(PROTOS.map(([k, l]) => [k, l]));
 const GB = 1024 ** 3;
 
@@ -205,6 +208,24 @@ async function editServer(orig) {
   const exit = h('select', {}, h('option', { value: '' }, '直连（VPS 自己的 IP）'), S.landings.map((l) => h('option', { value: l.id }, `落地：${l.name}`)));
   exit.value = s.exit?.type === 'landing' ? s.exit.landingId : '';
 
+  const domain = I(s.domain, { placeholder: 'node1.example.com' });
+  const acmeEmail = I(s.acmeEmail, { placeholder: 'you@example.com' });
+  const acme = h('input', { type: 'checkbox', checked: !!s.acme });
+  const host6 = I(s.host6, { placeholder: '2001:db8::1' });
+  const ipMode = h('select', {}, h('option', { value: 'v4' }, '只出 IPv4 线路'), h('option', { value: 'dual' }, 'IPv4 + IPv6 线路'), h('option', { value: 'v6only' }, '只出 IPv6 线路（没填 IPv6 时自动用 IPv4）'));
+  ipMode.value = s.ipMode || 'v4';
+  const rt = s.routing || {};
+  const blockBT = h('input', { type: 'checkbox', checked: !!rt.blockBT });
+  const blockAds = h('input', { type: 'checkbox', checked: !!rt.blockAds });
+  const blockCN = h('input', { type: 'checkbox', checked: !!rt.blockCN });
+  const warpOn = h('input', { type: 'checkbox', checked: !!rt.warp?.enabled });
+  const warpSites = Object.entries(WARP_SITE_LABELS).map(([k, l]) => ({ k, cb: h('input', { type: 'checkbox', checked: (rt.warp?.sites || ['openai', 'netflix', 'google', 'disney', 'spotify']).includes(k) }), l }));
+  const warpBox = h('div', { style: { margin: '-4px 0 10px 24px' } },
+    h('div', {}, warpSites.map(({ cb, l }) => h('label', { style: { marginRight: '14px', whiteSpace: 'nowrap' } }, cb, ' ', l))),
+    h('p', { class: 'muted', style: { fontSize: '12px' } }, s.warp?.privateKey ? `已注册 WARP 账号（${s.warp.address4}）` : '同步时会在 VPS 上自动注册一个免费 WARP 账号', s.warp?.privateKey ? [' · ', h('a', { href: '#', onclick: (e) => { e.preventDefault(); s.warp = null; s.warpReset = true; toast('保存并同步后会重新注册'); } }, '重新注册')] : null));
+  const syncWarp = () => warpBox.classList.toggle('hidden', !warpOn.checked);
+  warpOn.onchange = syncWarp; syncWarp();
+
   const protoEls = {};
   const grid = h('div', { class: 'proto-grid' });
   for (const [k, label, netw] of PROTOS) {
@@ -220,7 +241,15 @@ async function editServer(orig) {
       extra.push(h('button', { class: 'small', onclick: async () => { const kp = await api.call('new:reality'); s.protocols.vlessReality.privateKey = kp.privateKey; s.protocols.vlessReality.publicKey = kp.publicKey; toast('已生成新密钥（保存并同步后生效）'); } }, '重新生成密钥'));
     }
     if (k === 'vmess') { els.path = I(pc.path); extra.push(field('WS 路径', els.path)); }
-    if (k === 'hysteria2') { els.up = I(pc.upMbps || '', { type: 'number', placeholder: '不限' }); els.down = I(pc.downMbps || '', { type: 'number', placeholder: '不限' }); extra.push(h('div', { class: 'row' }, field('上行 Mbps', els.up), field('下行 Mbps', els.down))); }
+    if (k === 'hysteria2') {
+      els.up = I(pc.upMbps || '', { type: 'number', placeholder: '不限' }); els.down = I(pc.downMbps || '', { type: 'number', placeholder: '不限' });
+      els.obfs = I(pc.obfs || '', { placeholder: '留空 = 不混淆' });
+      els.hop = I(pc.hopPorts || '', { placeholder: '例如 20000-30000，留空 = 不跳跃' });
+      extra.push(h('div', { class: 'row' }, field('上行 Mbps', els.up), field('下行 Mbps', els.down)),
+        field('salamander 混淆密码', h('div', { class: 'row' }, els.obfs, h('button', { class: 'small auto', onclick: () => { els.obfs.value = randStr(16); } }, '随机'))),
+        field('端口跳跃范围（UDP）', els.hop, '客户端在这段端口里随机切换，抗封端口和 QoS'));
+    }
+    if (k === 'shadowsocks') extra.push(h('p', { class: 'muted', style: { fontSize: '12px', margin: 0 } }, '2022-blake3-aes-128-gcm，多用户。适合给中转、落地或老客户端用。'));
     protoEls[k] = els;
     grid.append(h('div', { class: 'proto' }, h('div', { class: 'head' }, h('label', {}, en, ' ', h('b', {}, label)), h('span', { class: 'muted' }, netw.toUpperCase())), field('端口', pt), h('label', { class: 'muted', style: { fontSize: '12px', display: 'block', margin: '-4px 0 8px' }, title: '勾上后，部署后端口不通或一键换新时都不会自动换这个端口' }, fixed, ' 固定端口（不自动更换）'), extra));
   }
@@ -231,7 +260,18 @@ async function editServer(orig) {
     pwdBox, keyBox,
     h('div', { class: 'row' }, field('角色', role), field('出口', exit)),
     field('自签证书域名（Trojan/Hy2/TUIC/AnyTLS 的 SNI）', sni),
-    h('h4', {}, '协议'), grid);
+    h('h4', {}, '协议'), grid,
+    h('h4', {}, '正式证书（可选）'),
+    h('div', { class: 'row' }, field('域名', domain, '要先把这个域名的 A 记录指向服务器 IP（Cloudflare 请关掉小黄云）'), field('邮箱（可选）', acmeEmail)),
+    h('label', { class: 'f' }, acme, ' 自动申请 Let\'s Encrypt 证书（Trojan / Hy2 / TUIC / AnyTLS 改用正式证书，客户端不再需要跳过证书验证；需要服务器 80 端口空闲）'),
+    h('h4', {}, 'IPv6'),
+    h('div', { class: 'row' }, field('IPv6 地址', host6, s.lastStatus?.ipv6 ? h('span', {}, `服务器检测到：${s.lastStatus.ipv6} `, h('a', { href: '#', onclick: (e) => { e.preventDefault(); host6.value = s.lastStatus.ipv6; } }, '填入')) : '部署后会自动检测'), field('线路', ipMode)),
+    h('h4', {}, '路由规则'),
+    h('label', { class: 'f' }, blockBT, ' 屏蔽 BT 下载（防止 VPS 被版权投诉）'),
+    h('label', { class: 'f' }, blockAds, ' 屏蔽广告域名'),
+    h('label', { class: 'f' }, blockCN, ' 禁止访问国内网站和 IP（防止 VPS 被用来回国、IP 被标记）'),
+    h('label', { class: 'f' }, warpOn, ' 指定网站走 Cloudflare WARP（解决 ChatGPT / Netflix 等拒绝机房 IP、Google 验证码）', h('span', { class: 'tag warn', style: { marginLeft: '6px', display: 'inline-block' } }, '实验性')),
+    warpBox);
 
   const collect = () => {
     s.name = name.value.trim() || host.value.trim();
@@ -241,12 +281,22 @@ async function editServer(orig) {
     s.authType = auth.value; s.password = pwd.value; s.privateKey = key.value; s.passphrase = pass.value;
     s.role = role.value; s.tlsSni = sni.value.trim() || 'www.bing.com';
     s.exit = exit.value ? { type: 'landing', landingId: exit.value } : { type: 'direct' };
+    s.domain = domain.value.trim(); s.acmeEmail = acmeEmail.value.trim(); s.acme = acme.checked && !!s.domain;
+    if (acme.checked && !s.domain) throw new Error('开启正式证书需要先填域名');
+    s.host6 = host6.value.trim().replace(/^\[|\]$/g, ''); s.ipMode = ipMode.value;
+    s.routing = { blockBT: blockBT.checked, blockAds: blockAds.checked, blockCN: blockCN.checked, warp: { enabled: warpOn.checked, sites: warpSites.filter((x) => x.cb.checked).map((x) => x.k) } };
     for (const [k] of PROTOS) {
       const e = protoEls[k];
       s.protocols[k] = { ...s.protocols[k], enabled: e.en.checked, port: Number(e.pt.value), fixedPort: e.fixed.checked };
       if (e.rsni) s.protocols[k].sni = e.rsni.value.trim() || 'www.microsoft.com';
       if (e.path) s.protocols[k].path = e.path.value.trim().startsWith('/') ? e.path.value.trim() : '/' + e.path.value.trim();
       if (e.up) { s.protocols[k].upMbps = Number(e.up.value) || 0; s.protocols[k].downMbps = Number(e.down.value) || 0; }
+      if (e.obfs) s.protocols[k].obfs = e.obfs.value.trim();
+      if (e.hop) {
+        const hv = e.hop.value.trim().replace(/\s+/g, '').replace(':', '-');
+        if (hv && !/^\d+-\d+$/.test(hv)) throw new Error('端口跳跃范围格式应为 20000-30000');
+        s.protocols[k].hopPorts = hv;
+      }
     }
     if (!s.host) throw new Error('请填写地址');
     return s;
@@ -542,61 +592,131 @@ async function showSub(u) {
 }
 
 // ---------- 落地 ----------
+let landingGroup = '';
+const LANDING_TYPE = { socks: 'SOCKS5', http: 'HTTP', link: '节点链接' };
+function landingAddr(l) { return l.type === 'link' ? `${l.proto || 'link'}://${l.host || '?'}:${l.port || '?'}` : `${l.type}://${l.host}:${l.port}`; }
+function newLandingId() { return 'l' + Math.random().toString(36).slice(2, 9); }
+
+// 改了落地后，自动同步正在用它的已部署服务器
+async function syncLandingUsers(ids) {
+  const servers = S.servers.filter((x) => x.deployedAt && x.exit?.type === 'landing' && ids.includes(x.exit.landingId));
+  if (!servers.length) return;
+  toast(`正在同步使用该落地的 ${servers.length} 台服务器…`);
+  const bad = [];
+  for (const x of servers) { try { await api.call('server:sync', x.id); } catch (e) { bad.push(`${x.name}: ${e.message}`); } }
+  if (bad.length) toast('同步失败：\n' + bad.join('\n'), 'err'); else toast('已同步', 'ok');
+}
+
 async function viewLandings(v) {
   await reload();
-  v.append(h('div', { class: 'toolbar' }, h('div', {}, h('h1', {}, '落地'), h('p', { class: 'sub' }, '住宅 IP 等 SOCKS5 / HTTP 代理。在服务器设置里把「出口」选成落地，该服务器所有节点就从落地 IP 出去')), h('div', { class: 'spacer' }),
+  v.append(h('div', { class: 'toolbar' }, h('div', {}, h('h1', {}, '落地'), h('p', { class: 'sub' }, '住宅 IP、SOCKS5 / HTTP 代理或机场节点。在服务器设置里把「出口」选成落地，该服务器所有节点就从落地 IP 出去')), h('div', { class: 'spacer' }),
+    h('button', { onclick: () => importLandings('sub') }, '从订阅导入'),
+    h('button', { onclick: () => importLandings('text') }, '批量添加'),
     h('button', { class: 'primary', onclick: () => editLanding() }, '+ 添加落地')));
-  if (!S.landings.length) { v.append(h('div', { class: 'card empty' }, '还没有落地代理')); return; }
+  if (!S.landings.length) { v.append(h('div', { class: 'card empty' }, '还没有落地')); return; }
+  const groups = [...new Set(S.landings.map((l) => l.group || '').filter(Boolean))];
+  if (landingGroup && !groups.includes(landingGroup)) landingGroup = '';
+  if (groups.length) v.append(h('div', { class: 'tabs' }, [['', '全部'], ...groups.map((g) => [g, g])].map(([g, l]) => h('a', { class: landingGroup === g ? 'active' : '', onclick: () => { landingGroup = g; render(); } }, `${l} (${g ? S.landings.filter((x) => x.group === g).length : S.landings.length})`))));
   const tb = h('tbody');
-  for (const l of S.landings) {
+  for (const l of S.landings.filter((x) => !landingGroup || x.group === landingGroup)) {
     const res = h('td', { class: 'muted' }, '—');
     const usedBy = S.servers.filter((s) => s.exit?.type === 'landing' && s.exit.landingId === l.id);
     tb.append(h('tr', {},
-      h('td', {}, h('b', {}, l.name)), h('td', { class: 'mono' }, `${l.type}://${l.host}:${l.port}`), h('td', {}, usedBy.map((s) => h('span', { class: 'tag' }, s.name))), res,
+      h('td', {}, h('b', {}, l.name), l.group ? h('span', { class: 'tag' }, l.group) : null),
+      h('td', {}, h('span', { class: 'tag' }, LANDING_TYPE[l.type] || l.type), h('div', { class: 'mono muted' }, landingAddr(l))),
+      h('td', {}, usedBy.map((s) => h('span', { class: 'tag' }, s.name))), res,
       h('td', {}, h('div', { class: 'actions' },
         h('button', { class: 'small primary', onclick: (e) => busy(e.currentTarget, async () => {
           res.textContent = '测试中…';
           const r = await api.call('landing:test', l.id);
           res.innerHTML = '';
-          if (!r.ok) res.append(h('span', { class: 'tag bad' }, '不通'), h('div', { class: 'muted' }, r.error));
+          if (!r.ok) res.append(h('span', { class: 'tag bad' }, '不通'), h('div', { class: 'muted' }, String(r.error).split('\n')[0]));
           else res.append(h('span', { class: 'tag ok' }, r.latency + ' ms'), r.ip ? h('div', {}, `${r.ip.query} ${r.ip.country || ''} ${r.ip.isp || ''} `, h('span', { class: 'tag ' + (r.ip.hosting ? 'warn' : 'ok') }, r.ip.hosting ? '机房IP' : '住宅/非机房')) : null);
         }) }, '测试'),
         h('button', { class: 'small', onclick: () => editLanding(l) }, '编辑'),
-        h('button', { class: 'small danger', onclick: async () => { if (await confirmBox(`删除落地「${l.name}」？使用它的服务器会改为直连。`)) { await api.call('col:remove', 'landings', l.id); markDirty(); render(); } } }, '删除')))));
+        h('button', { class: 'small danger', onclick: async () => { if (await confirmBox(`删除落地「${l.name}」？使用它的服务器会改为直连。`)) { const used = usedBy.filter((x) => x.deployedAt).length; await api.call('col:remove', 'landings', l.id); markDirty(); render(); if (used) toast('使用它的服务器已改为直连，记得同步'); } } }, '删除')))));
   }
-  v.append(h('div', { class: 'card' }, h('table', {}, h('thead', {}, h('tr', {}, ['名称', '地址', '使用中', '测试（从本机直连）', '操作'].map((t) => h('th', {}, t)))), tb)));
+  v.append(h('div', { class: 'card' }, h('table', {}, h('thead', {}, h('tr', {}, ['名称', '类型 / 地址', '使用中', '测试（从本机直连）', '操作'].map((t) => h('th', {}, t)))), tb)));
 }
 
 function editLanding(orig) {
-  const l = orig ? { ...orig } : { id: 'l' + Math.random().toString(36).slice(2, 9), type: 'socks', port: 1080 };
-  const paste = h('input', { placeholder: '粘贴 ip:端口:用户:密码 或 socks5://用户:密码@ip:端口 自动识别' });
+  const l = orig ? { ...orig } : { id: newLandingId(), type: 'socks', port: 1080 };
+  const paste = h('input', { placeholder: '粘贴 ip:端口:用户:密码、socks5://… 或 vless:// trojan:// 等节点链接，自动识别' });
   const name = h('input', { value: l.name || '' });
-  const type = h('select', {}, h('option', { value: 'socks' }, 'SOCKS5'), h('option', { value: 'http' }, 'HTTP'));
+  const group = h('input', { value: l.group || '', placeholder: '例如 美国、日本（可选）', list: 'landingGroups' });
+  const groupList = h('datalist', { id: 'landingGroups' }, [...new Set(S.landings.map((x) => x.group).filter(Boolean))].map((g) => h('option', { value: g })));
+  const type = h('select', {}, Object.entries(LANDING_TYPE).map(([k, t]) => h('option', { value: k }, t)));
   type.value = l.type;
   const host = h('input', { value: l.host || '' }), port = h('input', { type: 'number', value: l.port || '' });
   const user = h('input', { value: l.username || '' }), pass = h('input', { value: l.password || '' });
-  paste.oninput = () => {
-    let s = paste.value.trim();
-    const m = s.match(/^(socks5h?|socks|http):\/\//i);
-    if (m) { type.value = m[1].toLowerCase().startsWith('http') ? 'http' : 'socks'; s = s.slice(m[0].length); }
-    s = s.replace(/#.*$/, '');
-    if (s.includes('@')) {
-      const at = s.lastIndexOf('@'); const a = s.slice(0, at), hp = s.slice(at + 1);
-      const i = a.indexOf(':'); user.value = decodeURIComponent(a.slice(0, i)); pass.value = decodeURIComponent(a.slice(i + 1));
-      const j = hp.lastIndexOf(':'); host.value = hp.slice(0, j); port.value = hp.slice(j + 1);
-    } else {
-      const p = s.split(':');
-      if (p.length >= 2) { host.value = p[0]; port.value = p[1]; user.value = p[2] || ''; pass.value = p.slice(3).join(':'); }
-    }
-    if (!name.value) name.value = host.value;
+  const link = h('textarea', { style: { minHeight: '70px' } }, l.type === 'link' ? l.link : '');
+  const proxyBox = h('div', {}, h('div', { class: 'row' }, field('地址', host), field('端口', port)), h('div', { class: 'row' }, field('用户名', user), field('密码', pass)));
+  const linkBox = field('节点链接（vless / vmess / trojan / ss / hysteria2 / tuic / anytls）', link);
+  const sw = () => { proxyBox.classList.toggle('hidden', type.value === 'link'); linkBox.classList.toggle('hidden', type.value !== 'link'); };
+  type.onchange = sw; sw();
+  paste.onchange = async () => {
+    const r = (await api.call('landing:parse', paste.value))[0];
+    if (!r || !r.ok) { toast('无法识别：' + (r?.error || ''), 'err'); return; }
+    const x = r.landing;
+    type.value = x.type; sw();
+    if (x.type === 'link') link.value = x.link; else { host.value = x.host; port.value = x.port; user.value = x.username || ''; pass.value = x.password || ''; }
+    if (!name.value) name.value = r.name;
   };
-  modal({ title: orig ? '编辑落地' : '添加落地', body: h('div', {}, field('快速识别', paste), h('div', { class: 'row' }, field('名称', name), field('类型', type)),
-    h('div', { class: 'row' }, field('地址', host), field('端口', port)), h('div', { class: 'row' }, field('用户名', user), field('密码', pass))), buttons: [
+  modal({ title: orig ? '编辑落地' : '添加落地', body: h('div', {}, field('快速识别（粘贴后按回车或点别处）', paste), h('div', { class: 'row' }, field('名称', name), field('分组', group), field('类型', type)), groupList, proxyBox, linkBox), buttons: [
     { label: '取消' },
     { label: '保存', class: 'primary', onClick: async () => {
-      Object.assign(l, { name: name.value.trim() || host.value.trim(), type: type.value, host: host.value.trim(), port: Number(port.value), username: user.value, password: pass.value });
-      if (!l.host || !l.port) throw new Error('请填写地址和端口');
-      await api.call('col:upsert', 'landings', l); markDirty(); render();
+      Object.assign(l, { name: name.value.trim(), group: group.value.trim(), type: type.value });
+      if (l.type === 'link') {
+        const r = (await api.call('landing:parse', link.value.trim()))[0];
+        if (!r || !r.ok || r.landing.type !== 'link') throw new Error('节点链接无法识别：' + (r?.error || ''));
+        Object.assign(l, r.landing, { name: l.name || r.name });
+        delete l.username; delete l.password;
+      } else {
+        Object.assign(l, { host: host.value.trim(), port: Number(port.value), username: user.value, password: pass.value });
+        delete l.link; delete l.proto;
+        if (!l.host || !l.port) throw new Error('请填写地址和端口');
+        if (!l.name) l.name = l.host;
+      }
+      await api.call('col:upsert', 'landings', l);
+      render();
+      if (orig) await syncLandingUsers([l.id]);
+    } },
+  ] });
+}
+
+// 批量添加 / 从订阅导入：先识别，再勾选要加的
+function importLandings(mode) {
+  const input = mode === 'sub' ? h('input', { placeholder: '机场订阅地址（通用 / v2rayN 格式）' }) : h('textarea', { style: { minHeight: '140px' }, placeholder: '每行一个：\nip:端口:用户:密码\nsocks5://用户:密码@ip:端口#名称\nvless://… trojan://… hysteria2://… 等节点链接' });
+  const group = h('input', { placeholder: '分组（可选），例如 美国' });
+  const result = h('div', {});
+  let parsed = [];
+  const showResult = () => {
+    result.innerHTML = '';
+    const ok = parsed.filter((x) => x.ok);
+    const bad = parsed.filter((x) => !x.ok);
+    const filter = h('input', { placeholder: '按名称筛选，例如 美国 / US', style: { marginBottom: '6px' } });
+    const rows = ok.map((x) => ({ x, cb: h('input', { type: 'checkbox', checked: true }) }));
+    const list = h('div', { style: { maxHeight: '260px', overflow: 'auto' } });
+    const draw = () => {
+      list.innerHTML = '';
+      const q = filter.value.trim().toLowerCase();
+      for (const r of rows) if (!q || r.x.name.toLowerCase().includes(q)) list.append(h('label', { style: { display: 'block', margin: '3px 0' } }, r.cb, ' ', r.x.name, h('span', { class: 'muted mono' }, `  ${LANDING_TYPE[r.x.landing.type]} ${r.x.landing.host}:${r.x.landing.port}`)));
+    };
+    filter.oninput = () => { const q = filter.value.trim().toLowerCase(); for (const r of rows) r.cb.checked = !q || r.x.name.toLowerCase().includes(q); draw(); };
+    draw();
+    result.append(...[h('p', {}, `识别到 ${ok.length} 个`, bad.length ? h('span', { class: 'muted' }, `，${bad.length} 行无法识别`) : null), ok.length > 8 ? filter : null, list].filter(Boolean));
+    result.rows = rows;
+  };
+  modal({ title: mode === 'sub' ? '从订阅导入落地' : '批量添加落地', wide: true, body: h('div', {}, input, h('div', { class: 'row', style: { marginTop: '8px' } }, group, h('button', { class: 'auto', onclick: (e) => busy(e.currentTarget, async () => {
+    parsed = mode === 'sub' ? await api.call('landing:fetchSub', input.value) : await api.call('landing:parse', input.value);
+    showResult();
+  }) }, '识别')), result), buttons: [
+    { label: '取消' },
+    { label: '添加选中的', class: 'primary', onClick: async () => {
+      const chosen = (result.rows || []).filter((r) => r.cb.checked);
+      if (!chosen.length) throw new Error('先点「识别」并勾选要添加的');
+      for (const r of chosen) await api.call('col:upsert', 'landings', { id: newLandingId(), name: r.x.name, group: group.value.trim(), ...r.x.landing });
+      toast(`已添加 ${chosen.length} 个落地`, 'ok'); render();
     } },
   ] });
 }

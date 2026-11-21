@@ -1,6 +1,11 @@
 'use strict';
 // 极简 UI 工具：h() 建元素、modal、toast、表单
 /* eslint-disable no-unused-vars */
+// 让 el.append(a, cond ? b : null) 忽略 null / undefined / false，避免页面上出现 "null"
+for (const proto of [Element.prototype, DocumentFragment.prototype]) {
+  const orig = proto.append;
+  proto.append = function (...nodes) { return orig.apply(this, nodes.filter((n) => n !== null && n !== undefined && n !== false)); };
+}
 function h(tag, attrs, ...children) {
   const el = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs || {})) {

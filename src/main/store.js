@@ -30,6 +30,7 @@ class Store {
   constructor() {
     this.file = path.join(app.getPath('userData'), 'data.bin');
     this.state = this.load();
+    if (this.state.servers.length) { try { this.save(); } catch (_) { /* ignore */ } } // 保存迁移后的数据（如新协议的密钥）
   }
 
   load() {
@@ -41,6 +42,7 @@ class Store {
       else text = raw.toString('utf8');
       const s = JSON.parse(text);
       const d = defaults();
+      for (const srv of s.servers || []) core.ensureProtocols(srv); // 旧数据补齐新协议
       return { ...d, ...s, settings: { ...d.settings, ...(s.settings || {}) } };
     } catch (e) {
       const bak = this.file + '.broken-' + Date.now();

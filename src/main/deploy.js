@@ -46,7 +46,10 @@ function agentConfig(state, server = {}) {
   const st = state.settings || {};
   const tg = st.telegram || {};
   const win = st.upgradeWindow && st.upgradeWindow.enabled ? [Number(st.upgradeWindow.start) || 0, Number(st.upgradeWindow.end) || 0] : [];
+  const hy = server.protocols?.hysteria2;
+  const hop = hy?.enabled ? core.hopRange(server, {}) : null;
   return {
+    udpHops: hop ? [{ from: hop[0], to: hop[1], port: Number(hy.port) }] : [],
     serverName: server.name || '',
     timezone: st.timezone || 'Asia/Shanghai',
     upgradeWindow: win,
@@ -156,6 +159,21 @@ sysctl -p >/dev/null 2>&1 || true`);
 }
 
 async function pushConfig(ssh, state, server, log = () => {}) {
+  // WARP 分流：第一次开启时在 VPS 上注册一个免费 WARP 账号
+  if (server.routing?.warp?.enabled && !server.warp?.privateKey) {
+    log('注册 Cloudflare WARP 账号 …');
+    const r = await ssh.exec(`${AGENT_BIN} warp-register ${server.warpReset ? '-force ' : ''}-out ${DIR}/warp.json`);
+    if (r.code !== 0) throw new Error('WARP 注册失败：' + (r.stderr || r.stdout).trim() + '（可以先在服务器设置里关掉 WARP 分流）');
+    server.warp = JSON.parse(r.stdout);
+    delete server.warpReset;
+    log(`WARP 账号已注册（${server.warp.address4}）`);
+  }
+  if (core.usesAcme(server)) {
+    try {
+      const ips = await require('dns').promises.resolve4(server.domain);
+      if (!ips.includes(server.host)) log(`⚠ 域名 ${server.domain} 解析到 ${ips.join(', ')}，不是这台服务器（${server.host}）。证书会申请失败：请把 A 记录指向服务器 IP，并关闭 Cloudflare 小黄云`);
+    } catch (e) { log(`⚠ 查不到域名 ${server.domain} 的解析（${e.code || e.message}），证书可能申请失败`); }
+  }
   const full = core.buildServerConfig(state, server);
   await ssh.writeFile(`${DIR}/config.full.json`, JSON.stringify(full, null, 2));
   await ssh.writeFile(`${DIR}/users.json`, JSON.stringify(core.buildAgentUsers(state, server)));
@@ -177,10 +195,11 @@ echo AGV=$(${AGENT_BIN} version 2>/dev/null)
 echo LOAD=$(cut -d' ' -f1-3 /proc/loadavg)
 echo MEM=$(free -m | awk '/Mem:/{print $3"/"$2"MB"}')
 echo UP=$(uptime -p 2>/dev/null)
+echo IP6=$(ip -6 addr show scope global 2>/dev/null | awk '/inet6/{print $2}' | cut -d/ -f1 | grep -v '^f[cd]' | head -1)
 `);
   const kv = {};
   for (const line of r.stdout.split('\n')) { const i = line.indexOf('='); if (i > 0) kv[line.slice(0, i)] = line.slice(i + 1).trim(); }
-  return { singbox: kv.SB === 'active', agent: kv.AG === 'active', version: kv.VER || '', agentVersion: kv.AGV || '', load: kv.LOAD, mem: kv.MEM, uptime: kv.UP };
+  return { singbox: kv.SB === 'active', agent: kv.AG === 'active', version: kv.VER || '', agentVersion: kv.AGV || '', ipv6: kv.IP6 || '', load: kv.LOAD, mem: kv.MEM, uptime: kv.UP };
 }
 
 // 同步：推送配置；如果 agent 版本和本软件不一致（软件更新过），顺便升级 agent

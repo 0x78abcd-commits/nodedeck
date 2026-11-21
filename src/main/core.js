@@ -15,7 +15,11 @@ const PROTOCOLS = {
   hysteria2: { label: 'Hysteria2', net: 'udp', defaultPort: 443 },
   tuic: { label: 'TUIC', net: 'udp', defaultPort: 8443 },
   anytls: { label: 'AnyTLS', net: 'tcp', defaultPort: 8443 },
+  shadowsocks: { label: 'Shadowsocks-2022', net: 'both', defaultPort: 8388 },
 };
+
+// 协议用到的网络：'both' 表示 TCP 和 UDP 都要
+function netsOf(net) { return net === 'both' || !net ? ['tcp', 'udp'] : [net]; }
 
 // ---------- 工具函数 ----------
 function randId(len = 8) {
@@ -46,8 +50,21 @@ function defaultProtocols() {
     hysteria2: { enabled: true, port: 443, upMbps: 0, downMbps: 0 },
     tuic: { enabled: true, port: 8443 },
     anytls: { enabled: true, port: 8443 },
+    shadowsocks: { enabled: false, port: 8388, serverKey: crypto.randomBytes(16).toString('base64') },
   };
 }
+
+// 旧版本数据补齐新协议的默认值
+function ensureProtocols(server) {
+  const p = server.protocols || (server.protocols = {});
+  if (!p.shadowsocks) p.shadowsocks = { enabled: false, port: 8388, serverKey: crypto.randomBytes(16).toString('base64') };
+  if (!p.shadowsocks.serverKey) p.shadowsocks.serverKey = crypto.randomBytes(16).toString('base64');
+  return server;
+}
+
+// SS2022 每个用户的密钥：由用户 UUID 派生（16 字节，base64）
+function ssUserKey(user) { return crypto.createHash('sha256').update('nodedeck-ss:' + user.uuid).digest().subarray(0, 16).toString('base64'); }
+const SS_METHOD = '2022-blake3-aes-128-gcm';
 
 function newServer(fields = {}) {
   return {
@@ -64,6 +81,11 @@ function newServer(fields = {}) {
     tlsSni: 'www.bing.com',
     exit: { type: 'direct' },
     protocols: defaultProtocols(),
+    routing: { blockBT: true, blockAds: false, blockCN: false, warp: { enabled: false, sites: ['openai', 'netflix', 'google', 'disney', 'spotify'] } },
+    ipMode: 'v4',
+    host6: '',
+    domain: '',
+    acme: false,
     deployedAt: null,
     ...fields,
   };
@@ -119,6 +141,10 @@ function usersForServer(state, server) {
 }
 
 function landingOutbound(landing, tag) {
+  if (landing.type === 'link') {
+    const { parseShareLink } = require('./links');
+    return parseShareLink(landing.link, tag).outbound;
+  }
   const o = {
     type: landing.type === 'http' ? 'http' : 'socks',
     tag,
@@ -130,15 +156,38 @@ function landingOutbound(landing, tag) {
   return o;
 }
 
+// 用了正式证书（填了域名并开启 ACME）时，客户端用域名做 SNI、不跳过证书验证
+function usesAcme(server) { return !!(server.acme && server.domain); }
+function tlsSniFor(server) { return usesAcme(server) ? server.domain : (server.tlsSni || 'www.bing.com'); }
+
 function tlsSelfSigned(server, alpn) {
-  const t = { enabled: true, server_name: server.tlsSni || 'www.bing.com', certificate_path: CERT_PATH, key_path: KEY_PATH };
+  const t = usesAcme(server)
+    ? { enabled: true, server_name: server.domain, certificate_provider: 'acme' }
+    : { enabled: true, server_name: server.tlsSni || 'www.bing.com', certificate_path: CERT_PATH, key_path: KEY_PATH };
   if (alpn) t.alpn = alpn;
   return t;
 }
 
+// 远程规则集（SagerNet 官方，GitHub 托管；VPS 在境外可以直接下载）
+function remoteRuleSet(tag) {
+  const repo = tag.startsWith('geoip-') ? 'sing-geoip' : 'sing-geosite';
+  return { type: 'remote', tag, format: 'binary', url: `https://raw.githubusercontent.com/SagerNet/${repo}/rule-set/${tag}.srs`, download_detour: 'direct' };
+}
+
+const WARP_SITES = {
+  openai: { label: 'ChatGPT / OpenAI', sets: ['geosite-openai'] },
+  anthropic: { label: 'Claude', sets: ['geosite-anthropic'] },
+  google: { label: 'Google / Gemini', sets: ['geosite-google'] },
+  netflix: { label: 'Netflix', sets: ['geosite-netflix'] },
+  disney: { label: 'Disney+', sets: ['geosite-disney'] },
+  spotify: { label: 'Spotify', sets: ['geosite-spotify'] },
+  tiktok: { label: 'TikTok', sets: ['geosite-tiktok'] },
+};
+
 // ---------- 服务端配置 ----------
 // opts.includeInactive: agent 需要完整配置（含已停用用户），由 agent 自己过滤；默认 true
 function buildServerConfig(state, server, opts = {}) {
+  ensureProtocols(server);
   const settings = state.settings || {};
   const includeInactive = opts.includeInactive !== false;
   const users = usersForServer(state, server).filter((u) => includeInactive || userStatus(u).active);
@@ -182,6 +231,7 @@ function buildServerConfig(state, server, opts = {}) {
       users: users.map((u) => ({ name: u.id, password: u.password })),
       tls: tlsSelfSigned(server, ['h3']),
     };
+    if (p.hysteria2.obfs) ib.obfs = { type: 'salamander', password: p.hysteria2.obfs };
     if (Number(p.hysteria2.upMbps) > 0) ib.up_mbps = Number(p.hysteria2.upMbps);
     if (Number(p.hysteria2.downMbps) > 0) ib.down_mbps = Number(p.hysteria2.downMbps);
     inbounds.push(ib);
@@ -199,6 +249,14 @@ function buildServerConfig(state, server, opts = {}) {
       type: 'anytls', tag: 'anytls-in', listen, listen_port: Number(p.anytls.port),
       users: users.map((u) => ({ name: u.id, password: u.password })),
       tls: tlsSelfSigned(server),
+    });
+  }
+
+  if (p.shadowsocks?.enabled) {
+    inbounds.push({
+      type: 'shadowsocks', tag: 'ss-in', listen, listen_port: Number(p.shadowsocks.port),
+      method: SS_METHOD, password: p.shadowsocks.serverKey,
+      users: users.map((u) => ({ name: u.id, password: ssUserKey(u) })),
     });
   }
 
@@ -228,7 +286,26 @@ function buildServerConfig(state, server, opts = {}) {
   if (fwdTags.length) rules.push({ inbound: fwdTags, outbound: 'direct' });
   rules.push({ ip_is_private: true, action: 'reject' });
 
-  return {
+  // 路由规则：屏蔽 BT / 广告 / 回国流量，指定网站走 WARP
+  const rt = server.routing || {};
+  const ruleSets = new Set();
+  if (rt.blockBT) rules.push({ protocol: 'bittorrent', action: 'reject' });
+  if (rt.blockAds) { rules.push({ rule_set: ['geosite-category-ads-all'], action: 'reject' }); ruleSets.add('geosite-category-ads-all'); }
+  if (rt.blockCN) { rules.push({ rule_set: ['geosite-cn', 'geoip-cn'], action: 'reject' }); ruleSets.add('geosite-cn'); ruleSets.add('geoip-cn'); }
+  const endpoints = [];
+  const w = server.warp;
+  if (rt.warp?.enabled && w?.privateKey) {
+    endpoints.push({
+      type: 'wireguard', tag: 'warp', mtu: 1280,
+      address: [w.address4 && `${w.address4}/32`, w.address6 && `${w.address6}/128`].filter(Boolean),
+      private_key: w.privateKey,
+      peers: [{ address: w.endpointHost || '162.159.192.1', port: Number(w.endpointPort) || 2408, public_key: w.peerPublicKey, allowed_ips: ['0.0.0.0/0', '::/0'], reserved: w.reserved || [0, 0, 0] }],
+    });
+    const sets = (rt.warp.sites || []).flatMap((k) => WARP_SITES[k]?.sets || []);
+    if (sets.length) { rules.push({ rule_set: sets, outbound: 'warp' }); sets.forEach((x) => ruleSets.add(x)); }
+  }
+
+  const config = {
     log: { level: 'warn', timestamp: true },
     dns: { servers: [{ type: 'local', tag: 'local' }] },
     inbounds,
@@ -241,6 +318,18 @@ function buildServerConfig(state, server, opts = {}) {
       },
     },
   };
+  if (endpoints.length) config.endpoints = endpoints;
+  if (ruleSets.size) {
+    config.route.rule_set = [...ruleSets].map(remoteRuleSet);
+    config.experimental.cache_file = { enabled: true, path: `${REMOTE_DIR}/cache.db` };
+  }
+  if (usesAcme(server)) {
+    config.certificate_providers = [{
+      type: 'acme', tag: 'acme', domain: [server.domain], data_directory: `${REMOTE_DIR}/acme`,
+      email: server.acmeEmail || undefined, disable_tls_alpn_challenge: true,
+    }];
+  }
+  return config;
 }
 
 function resolveForwardTarget(state, f) {
@@ -256,12 +345,24 @@ function resolveForwardTarget(state, f) {
 }
 
 // ---------- 节点入口（直连 + 经中转） ----------
+// 服务器的入口地址：只 IPv4 / 双栈 / 只 IPv6（没填 IPv6 地址时自动退回 IPv4）
+function serverHosts(server) {
+  const mode = server.ipMode || 'v4';
+  const v6 = String(server.host6 || '').trim();
+  if (mode === 'v6only' && v6) return [{ host: v6, suffix: '-v6' }];
+  const list = [{ host: server.host, suffix: '' }];
+  if (mode === 'dual' && v6) list.push({ host: v6, suffix: '-v6' });
+  return list;
+}
+
 function nodeEntries(state, server) {
   const out = [];
   const p = server.protocols || {};
-  for (const key of Object.keys(PROTOCOLS)) {
-    if (!p[key]?.enabled) continue;
-    out.push({ serverId: server.id, protocol: key, host: server.host, port: Number(p[key].port), label: `${server.name}-${PROTOCOLS[key].label}` });
+  for (const { host, suffix } of serverHosts(server)) {
+    for (const key of Object.keys(PROTOCOLS)) {
+      if (!p[key]?.enabled) continue;
+      out.push({ serverId: server.id, protocol: key, host, port: Number(p[key].port), label: `${server.name}-${PROTOCOLS[key].label}${suffix}` });
+    }
   }
   for (const f of state.forwards || []) {
     if (f.enabled === false || f.target?.type !== 'node' || f.target.serverId !== server.id) continue;
@@ -278,28 +379,47 @@ function nodeEntries(state, server) {
 
 function hostForUri(h) { return h.includes(':') && !h.startsWith('[') ? `[${h}]` : h; }
 
+// Hysteria2 端口跳跃范围，如 "20000-30000"；经中转的入口不跳跃
+function hopRange(server, entry) {
+  const r = String(server.protocols?.hysteria2?.hopPorts || '').trim();
+  const m = r.match(/^(\d+)\s*[-:]\s*(\d+)$/);
+  if (!m || entry.via) return null;
+  const a = Number(m[1]), b = Number(m[2]);
+  return a > 0 && b > a && b <= 65535 ? [a, b] : null;
+}
+
 function shareLink(state, entry, user) {
   const server = state.servers.find((s) => s.id === entry.serverId);
   const pc = server.protocols[entry.protocol];
   const host = hostForUri(entry.host);
   const port = entry.port;
   const name = encodeURIComponent(entry.label);
-  const sni = encodeURIComponent(server.tlsSni || 'www.bing.com');
+  const sni = encodeURIComponent(tlsSniFor(server));
+  const ins = usesAcme(server) ? 0 : 1;
   switch (entry.protocol) {
     case 'vlessReality':
       return `vless://${user.uuid}@${host}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${encodeURIComponent(pc.sni)}&fp=chrome&pbk=${pc.publicKey}&sid=${pc.shortId}&type=tcp#${name}`;
     case 'trojan':
-      return `trojan://${encodeURIComponent(user.password)}@${host}:${port}?security=tls&sni=${sni}&allowInsecure=1&type=tcp#${name}`;
+      return `trojan://${encodeURIComponent(user.password)}@${host}:${port}?security=tls&sni=${sni}&allowInsecure=${ins}&type=tcp#${name}`;
     case 'vmess': {
       const j = { v: '2', ps: entry.label, add: entry.host, port: String(port), id: user.uuid, aid: '0', scy: 'auto', net: 'ws', type: 'none', host: '', path: pc.path || '/', tls: '' };
       return 'vmess://' + Buffer.from(JSON.stringify(j)).toString('base64');
     }
-    case 'hysteria2':
-      return `hysteria2://${encodeURIComponent(user.password)}@${host}:${port}?sni=${sni}&insecure=1#${name}`;
+    case 'hysteria2': {
+      let q = `sni=${sni}&insecure=${ins}`;
+      if (pc.obfs) q += `&obfs=salamander&obfs-password=${encodeURIComponent(pc.obfs)}`;
+      const hop = hopRange(server, entry);
+      if (hop) q += `&mport=${hop[0]}-${hop[1]}`;
+      return `hysteria2://${encodeURIComponent(user.password)}@${host}:${port}?${q}#${name}`;
+    }
     case 'tuic':
-      return `tuic://${user.uuid}:${encodeURIComponent(user.password)}@${host}:${port}?congestion_control=bbr&alpn=h3&sni=${sni}&allow_insecure=1&udp_relay_mode=native#${name}`;
+      return `tuic://${user.uuid}:${encodeURIComponent(user.password)}@${host}:${port}?congestion_control=bbr&alpn=h3&sni=${sni}&allow_insecure=${ins}&udp_relay_mode=native#${name}`;
     case 'anytls':
-      return `anytls://${encodeURIComponent(user.password)}@${host}:${port}?sni=${sni}&insecure=1#${name}`;
+      return `anytls://${encodeURIComponent(user.password)}@${host}:${port}?sni=${sni}&insecure=${ins}#${name}`;
+    case 'shadowsocks': {
+      const ui = Buffer.from(`${SS_METHOD}:${pc.serverKey}:${ssUserKey(user)}`).toString('base64');
+      return `ss://${ui}@${host}:${port}#${name}`;
+    }
     default:
       return '';
   }
@@ -309,45 +429,60 @@ function clashProxy(state, entry, user) {
   const server = state.servers.find((s) => s.id === entry.serverId);
   const pc = server.protocols[entry.protocol];
   const base = { name: entry.label, server: entry.host, port: entry.port };
-  const sni = server.tlsSni || 'www.bing.com';
+  const sni = tlsSniFor(server);
+  const skip = !usesAcme(server);
   switch (entry.protocol) {
     case 'vlessReality':
       return { ...base, type: 'vless', uuid: user.uuid, network: 'tcp', tls: true, udp: true, flow: 'xtls-rprx-vision', servername: pc.sni, 'client-fingerprint': 'chrome', 'reality-opts': { 'public-key': pc.publicKey, 'short-id': pc.shortId } };
     case 'trojan':
-      return { ...base, type: 'trojan', password: user.password, sni, 'skip-cert-verify': true, udp: true };
+      return { ...base, type: 'trojan', password: user.password, sni, 'skip-cert-verify': skip, udp: true };
     case 'vmess':
       return { ...base, type: 'vmess', uuid: user.uuid, alterId: 0, cipher: 'auto', network: 'ws', 'ws-opts': { path: pc.path || '/' }, udp: true };
-    case 'hysteria2':
-      return { ...base, type: 'hysteria2', password: user.password, sni, 'skip-cert-verify': true };
+    case 'hysteria2': {
+      const o = { ...base, type: 'hysteria2', password: user.password, sni, 'skip-cert-verify': skip };
+      if (pc.obfs) { o.obfs = 'salamander'; o['obfs-password'] = pc.obfs; }
+      const hop = hopRange(server, entry);
+      if (hop) o.ports = `${hop[0]}-${hop[1]}`;
+      return o;
+    }
     case 'tuic':
-      return { ...base, type: 'tuic', uuid: user.uuid, password: user.password, sni, alpn: ['h3'], 'skip-cert-verify': true, 'congestion-controller': 'bbr', 'udp-relay-mode': 'native' };
+      return { ...base, type: 'tuic', uuid: user.uuid, password: user.password, sni, alpn: ['h3'], 'skip-cert-verify': skip, 'congestion-controller': 'bbr', 'udp-relay-mode': 'native' };
     case 'anytls':
-      return { ...base, type: 'anytls', password: user.password, sni, 'skip-cert-verify': true, udp: true, 'client-fingerprint': 'chrome' };
+      return { ...base, type: 'anytls', password: user.password, sni, 'skip-cert-verify': skip, udp: true, 'client-fingerprint': 'chrome' };
+    case 'shadowsocks':
+      return { ...base, type: 'ss', cipher: SS_METHOD, password: `${pc.serverKey}:${ssUserKey(user)}`, udp: true };
     default:
       return null;
   }
 }
 
-// sing-box 客户端出站（用于本地节点测试）
+// sing-box 客户端出站（本地节点测试、sing-box 订阅）
 function clientOutbound(state, entry, user, tag = 'proxy') {
   const server = state.servers.find((s) => s.id === entry.serverId);
   const pc = server.protocols[entry.protocol];
   const base = { tag, server: entry.host, server_port: entry.port };
-  const sni = server.tlsSni || 'www.bing.com';
-  const insecureTls = (alpn) => ({ enabled: true, server_name: sni, insecure: true, ...(alpn ? { alpn } : {}) });
+  const sni = tlsSniFor(server);
+  const tlsOf = (alpn) => ({ enabled: true, server_name: sni, ...(usesAcme(server) ? {} : { insecure: true }), ...(alpn ? { alpn } : {}) });
   switch (entry.protocol) {
     case 'vlessReality':
       return { ...base, type: 'vless', uuid: user.uuid, flow: 'xtls-rprx-vision', tls: { enabled: true, server_name: pc.sni, utls: { enabled: true, fingerprint: 'chrome' }, reality: { enabled: true, public_key: pc.publicKey, short_id: pc.shortId } } };
     case 'trojan':
-      return { ...base, type: 'trojan', password: user.password, tls: insecureTls() };
+      return { ...base, type: 'trojan', password: user.password, tls: tlsOf() };
     case 'vmess':
       return { ...base, type: 'vmess', uuid: user.uuid, security: 'auto', alter_id: 0, transport: { type: 'ws', path: pc.path || '/' } };
-    case 'hysteria2':
-      return { ...base, type: 'hysteria2', password: user.password, tls: insecureTls(['h3']) };
+    case 'hysteria2': {
+      const o = { ...base, type: 'hysteria2', password: user.password, tls: tlsOf(['h3']) };
+      if (pc.obfs) o.obfs = { type: 'salamander', password: pc.obfs };
+      const hop = hopRange(server, entry);
+      if (hop) { o.server_ports = [`${hop[0]}:${hop[1]}`]; o.hop_interval = '30s'; }
+      return o;
+    }
     case 'tuic':
-      return { ...base, type: 'tuic', uuid: user.uuid, password: user.password, congestion_control: 'bbr', tls: insecureTls(['h3']) };
+      return { ...base, type: 'tuic', uuid: user.uuid, password: user.password, congestion_control: 'bbr', tls: tlsOf(['h3']) };
     case 'anytls':
-      return { ...base, type: 'anytls', password: user.password, tls: insecureTls() };
+      return { ...base, type: 'anytls', password: user.password, tls: tlsOf() };
+    case 'shadowsocks':
+      return { ...base, type: 'shadowsocks', method: SS_METHOD, password: `${pc.serverKey}:${ssUserKey(user)}` };
     default:
       return null;
   }
@@ -537,6 +672,9 @@ function serverPorts(state, server) {
   const ports = [];
   const p = server.protocols || {};
   for (const [k, meta] of Object.entries(PROTOCOLS)) if (p[k]?.enabled) ports.push({ port: Number(p[k].port), net: meta.net });
+  const hop = p.hysteria2?.enabled ? hopRange(server, {}) : null;
+  if (hop) ports.push({ range: hop, net: 'udp' });
+  if (usesAcme(server)) ports.push({ port: 80, net: 'tcp', acme: true });
   for (const f of state.forwards || []) {
     if (f.relayServerId !== server.id || f.enabled === false) continue;
     const t = resolveForwardTarget(state, f);
@@ -549,12 +687,19 @@ function serverPorts(state, server) {
 function checkPortConflicts(state, server) {
   const used = new Map();
   const errs = [];
-  for (const { port, net } of serverPorts(state, server)) {
-    const nets = net === 'both' || !net ? ['tcp', 'udp'] : [net];
-    for (const n of nets) {
+  const ranges = [];
+  for (const { port, net, range } of serverPorts(state, server)) {
+    if (range) { ranges.push(range); continue; }
+    for (const n of netsOf(net)) {
       const key = `${n}/${port}`;
       if (used.has(key)) errs.push(`端口冲突：${key}`);
       used.set(key, true);
+    }
+  }
+  for (const [a, b] of ranges) {
+    for (const key of used.keys()) {
+      const [n, pt] = key.split('/');
+      if (n === 'udp' && Number(pt) >= a && Number(pt) <= b) errs.push(`Hysteria2 端口跳跃范围 ${a}-${b} 包含了 UDP 端口 ${pt}`);
     }
   }
   return errs;
@@ -564,13 +709,17 @@ function checkPortConflicts(state, server) {
 function pickFreePort(state, server, protocolKey, avoid = []) {
   const net = PROTOCOLS[protocolKey]?.net || 'tcp';
   const used = new Set();
-  for (const { port, net: n } of serverPorts(state, server)) {
-    for (const x of (n === 'both' || !n ? ['tcp', 'udp'] : [n])) used.add(`${x}/${port}`);
+  const ranges = [];
+  for (const { port, net: n, range } of serverPorts(state, server)) {
+    if (range) { ranges.push(range); continue; }
+    for (const x of netsOf(n)) used.add(`${x}/${port}`);
   }
-  for (const p of avoid) used.add(`${net}/${p}`);
+  for (const p of avoid) for (const x of netsOf(net)) used.add(`${x}/${p}`);
   for (let i = 0; i < 200; i++) {
     const port = 10000 + crypto.randomInt(50000);
-    if (!used.has(`${net}/${port}`)) return port;
+    if (netsOf(net).some((x) => used.has(`${x}/${port}`))) continue;
+    if (ranges.some(([a, b]) => port >= a && port <= b)) continue;
+    return port;
   }
   throw new Error('找不到空闲端口');
 }
@@ -597,6 +746,8 @@ function rotateServer(state, server) {
     changes.push('Reality 密钥和 short id 已更换');
   }
   if (p.vmess?.enabled) { p.vmess.path = '/' + randId(6); changes.push('VMess 路径已更换'); }
+  if (p.shadowsocks?.enabled) { p.shadowsocks.serverKey = crypto.randomBytes(16).toString('base64'); changes.push('Shadowsocks 密钥已更换'); }
+  if (p.hysteria2?.enabled && p.hysteria2.obfs) { p.hysteria2.obfs = randPassword(16); changes.push('Hysteria2 混淆密码已更换'); }
   return { server: s, changes };
 }
 
@@ -607,4 +758,5 @@ module.exports = {
   buildServerConfig, nodeEntries, shareLink, clashProxy, clientOutbound, clientTestConfig,
   userEntries, buildSubscription, buildAgentUsers, buildAgentSubs, subscriptionUrl,
   serverPorts, checkPortConflicts, resolveForwardTarget, landingOutbound, pickFreePort, rotateServer,
+  netsOf, ensureProtocols, ssUserKey, usesAcme, tlsSniFor, hopRange, serverHosts, WARP_SITES,
 };

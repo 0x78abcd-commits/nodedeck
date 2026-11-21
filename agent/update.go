@@ -24,7 +24,41 @@ import (
 
 type Manifest struct {
 	Version string            `json:"version"`
+	Tags    string            `json:"tags"`
 	Sha256  map[string]string `json:"sha256"`
+}
+
+// singboxTags 读取已安装 sing-box 的编译选项（version 输出里的 Tags: 行）
+func singboxTags(bin string) map[string]bool {
+	out, _ := exec.Command(bin, "version").Output()
+	m := map[string]bool{}
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "Tags:") {
+			for _, t := range strings.Split(strings.TrimPrefix(strings.TrimSpace(line), "Tags:"), ",") {
+				if t = strings.TrimSpace(t); t != "" {
+					m[t] = true
+				}
+			}
+		}
+	}
+	return m
+}
+
+// needsUpdate 版本不同，或者渠道里的编译选项比已安装的多（比如新增了 with_wireguard）
+func needsUpdate(m *Manifest, bin string) bool {
+	if m.Version != singboxVersion(bin) {
+		return true
+	}
+	if m.Tags == "" {
+		return false
+	}
+	have := singboxTags(bin)
+	for _, t := range strings.Split(m.Tags, ",") {
+		if t = strings.TrimSpace(t); t != "" && !have[t] {
+			return true
+		}
+	}
+	return false
 }
 
 type UpdateState struct {
@@ -127,7 +161,7 @@ func installSingbox(manifestURL, bin string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if singboxVersion(bin) == m.Version {
+	if !needsUpdate(m, bin) {
 		return m.Version, nil
 	}
 	newBin, err := downloadSingbox(manifestURL, m, bin)
@@ -167,7 +201,7 @@ func (a *Agent) updateSingbox() (string, error) {
 		return fail(err)
 	}
 	a.setUpdate(func(u *UpdateState) { u.Latest = m.Version })
-	if m.Version == cur {
+	if !needsUpdate(m, bin) {
 		msg := "已是最新版本 " + cur
 		a.setUpdate(func(u *UpdateState) { u.Message = msg })
 		return msg, nil
@@ -202,6 +236,9 @@ func (a *Agent) updateSingbox() (string, error) {
 		return fail(fmt.Errorf("新版 %s 启动失败，已回滚到 %s", m.Version, cur))
 	}
 	msg := fmt.Sprintf("已从 %s 升级到 %s", cur, m.Version)
+	if cur == m.Version {
+		msg = fmt.Sprintf("已更新 sing-box %s（新增编译选项：%s）", m.Version, m.Tags)
+	}
 	a.setUpdate(func(u *UpdateState) { u.Current = m.Version; u.UpdatedAt = time.Now().Unix(); u.Message = msg })
 	log.Print("sing-box " + msg)
 	return msg, nil
@@ -234,7 +271,7 @@ func (a *Agent) updateLoop() {
 			a.mu.Lock()
 			if err != nil {
 				a.notifyOnce("sb-err:"+a.update.Latest+":"+err.Error(), "⚠️ sing-box 自动升级没有完成："+err.Error())
-			} else if strings.HasPrefix(msg, "已从") {
+			} else if strings.HasPrefix(msg, "已从") || strings.HasPrefix(msg, "已更新") {
 				a.notifyOnce("sb-ok:"+a.update.Current, "⬆️ sing-box "+msg)
 			}
 			a.mu.Unlock()

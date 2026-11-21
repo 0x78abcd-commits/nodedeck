@@ -92,7 +92,7 @@ async function diagnoseServer(state, server, deps) {
     for (const [k, meta] of Object.entries(core.PROTOCOLS)) {
       const pc = server.protocols?.[k];
       if (!pc?.enabled) continue;
-      if (self.listening.length && !self.listening.includes(`${meta.net}/${pc.port}`)) missing.push(`${meta.label}:${pc.port}`);
+      if (self.listening.length && !core.netsOf(meta.net).every((n) => self.listening.includes(`${n}/${pc.port}`))) missing.push(`${meta.label}:${pc.port}`);
     }
     if (svcOk) add({ id: 'listen', title: '端口监听', level: missing.length ? 'fail' : 'ok', text: missing.length ? `这些端口没在监听：${missing.join('、')}` : '所有协议端口都在监听' });
     if (missing.length) advice.add('有端口没在监听：点「同步」重新下发配置，仍不行就看「日志」');
@@ -102,7 +102,7 @@ async function diagnoseServer(state, server, deps) {
   const tcpPorts = [];
   for (const [k, meta] of Object.entries(core.PROTOCOLS)) {
     const pc = server.protocols?.[k];
-    if (pc?.enabled && meta.net === 'tcp') tcpPorts.push({ key: k, label: meta.label, port: Number(pc.port) });
+    if (pc?.enabled && core.netsOf(meta.net).includes('tcp')) tcpPorts.push({ key: k, label: meta.label, port: Number(pc.port) });
   }
   const local = await Promise.all(tcpPorts.map(async (p) => ({ ...p, r: await tools.tcpPing(server.host, p.port, 5000) })));
   const localFail = local.filter((x) => !x.r.ok);
@@ -143,7 +143,7 @@ async function diagnoseServer(state, server, deps) {
     const portsAllOk = local.length && !localFail.length;
     if (results.length && !okOnes.length && portsAllOk) advice.add('端口都能连上，但所有协议真连都失败：可能是本机网络问题（先关掉其他代理 / TUN 软件再试），或协议特征被识别封锁（可以「一键换新」或加中转）；也可以点「日志」看服务器端有没有报错');
     if (badOnes.length && okOnes.length) advice.add(`部分协议能用（${okOnes.map((x) => core.PROTOCOLS[x.e.protocol].label).join('、')}），用不了的可能是端口被封或被运营商 QoS，可以「一键换新」或先用能用的`);
-    if (badOnes.some((x) => x.e.protocol === 'hysteria2' || x.e.protocol === 'tuic') && okOnes.some((x) => core.PROTOCOLS[x.e.protocol].net === 'tcp')) advice.add('UDP 协议（Hy2 / TUIC）不通而 TCP 协议正常：本地网络或运营商可能限制了 UDP，换用 TCP 协议即可');
+    if (badOnes.some((x) => x.e.protocol === 'hysteria2' || x.e.protocol === 'tuic') && okOnes.some((x) => core.netsOf(core.PROTOCOLS[x.e.protocol].net).includes('tcp'))) advice.add('UDP 协议（Hy2 / TUIC）不通而 TCP 协议正常：本地网络或运营商可能限制了 UDP，换用 TCP 协议即可');
   }
 
   if (!advice.size && steps.some((st) => st.level === 'fail')) advice.add('按上面标红的步骤排查；看不懂可以把这页截图发给我');

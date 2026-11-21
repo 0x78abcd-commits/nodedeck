@@ -13,7 +13,7 @@
 | 2 | 部署后自动测端口，不通自动换 | TMS 0.1.29 | TCP 协议部署完从本机测端口，不通换随机端口重试，最多 3 次；用户手填的端口不自动换 | ✅ 0.2.0 |
 | 3 | SSH 直连不通自动走本机代理 | TMS 0.1.32 | 国内直连 VPS 的 SSH 常被干扰；超时且检测到 V2rayN/Clash 本地端口时经代理重连，密码错误不重试 | ✅ 0.2.0 |
 | 4 | 每月流量自动重置 + 「在用」状态 | TMS 0.1.27 / 0.1.58 | 用户可设每月重置日，agent 到点清零；用户列表显示最近 30 秒是否在用 / 最后在用时间 | ✅ 0.3.0 |
-| 5 | 落地支持机场节点 + 批量导入 + 分组 | TMS 0.1.21 / 0.1.33 / 0.1.58 | 落地除 SOCKS5/HTTP 外支持 vless/vmess/trojan/ss/hy2 链接或订阅；一次粘贴多条；按国家分组筛选；改落地后自动同步相关服务器 | ⬜ |
+| 5 | 落地支持机场节点 + 批量导入 + 分组 | TMS 0.1.21 / 0.1.33 / 0.1.58 | 落地除 SOCKS5/HTTP 外支持 vless/vmess/trojan/ss/hy2 链接或订阅；一次粘贴多条；按国家分组筛选；改落地后自动同步相关服务器 | ✅ 0.4.0 |
 | 6 | Cloudflare 隧道模式 | newsuoha.sh | VPS 不开端口、IP 被墙也能用；用 sing-box 1.14 内置的 cloudflared 入站（需自有域名 + 隧道令牌）；配合优选 CDN 地址生成多个入口 | ⬜ |
 | 7 | 支持 Alpine / OpenRC、armv7 | newsuoha.sh | 很多便宜 NAT 小鸡是 Alpine；部署脚本和 agent 支持 OpenRC，CI 增加 armv7 构建 | ⬜ |
 | 8 | 内核升级时间段 | 自己的需求 | 只在设定时段（如凌晨 3–5 点）自动升级 sing-box，避免白天断线 | ✅ 0.3.0 |
@@ -22,10 +22,10 @@
 
 | # | 功能 | 来源 | 说明 | 状态 |
 |---|---|---|---|---|
-| 9 | 域名 + Let's Encrypt 正式证书 | TMS 0.1.34 | 填域名后检查解析，用 sing-box ACME 自动申请；Trojan/Hy2/TUIC/AnyTLS 不再需要"跳过证书验证" | ⬜ |
-| 10 | Shadowsocks 2022 + Hysteria2 混淆 | TMS 0.1.33 / 0.1.34、newsuoha.sh | 新增 SS2022 协议；Hy2 可选 salamander 混淆 | ⬜ |
+| 9 | 域名 + Let's Encrypt 正式证书 | TMS 0.1.34 | 填域名后检查解析，用 sing-box ACME 自动申请；Trojan/Hy2/TUIC/AnyTLS 不再需要"跳过证书验证" | ✅ 0.4.0 |
+| 10 | Shadowsocks 2022 + Hysteria2 混淆 | TMS 0.1.33 / 0.1.34、newsuoha.sh | 新增 SS2022 协议；Hy2 可选 salamander 混淆 | ✅ 0.4.0 |
 | 11 | 服务器监控 | TMS 0.1.28 | CPU、内存、网速、三网延迟（电信/联通/移动），1 小时–30 天曲线，本月流量，VPS 到期提醒（agent 采集） | ⬜ |
-| 12 | IPv6 线路 | TMS 0.1.66 | 服务器有公网 IPv6 时额外生成 v6 入口；可选"只出 IPv6" | ⬜ |
+| 12 | IPv6 线路 | TMS 0.1.66 | 服务器有公网 IPv6 时额外生成 v6 入口；可选"只出 IPv6" | ✅ 0.4.0 |
 | 13 | 用户批量操作 | TMS 0.1.23 / 0.1.70 | 搜索、翻页、勾选多人批量分配线路 / 续期 / 改流量 | ✅ 0.3.0 |
 | 14 | 订阅地址不依赖单台服务器 | 自己发现的问题 | 现在订阅地址用的是用户第一台服务器的 IP，那台换掉订阅就变；改为可设订阅域名，多台服务器都能提供 | ✅ 0.3.0 |
 | 15 | 更新提示显示改动 + "这一版不再提醒" | TMS 0.1.21 / 0.1.77 | 更新横幅列出本次改动，可忽略某个版本；加更新日志页 | ✅ 0.2.0 |
@@ -42,9 +42,9 @@
 | R3 | 首次使用才开始计时 | x-ui、Marzban on_hold | 到期时间从用户第一次连上开始算，适合卖"30 天卡" | ✅ 0.3.0 |
 | R4 | 订阅信息页 | x-ui、Hiddify | 浏览器打开订阅地址时显示用量、到期、二维码、各客户端一键导入；响应头带 profile-web-page-url | ✅ 0.3.0 |
 | R5 | Telegram 通知 | 3X-UI | 每日流量报告、用户快到期 / 快用完提醒、用户被停用、内核升级结果；由 VPS 上的 agent 发送，电脑关机也能收到 | ✅ 0.3.0 |
-| R6 | WARP 出站分流 | 3X-UI、argosbx | ChatGPT / Netflix / Google 等走 Cloudflare WARP，解决机房 IP 被拒、Google 验证码 | ⬜ |
-| R7 | 路由规则：屏蔽 BT / 广告 / 回国流量 | 3X-UI | 防止 VPS 被投诉或 IP 被标记 | ⬜ |
-| R8 | Hysteria2 端口跳跃 | fscarmen/sing-box | 一段 UDP 端口都转到 Hy2，抗 QoS / 封端口 | ⬜ |
+| R6 | WARP 出站分流 | 3X-UI、argosbx | ChatGPT / Netflix / Google 等走 Cloudflare WARP，解决机房 IP 被拒、Google 验证码 | ✅ 0.4.0 |
+| R7 | 路由规则：屏蔽 BT / 广告 / 回国流量 | 3X-UI | 防止 VPS 被投诉或 IP 被标记 | ✅ 0.4.0 |
+| R8 | Hysteria2 端口跳跃 | fscarmen/sing-box | 一段 UDP 端口都转到 Hy2，抗 QoS / 封端口 | ✅ 0.4.0 |
 | R9 | 节点被墙一键换新 | raven-subscribe | 一键换端口 + Reality 密钥 + ID 并同步，用户刷新订阅即可 | ✅ 0.2.0 |
 | R10 | 订阅接口限流 | S-UI-X | 订阅地址按 IP 限频，防扫描 | ✅ 0.2.0 |
 | R11 | Reality 目标自动扫描 | Hiddify-Reality-Scanner | 在 VPS 附近 IP 段里找支持 TLS1.3 + H2 的网站，自动推荐最佳 SNI | ⬜ |

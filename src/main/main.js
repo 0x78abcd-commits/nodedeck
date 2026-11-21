@@ -7,6 +7,7 @@ const tools = require('./tools');
 const deploy = require('./deploy');
 const nodetest = require('./nodetest');
 const diagnose = require('./diagnose');
+const links = require('./links');
 const proxy = require('./proxy');
 const { setProxyProvider } = require('./ssh');
 const { Store } = require('./store');
@@ -80,7 +81,7 @@ async function syncOne(id, log) {
 
 // 部署后从本机测 TCP 协议端口，不通的自动换端口（每个最多 3 次）；全部不通时不改动
 async function autoFixPorts(id, log) {
-  const tcpKeys = () => Object.entries(core.PROTOCOLS).filter(([k, m]) => m.net === 'tcp' && getServer(id).protocols?.[k]?.enabled).map(([k]) => k);
+  const tcpKeys = () => Object.entries(core.PROTOCOLS).filter(([k, m]) => core.netsOf(m.net).includes('tcp') && getServer(id).protocols?.[k]?.enabled).map(([k]) => k);
   const keys = tcpKeys();
   if (!keys.length) return [];
   const srv = getServer(id);
@@ -150,6 +151,23 @@ async function refreshUsage() {
   try { return await refreshing; } finally { refreshing = null; }
 }
 
+function parseLandingLines(lines) {
+  const out = [];
+  for (const raw of lines.map((x) => x.trim()).filter(Boolean).slice(0, 500)) {
+    try {
+      if (/^[a-z0-9+]+:\/\//i.test(raw) && !/^socks5?h?:\/\//i.test(raw) && !/^https?:\/\//i.test(raw)) {
+        const r = links.parseShareLink(raw, 'exit');
+        out.push({ ok: true, name: r.name, landing: { type: 'link', link: raw, host: r.outbound.server, port: r.outbound.server_port, proto: r.outbound.type } });
+      } else {
+        const isHttp = /^https?:\/\//i.test(raw);
+        const p = tools.parseSocks(raw.replace(/^https?:\/\//i, ''));
+        out.push({ ok: true, name: p.name, landing: { type: isHttp ? 'http' : 'socks', host: p.host, port: p.port, username: p.user, password: p.pass } });
+      }
+    } catch (e) { out.push({ ok: false, input: raw.slice(0, 80), error: e.message }); }
+  }
+  return out;
+}
+
 function readChangelog() {
   try { return fs.readFileSync(path.join(__dirname, '..', '..', 'CHANGELOG.md'), 'utf8'); } catch (_) { return ''; }
 }
@@ -213,6 +231,16 @@ function registerIpc() {
     return nodetest.testOutbound({ singboxPath, outbound: core.landingOutbound(l, 'proxy'), fetchVia });
   });
   handle('qr', (text) => tools.qr(text));
+  // 批量识别落地：每行一个，支持 ip:端口:用户:密码、socks5://、各种节点分享链接
+  handle('landing:parse', (text) => parseLandingLines(String(text).split(/\r?\n/)));
+  // 从机场订阅导入落地
+  handle('landing:fetchSub', async (url) => {
+    const r = await sysFetch(url.trim(), { headers: { 'User-Agent': 'v2rayN/7.0' } });
+    if (!r.ok) throw new Error('订阅返回 HTTP ' + r.status);
+    const list = links.splitSubscription(await r.text());
+    if (!list.length) throw new Error('订阅里没有识别到节点（可能是 Clash 格式，请换成通用订阅地址）');
+    return parseLandingLines(list);
+  });
 
   // 服务器
   handle('server:testSsh', (srv) => deploy.testSSH(srv));
