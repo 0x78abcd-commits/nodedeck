@@ -297,3 +297,9 @@ pre.log { background: var(--log-bg); border: 1px solid var(--line); border-radiu
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* Reality 目标检测结果 */
+.checktab { margin-top: 8px; font-size: 13px; }
+.checktab th, .checktab td { padding: 6px 10px; }
+.checktab td:first-child, .checktab th:first-child { padding-left: 0; width: 86px; }
+.checktab tbody tr:hover td { background: none; }

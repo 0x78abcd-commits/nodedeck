@@ -79,29 +79,43 @@ function traceroute(host, onLine) {
 }
 
 // 检测某个域名是否适合当 Reality 目标：TLS1.3 + H2 + X25519
-function realityCheck(domain, timeout = 8000) {
+// Reality 目标检测（本机）。和 VPS 上 agent 的 check-reality 同一套标准、同样的四项：
+// TLS 1.3、HTTP/2、X25519、证书有效。先不加限制握手读取对方支持什么，再只允许 TLS 1.3 + X25519 握手确认密钥交换。
+function tlsHandshake(d, opts, timeout) {
   return new Promise((resolve) => {
-    const d = domain.trim().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
     const t0 = Date.now();
-    const sock = tls.connect({ host: d, port: 443, servername: d, ALPNProtocols: ['h2', 'http/1.1'], rejectUnauthorized: false });
+    let sock;
+    try {
+      sock = tls.connect({ host: d, port: opts.port || 443, servername: d, ALPNProtocols: ['h2', 'http/1.1'], rejectUnauthorized: false, ...opts });
+    } catch (e) { resolve({ error: e.message }); return; }
     const finish = (r) => { sock.destroy(); resolve(r); };
-    sock.setTimeout(timeout, () => finish({ domain: d, ok: false, error: '连接超时' }));
-    sock.once('error', (e) => finish({ domain: d, ok: false, error: e.code || e.message }));
-    sock.once('secureConnect', () => {
-      const ms = Date.now() - t0;
-      const proto = sock.getProtocol();
-      const alpn = sock.alpnProtocol || '';
-      const key = sock.getEphemeralKeyInfo() || {};
-      const cert = sock.getPeerCertificate() || {};
-      const checks = [
-        { name: 'TLS 1.3', ok: proto === 'TLSv1.3', value: proto },
-        { name: 'HTTP/2 (ALPN h2)', ok: alpn === 'h2', value: alpn || '无' },
-        { name: 'X25519 密钥交换', ok: /x25519/i.test(key.name || ''), value: key.name || key.type || '未知' },
-        { name: '证书有效', ok: sock.authorized, value: sock.authorized ? (cert.issuer?.O || cert.issuer?.CN || '有效') : String(sock.authorizationError || '无效') },
-      ];
-      finish({ domain: d, ok: checks.every((c) => c.ok), ms, checks, subject: cert.subject?.CN || '', validTo: cert.valid_to || '' });
-    });
+    sock.setTimeout(timeout, () => finish({ error: '连接超时' }));
+    sock.once('error', (e) => finish({ error: e.code || e.message }));
+    sock.once('secureConnect', () => finish({ ms: Date.now() - t0, proto: sock.getProtocol(), alpn: sock.alpnProtocol || '', authorized: sock.authorized, authError: sock.authorizationError, cert: sock.getPeerCertificate() || {} }));
   });
+}
+
+async function realityCheck(domain, timeout = 8000, port = 443) {
+  const d = domain.trim().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+  const at = Date.now();
+  const a = await tlsHandshake(d, { port, minVersion: 'TLSv1.2' }, timeout);
+  if (a.error) return { domain: d, ok: false, where: 'local', at, error: '连接失败：' + a.error };
+  const x = { name: 'X25519', ok: false, value: '需要先支持 TLS 1.3' };
+  let ms = a.ms;
+  if (a.proto === 'TLSv1.3') {
+    const b = await tlsHandshake(d, { port, minVersion: 'TLSv1.3', ecdhCurve: 'X25519' }, timeout);
+    if (b.error) x.value = '不支持（' + b.error + '）';
+    else { x.ok = true; x.value = '支持'; ms = b.ms; }
+  }
+  const validTo = a.cert.valid_to ? new Date(a.cert.valid_to).toISOString().slice(0, 10) : '';
+  const checks = [
+    { name: 'TLS 1.3', ok: a.proto === 'TLSv1.3', value: (a.proto || '未知').replace('TLSv', 'TLS ') },
+    { name: 'HTTP/2', ok: a.alpn === 'h2', value: a.alpn || '无' },
+    x,
+    { name: '证书有效', ok: !!a.authorized, value: a.authorized ? `${a.cert.issuer?.O || a.cert.issuer?.CN || ''}，到期 ${validTo}` : String(a.authError || '无效') },
+  ];
+  const bad = checks.filter((c) => !c.ok).map((c) => c.name);
+  return { domain: d, ok: !bad.length, ms, checks, where: 'local', at, subject: a.cert.subject?.CN || '', validTo, error: bad.length ? '不满足：' + bad.join('、') : '' };
 }
 
 // 解析各种格式的 SOCKS5：host:port:user:pass / user:pass@host:port / socks5://user:pass@host:port

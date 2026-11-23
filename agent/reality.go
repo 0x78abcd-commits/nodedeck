@@ -4,6 +4,7 @@ package main
 // 连续失败 3 次（间隔 10 分钟）后：mode=auto 自动换一个新目标（先扫同网段邻居，再试备选大站），
 // 同时改写本机订阅里这台服务器的节点并发 Telegram 通知；mode=notify 只通知；off 不检查。
 import (
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
@@ -37,39 +38,98 @@ type RealityState struct {
 	ChangedAt int64  `json:"changedAt,omitempty"`
 }
 
-type TargetResult struct {
-	Domain string `json:"domain"`
-	OK     bool   `json:"ok"`
-	Ms     int64  `json:"ms"`
-	Error  string `json:"error,omitempty"`
+type CheckItem struct {
+	Name  string `json:"name"`
+	OK    bool   `json:"ok"`
+	Value string `json:"value"`
 }
 
-// checkTarget 用域名本身握手，要求 TLS 1.3 + h2 + X25519 且证书有效
+type TargetResult struct {
+	Domain string      `json:"domain"`
+	OK     bool        `json:"ok"`
+	Ms     int64       `json:"ms"`
+	Checks []CheckItem `json:"checks,omitempty"`
+	Error  string      `json:"error,omitempty"`
+}
+
+// checkTarget 检查一个网站能不能做 Reality 目标，四项都要通过（和桌面端本机检测同一标准）：
+// TLS 1.3、HTTP/2（ALPN h2）、X25519 密钥交换、证书对这个域名有效。
+// 先不加限制握手一次拿到版本 / ALPN / 证书，再只允许 TLS 1.3 + X25519 握手一次确认密钥交换。
 func checkTarget(domain string, timeout time.Duration) TargetResult {
 	r := TargetResult{Domain: domain}
-	st, ms, err := tlsProbe(net.JoinHostPort(domain, "443"), domain, timeout)
+	addr := net.JoinHostPort(domain, targetPort)
+	st, ms, err := tlsProbeOpen(addr, domain, timeout)
 	if err != nil {
-		r.Error = err.Error()
+		r.Error = "连接失败：" + err.Error()
 		return r
 	}
-	if st.NegotiatedProtocol != "h2" {
-		r.Error = "不支持 HTTP/2"
-		return r
+	r.Ms = ms
+	ver := map[uint16]string{tls.VersionTLS10: "TLS 1.0", tls.VersionTLS11: "TLS 1.1", tls.VersionTLS12: "TLS 1.2", tls.VersionTLS13: "TLS 1.3"}[st.Version]
+	alpn := st.NegotiatedProtocol
+	if alpn == "" {
+		alpn = "无"
 	}
-	if len(st.PeerCertificates) == 0 {
-		r.Error = "没有证书"
-		return r
+	x := CheckItem{Name: "X25519", Value: "需要先支持 TLS 1.3"}
+	if st.Version == tls.VersionTLS13 {
+		if _, ms2, err := tlsProbe(addr, domain, timeout); err == nil {
+			x.OK, x.Value = true, "支持"
+			r.Ms = ms2
+		} else {
+			x.Value = "不支持（" + err.Error() + "）"
+		}
 	}
-	inter := x509.NewCertPool()
-	for _, ic := range st.PeerCertificates[1:] {
-		inter.AddCert(ic)
+	certItem := CheckItem{Name: "证书有效", Value: "没有证书"}
+	if len(st.PeerCertificates) > 0 {
+		inter := x509.NewCertPool()
+		for _, ic := range st.PeerCertificates[1:] {
+			inter.AddCert(ic)
+		}
+		leaf := st.PeerCertificates[0]
+		if _, err := leaf.Verify(x509.VerifyOptions{DNSName: domain, Intermediates: inter}); err != nil {
+			certItem.Value = err.Error()
+		} else {
+			certItem.OK = true
+			certItem.Value = "到期 " + leaf.NotAfter.Format("2006-01-02")
+			if len(leaf.Issuer.Organization) > 0 {
+				certItem.Value = leaf.Issuer.Organization[0] + "，" + certItem.Value
+			}
+		}
 	}
-	if _, err := st.PeerCertificates[0].Verify(x509.VerifyOptions{DNSName: domain, Intermediates: inter}); err != nil {
-		r.Error = "证书无效：" + err.Error()
-		return r
+	r.Checks = []CheckItem{
+		{Name: "TLS 1.3", OK: st.Version == tls.VersionTLS13, Value: ver},
+		{Name: "HTTP/2", OK: st.NegotiatedProtocol == "h2", Value: alpn},
+		x,
+		certItem,
 	}
-	r.OK, r.Ms = true, ms
+	r.OK = true
+	var bad []string
+	for _, c := range r.Checks {
+		if !c.OK {
+			r.OK = false
+			bad = append(bad, c.Name)
+		}
+	}
+	if !r.OK {
+		r.Error = "不满足：" + strings.Join(bad, "、")
+	}
 	return r
+}
+
+// 目标网站端口（测试时会改）
+var targetPort = "443"
+
+// 不限制版本和曲线的握手，只用来读取对方支持什么
+func tlsProbeOpen(addr, sni string, timeout time.Duration) (*tls.ConnectionState, int64, error) {
+	d := &net.Dialer{Timeout: timeout}
+	cfg := &tls.Config{ServerName: sni, InsecureSkipVerify: true, NextProtos: []string{"h2", "http/1.1"}, MinVersion: tls.VersionTLS12}
+	t0 := time.Now()
+	c, err := tls.DialWithDialer(d, "tcp", addr, cfg)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer c.Close()
+	st := c.ConnectionState()
+	return &st, time.Since(t0).Milliseconds(), nil
 }
 
 func checkTargets(domains []string, timeout time.Duration) []TargetResult {

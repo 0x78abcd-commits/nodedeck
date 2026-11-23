@@ -42,7 +42,12 @@ class Store {
       else text = raw.toString('utf8');
       const s = JSON.parse(text);
       const d = defaults();
-      for (const srv of s.servers || []) core.ensureProtocols(srv); // 旧数据补齐新协议
+      for (const srv of s.servers || []) {
+        core.ensureProtocols(srv); // 旧数据补齐新协议
+        // 0.6.3：记下已部署服务器当前在用的 Reality 目标，之后改了目标才需要重新检测
+        const rp = srv.protocols?.vlessReality;
+        if (srv.deployedAt && rp && rp.sniDeployed === undefined) rp.sniDeployed = rp.sni;
+      }
       return { ...d, ...s, settings: { ...d.settings, ...(s.settings || {}) } };
     } catch (e) {
       const bak = this.file + '.broken-' + Date.now();

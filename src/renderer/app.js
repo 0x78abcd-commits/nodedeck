@@ -44,6 +44,21 @@ const PAGES = [
   ['settings', NAV_ICONS.settings, '设置'],
 ];
 
+// Reality 目标检测结果：本机和 VPS 分两列，各自带检测时间。能不能用以 VPS 为准（Reality 是 VPS 去连目标网站）
+function realityResultTable(local, remote) {
+  const cols = [remote && ['VPS（以此为准）', remote], local && ['本机（仅供参考）', local]].filter(Boolean);
+  const names = ['TLS 1.3', 'HTTP/2', 'X25519', '证书有效'];
+  const cell = (r, n) => {
+    if (!r.checks) return n === names[0] ? h('span', { class: 'tag bad' }, r.error || '失败') : '';
+    const c = r.checks.find((x) => x.name === n);
+    return c ? h('span', { class: 'tag ' + (c.ok ? 'ok' : 'bad'), title: c.value }, c.ok ? '通过' : '不通过') : '';
+  };
+  return h('table', { class: 'checktab' },
+    h('thead', {}, h('tr', {}, h('th', {}, ''), cols.map(([t, r]) => h('th', {}, t, h('div', { class: 'muted', style: { fontWeight: 400 } }, `${fmtDate(r.at)}${r.ms ? ` · ${r.ms} ms` : ''}`))))),
+    h('tbody', {}, names.map((n) => h('tr', {}, h('td', { class: 'muted' }, n), cols.map(([, r]) => h('td', {}, cell(r, n))))),
+      h('tr', {}, h('td', { class: 'muted' }, '结论'), cols.map(([, r]) => h('td', {}, h('b', { style: { color: r.ok ? 'var(--ok)' : 'var(--danger)' } }, r.ok ? '可以用' : '不能用'))))));
+}
+
 // Reality 主流目标的中文名（列表本身来自 core.REALITY_FALLBACKS）
 const REALITY_NAMES = { 'www.microsoft.com': '微软', 'www.apple.com': '苹果', 'www.nvidia.com': '英伟达', 'www.amazon.com': '亚马逊', 'www.samsung.com': '三星', 'www.tesla.com': '特斯拉', 'www.oracle.com': '甲骨文', 'www.cisco.com': '思科', 'addons.mozilla.org': 'Mozilla 扩展商店' };
 
@@ -377,6 +392,8 @@ async function editServer(orig) {
       els.rmode.value = pc.sniAuto ? '__auto__' : inList ? pc.sni : '__custom__';
       els.rsni = I(pc.sniAuto || inList ? '' : pc.sni, { placeholder: '例如 www.example.com（要支持 TLS 1.3 和 HTTP/2）' });
       const rhint = h('div', { class: 'muted', style: { fontSize: '12px', margin: '5px 0 0' } });
+      const rres = h('div', {});
+      els.rcheck = pc.sniCheck || null; // 最近一次 VPS 检测（随服务器保存）
       const rtest = h('button', { class: 'small auto' }, '检测');
       const rcurrent = () => (els.rmode.value === '__auto__' ? '' : els.rmode.value === '__custom__' ? els.rsni.value.trim() : els.rmode.value);
       const srcName = { neighbor: '同网段邻居', fallback: '备选大站里 VPS 连得最快的', patrol: '巡检时自动更换' }[pc.sniSource] || '自动挑选';
@@ -389,19 +406,29 @@ async function editServer(orig) {
           if (pc.sniAuto && pc.sniPickedAt) rhint.append('当前用的是 ', h('b', {}, pc.sni), `（${srcName}，${fmtDate(pc.sniPickedAt)} 选出）`);
           else if (s.deployedAt) rhint.append('保存后会马上在这台 VPS 上挑选：先找同网段的邻居网站，找不到再从主流大站里挑连得最快的');
           else rhint.append('还没选：部署时会先找 VPS 同网段的邻居网站，找不到再从主流大站里挑 VPS 连得最快的');
-        } else rhint.append('固定使用这个目标，部署时不会自动更换。目标失效时按「设置 → 巡检与告警」处理');
+        } else {
+          const d = rcurrent();
+          const c = els.rcheck && els.rcheck.domain === d && els.rcheck.where === 'vps' ? els.rcheck : null;
+          const fresh = c && Date.now() - c.at < 24 * 3600e3;
+          if (c && c.ok && fresh) rhint.append(h('span', { class: 'tag ok' }, 'VPS 检测通过'), ` ${fmtDate(c.at)}。固定使用这个目标，部署时不会自动更换`);
+          else if (c && !c.ok) rhint.append(h('span', { class: 'tag bad' }, 'VPS 检测不通过'), ` ${fmtDate(c.at)}：${c.error || ''}。换一个，或改成自动优选`);
+          else rhint.append(s.deployedAt ? '保存时会先在 VPS 上检测（TLS 1.3、HTTP/2、X25519、证书），不通过不能保存' : '部署时会先在 VPS 上检测（TLS 1.3、HTTP/2、X25519、证书），不通过不会部署。可以先点「检测」在本机看一下', c && !fresh ? `（上次检测已超过 24 小时：${fmtDate(c.at)}）` : '');
+        }
       };
-      els.rmode.onchange = drawR;
+      els.rmode.onchange = () => { rres.innerHTML = ''; drawR(); };
+      els.rsni.oninput = () => { rres.innerHTML = ''; drawR(); };
       rtest.onclick = (e) => busy(e.currentTarget, async () => {
         const d = rcurrent();
         if (!d) { toast('先填域名', 'err'); return; }
         const r = await api.call('tools:reality', d, s.deployedAt ? s.id : null);
-        const local = r.local.ok ? `本机 ✔ ${r.local.ms} ms` : `本机 ✘ ${r.local.error || (r.local.checks || []).filter((c) => !c.ok).map((c) => c.name).join('、')}`;
-        const remote = r.remote ? (r.remote.ok ? `，VPS ✔ 握手 ${r.remote.tlsMs} ms` : `，VPS ✘ ${r.remote.error}`) : '';
-        toast(`${d}：${local}${remote}`, r.local.ok && (!r.remote || r.remote.ok) ? 'ok' : 'warn');
+        if (r.remote && r.remote.where === 'vps') els.rcheck = { ...r.remote };
+        rres.innerHTML = '';
+        rres.append(realityResultTable(r.local, r.remote ? { at: Date.now(), ...r.remote } : null),
+          !s.deployedAt ? h('p', { class: 'muted', style: { fontSize: '12px', margin: '4px 0 0' } }, '服务器还没部署，只能在本机检测；部署时会在 VPS 上再检测一次，以 VPS 结果为准') : null);
+        drawR();
       });
       drawR();
-      extra.push(field('Reality 目标网站', h('div', {}, h('div', { class: 'row' }, els.rmode, rtest), h('div', { style: { marginTop: '6px' } }, els.rsni), rhint)));
+      extra.push(field('Reality 目标网站', h('div', {}, h('div', { class: 'row' }, els.rmode, rtest), h('div', { style: { marginTop: '6px' } }, els.rsni), rhint, rres)));
       extra.push(h('button', { class: 'small', onclick: async () => { const kp = await api.call('new:reality'); s.protocols.vlessReality.privateKey = kp.privateKey; s.protocols.vlessReality.publicKey = kp.publicKey; toast('已生成新密钥（保存并同步后生效）'); } }, '重新生成密钥'));
     }
     if (k === 'vmess') { els.path = I(pc.path); extra.push(field('WS 路径', els.path)); }
@@ -486,6 +513,7 @@ async function editServer(orig) {
           if (!nv) throw new Error('请填写 Reality 目标域名，或选「自动优选」');
           if (!/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(nv)) throw new Error('Reality 目标域名格式不对：' + nv);
           pr.sni = nv; pr.sniAuto = false; delete pr.sniPickedAt; delete pr.sniSource;
+          if (e.rcheck && e.rcheck.domain === nv) pr.sniCheck = e.rcheck;
         }
       }
       if (e.path) s.protocols[k].path = e.path.value.trim().startsWith('/') ? e.path.value.trim() : '/' + e.path.value.trim();
@@ -512,9 +540,26 @@ async function editServer(orig) {
     { label: '取消' },
     { label: '保存', class: 'primary', onClick: async () => {
       const ns = collect();
+      // 已部署的服务器换了固定 Reality 目标：先在 VPS 上检测，通过才保存（24 小时内通过的结果可沿用）
+      const rp = ns.protocols?.vlessReality;
+      const op = orig?.protocols?.vlessReality;
+      if (orig?.deployedAt && rp?.enabled && !rp.sniAuto && (rp.sni !== op?.sni || op?.sniAuto || !op?.enabled)) {
+        const c = rp.sniCheck;
+        if (!(c && c.where === 'vps' && c.domain === rp.sni && c.ok && Date.now() - c.at < 24 * 3600e3)) {
+          toast(`正在 VPS 上检测 ${rp.sni} …`);
+          const r = await api.call('tools:reality', rp.sni, orig.id);
+          if (!r.remote || r.remote.where !== 'vps') throw new Error('没能连上 VPS 做检测：' + (r.remote?.error || '未知错误') + '。检测通过前不能保存这个目标');
+          rp.sniCheck = { ...r.remote, where: 'vps' };
+          protoEls.vlessReality.rcheck = rp.sniCheck;
+          protoEls.vlessReality.rmode.onchange();
+          if (!r.remote.ok) {
+            const bad = (r.remote.checks || []).filter((x) => !x.ok).map((x) => `${x.name}（${x.value}）`).join('、') || r.remote.error;
+            throw new Error(`${rp.sni} 在 VPS 上检测不通过：${bad}。换一个目标，或改成「自动优选」`);
+          }
+        }
+      }
       await api.call('col:upsert', 'servers', ns);
       if (orig) markDirty();
-      const rp = ns.protocols?.vlessReality;
       if (orig?.deployedAt && rp?.enabled && rp.sniAuto && !orig.protocols?.vlessReality?.sniAuto) repickReality(ns); // 从固定改成自动：马上挑一次
       await render();
     } },
@@ -1185,16 +1230,16 @@ const TOOLS = {
   },
   reality(box) {
     const d = h('input', { placeholder: '例如 www.microsoft.com' });
-    const srv = h('select', { class: 'auto', style: { width: '220px' } }, h('option', { value: '' }, '仅本机检测'), S.servers.map((s) => h('option', { value: s.id }, `同时从 ${s.name} 检测`)));
+    const srv = h('select', { class: 'auto', style: { width: '220px' } }, h('option', { value: '' }, '仅本机检测'), S.servers.filter((s) => s.deployedAt).map((s) => h('option', { value: s.id }, `同时从 ${s.name} 检测`)));
+    if (S.servers.some((s) => s.deployedAt)) srv.value = S.servers.find((s) => s.deployedAt).id; // 默认带上 VPS，结果以 VPS 为准
     const out = h('div', {});
     box.append(h('p', { class: 'muted' }, 'Reality 目标要求：TLS 1.3、HTTP/2、X25519，且离 VPS 越近越好（从服务器检测的延迟越低越好）。'),
       h('div', { class: 'row' }, d, srv, h('button', { class: 'primary auto', onclick: (e) => busy(e.currentTarget, async () => {
         const r = await api.call('tools:reality', d.value, srv.value);
         out.innerHTML = '';
-        const l = r.local;
-        if (!l.ok && !l.checks) out.append(h('p', {}, h('span', { class: 'tag bad' }, '失败'), ' ', l.error));
-        else out.append(h('div', { class: 'kv', style: { marginTop: '12px' } }, kv('结论', h('span', { class: 'tag ' + (l.ok ? 'ok' : 'bad') }, l.ok ? '适合做 Reality 目标' : '不适合')), kv('本机握手', l.ms + ' ms'), l.checks.map((c) => kv(c.name, h('span', { class: 'tag ' + (c.ok ? 'ok' : 'bad') }, (c.ok ? '✔ ' : '✘ ') + c.value))), kv('证书', `${l.subject} 到期 ${l.validTo}`)));
-        if (r.remote) out.append(h('div', { class: 'kv', style: { marginTop: '10px' } }, kv('服务器端', r.remote.ok ? `TCP ${r.remote.connectMs} ms · TLS 完成 ${r.remote.tlsMs} ms · HTTP/${r.remote.http}` : h('span', { class: 'tag bad' }, r.remote.error))));
+        const remote = r.remote ? { at: Date.now(), ...r.remote } : null;
+        out.append(h('div', { style: { marginTop: '12px' } }, realityResultTable(r.local, remote)),
+          h('p', { class: 'muted', style: { fontSize: '12px' } }, remote ? 'Reality 是 VPS 去连目标网站，能不能用以 VPS 的结果为准；本机结果只说明你这边能否访问。鼠标停在结果上能看到具体数值。' : '没选服务器，只做了本机检测。选一台已部署的服务器可以同时在 VPS 上检测，以 VPS 结果为准。'));
       }) }, '检测')), out);
     // 从服务器扫描附近的 Reality 目标
     const scanSrv = h('select', { class: 'auto', style: { width: '220px' } }, S.servers.filter((x) => x.deployedAt).map((x) => h('option', { value: x.id }, x.name)));
@@ -1210,7 +1255,8 @@ const TOOLS = {
           h('tbody', {}, list.map((r) => h('tr', {}, h('td', { class: 'mono' }, r.domain), h('td', { class: 'mono muted' }, r.ip), h('td', {}, r.ms + ' ms'), h('td', { class: 'muted' }, r.issuer), h('td', { class: 'muted' }, r.notAfter),
             h('td', {}, h('button', { class: 'small', onclick: async () => {
               const cur = S.servers.find((x) => x.id === srv.id);
-              cur.protocols.vlessReality = { ...cur.protocols.vlessReality, sni: r.domain };
+              // 选了扫描结果就是固定目标；同步时会在 VPS 上按完整标准再检测一次
+              cur.protocols.vlessReality = { ...cur.protocols.vlessReality, sni: r.domain, sniAuto: false, sniPickedAt: undefined, sniSource: undefined };
               await api.call('col:upsert', 'servers', cur); markDirty();
               toast(`${srv.name} 的 Reality 目标改成 ${r.domain}，同步后生效`, 'ok');
             } }, '用这个')))))));

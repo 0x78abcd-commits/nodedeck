@@ -173,7 +173,7 @@ async function pickRealityOn(ssh, server, log) {
   let j = {};
   try { j = JSON.parse(r.stdout); } catch (_) { /* ignore */ }
   if (!j.domain) { log('⚠ 没找到合适的 Reality 目标，继续用 ' + server.protocols.vlessReality.sni); return null; }
-  return { domain: j.domain, source: j.source };
+  return { domain: j.domain, source: j.source, check: { domain: j.domain, ok: true, at: Date.now(), where: 'vps', via: 'pick' } };
 }
 
 // 在 VPS 上被其它程序占用的 TCP 端口（不含我们自己的 sing-box）
@@ -287,10 +287,11 @@ sysctl -p >/dev/null 2>&1 || true`);
     if (rp?.enabled && rp.sniAuto && !rp.sniPickedAt) {
       const pick = await pickRealityOn(ssh, server, log).catch((e) => { log('⚠ 挑选 Reality 目标出错：' + e.message); return null; });
       if (pick) {
-        Object.assign(rp, { sni: pick.domain, sniSource: pick.source, sniPickedAt: Date.now() });
+        Object.assign(rp, { sni: pick.domain, sniSource: pick.source, sniPickedAt: Date.now(), sniCheck: pick.check });
         log(`✔ Reality 目标：${pick.domain}（${pick.source === 'neighbor' ? '同网段邻居' : '备选大站里最快的'}）`);
       }
     }
+    await gateRealityTarget(ssh, server, log, true);
     await ssh.writeFile(`${DIR}/agent.json`, JSON.stringify(agentConfig(state, server), null, 2));
 
     log('§firewall');
@@ -334,9 +335,10 @@ async function pushConfig(ssh, state, server, log = () => {}) {
     const o = (await ssh.exec(`cat ${DIR}/reality.json 2>/dev/null`)).stdout;
     try {
       const j = JSON.parse(o || '{}');
-      if (j.override && j.from === rp.sni) { log(`Reality 目标已被 VPS 自动换成 ${j.override}（原 ${rp.sni} 不可用），同步到本地`); Object.assign(rp, { sni: j.override, sniSource: 'patrol', sniPickedAt: (j.changedAt || 0) * 1000 }); }
+      if (j.override && j.from === rp.sni) { log(`Reality 目标已被 VPS 自动换成 ${j.override}（原 ${rp.sni} 不可用），同步到本地`); Object.assign(rp, { sni: j.override, sniSource: 'patrol', sniPickedAt: (j.changedAt || 0) * 1000, sniCheck: { domain: j.override, ok: true, at: (j.changedAt || 0) * 1000, where: 'vps', via: 'patrol' } }); }
     } catch (_) { /* ignore */ }
   }
+  await gateRealityTarget(ssh, server, log, false);
   // 记下自签证书的指纹，分享链接里要带上（新版 v2rayNG 不再支持跳过证书验证）
   try {
     const pem = (await ssh.exec(`cat ${DIR}/cert.pem 2>/dev/null`)).stdout;
@@ -352,6 +354,7 @@ async function pushConfig(ssh, state, server, log = () => {}) {
   const r = await ssh.exec(`${SB_BIN} check -c ${DIR}/config.full.json`);
   if (r.code !== 0) throw new Error('sing-box 配置校验失败：' + (r.stderr || r.stdout));
   await syncTunnel(ssh, server, log);
+  if (rp?.enabled) rp.sniDeployed = rp.sni;
   log('配置已上传');
 }
 
@@ -546,12 +549,42 @@ async function realityCheck(server) {
   });
 }
 
+// 在 VPS 上检测 Reality 目标（agent check-reality，标准和本机检测一致）。
+// Reality 是 VPS 去连目标网站，所以能不能用以 VPS 的结果为准
+async function vpsCheckTarget(ssh, domain) {
+  const d = String(domain).replace(/[^a-zA-Z0-9.-]/g, '');
+  const r = await ssh.exec(`${AGENT_BIN} check-reality -domains ${shq(d)}`, { timeout: 60000 });
+  let list;
+  try { list = JSON.parse(r.stdout); } catch (_) { list = null; }
+  if (!Array.isArray(list) || !list[0]) throw new Error('VPS 上的 agent 太旧，不支持目标检测，先点「同步」升级 agent');
+  return { ...list[0], where: 'vps', at: Date.now() };
+}
+
 async function remoteTlsCheck(server, domain) {
-  return withSSH(server, async (ssh) => {
-    const r = await ssh.exec(`curl -so /dev/null --tlsv1.3 --http2 -w '%{time_connect} %{time_appconnect} %{http_version}' --connect-timeout 8 https://${domain.replace(/[^a-zA-Z0-9.-]/g, '')}/`, { root: false });
-    const [tc, ta, hv] = r.stdout.trim().split(' ');
-    return { ok: r.code === 0, connectMs: Math.round(Number(tc) * 1000), tlsMs: Math.round(Number(ta) * 1000), http: hv, error: r.code !== 0 ? (r.stderr || '失败（可能不支持 TLS1.3 / HTTP2）') : '' };
-  });
+  return withSSH(server, (ssh) => vpsCheckTarget(ssh, domain));
+}
+
+const CHECK_TTL = 24 * 3600e3;
+
+// 固定 Reality 目标的部署前检测：部署时、或目标和上次部署的不一样时，必须在 VPS 上检测通过（24 小时内通过的结果可沿用）。
+// 自动优选的目标在挑选时已经检测过，这里不管。
+async function gateRealityTarget(ssh, server, log, force) {
+  const rp = server.protocols?.vlessReality;
+  if (!rp?.enabled || rp.sniAuto) return;
+  if (!force && rp.sniDeployed === rp.sni) return;
+  const c = rp.sniCheck;
+  if (c && c.where === 'vps' && c.domain === rp.sni && c.ok && Date.now() - c.at < CHECK_TTL) {
+    log(`Reality 目标 ${rp.sni}：${new Date(c.at).toLocaleString('zh-CN')} 在 VPS 上检测通过，沿用`);
+    return;
+  }
+  log(`在 VPS 上检测 Reality 目标 ${rp.sni} …`);
+  const r = await vpsCheckTarget(ssh, rp.sni);
+  rp.sniCheck = { domain: r.domain, ok: r.ok, at: r.at, ms: r.ms, checks: r.checks, error: r.error, where: 'vps' };
+  if (!r.ok) {
+    const detail = (r.checks || []).filter((x) => !x.ok).map((x) => `${x.name}（${x.value}）`).join('、') || r.error;
+    throw new Error(`Reality 目标 ${rp.sni} 在 VPS 上检测不通过：${detail}。请换一个目标，或改成「自动优选」`);
+  }
+  log(`✔ Reality 目标 ${rp.sni} 检测通过（TLS 1.3、HTTP/2、X25519、证书有效，${r.ms} ms）`);
 }
 
 module.exports = { pickReality, adminNotify, realityCheck, deployServer, syncServer, updateSingbox, serverSelfCheck, notifyTest, fetchMetrics, scanReality, serverStatus, fetchStats, resetTraffic, serverLogs, uninstall, testSSH, remoteTlsCheck, agentConfig };

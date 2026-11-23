@@ -147,7 +147,7 @@ async function refreshUsage() {
           srv.realityState = st.reality;
           const rp = srv.protocols?.vlessReality;
           if (rp?.enabled && st.reality.override && st.reality.from === rp.sni) {
-            Object.assign(rp, { sni: st.reality.override, sniSource: 'patrol', sniPickedAt: (st.reality.changedAt || 0) * 1000 });
+            Object.assign(rp, { sni: st.reality.override, sniSource: 'patrol', sniPickedAt: (st.reality.changedAt || 0) * 1000, sniCheck: { domain: st.reality.override, ok: true, at: (st.reality.changedAt || 0) * 1000, where: 'vps', via: 'patrol' } });
             realityAdopted.push(srv.id);
           }
         }
@@ -377,7 +377,7 @@ function registerIpc() {
     const pick = await deploy.pickReality(getServer(id), log);
     if (!pick) throw new Error('没有找到合适的 Reality 目标');
     const cur = getServer(id);
-    store.upsert('servers', { id, protocols: { ...cur.protocols, vlessReality: { ...cur.protocols.vlessReality, sni: pick.domain, sniAuto: true, sniSource: pick.source, sniPickedAt: Date.now() } } });
+    store.upsert('servers', { id, protocols: { ...cur.protocols, vlessReality: { ...cur.protocols.vlessReality, sni: pick.domain, sniAuto: true, sniSource: pick.source, sniPickedAt: Date.now(), sniCheck: pick.check } } });
     await syncOne(id, log);
     return pick;
   });
@@ -395,8 +395,17 @@ function registerIpc() {
           if (arg === '__auto__') {
             const pick = srv.deployedAt ? await deploy.pickReality(srv) : null;
             if (!pick) throw new Error('没找到合适的目标');
-            store.upsert('servers', { id, protocols: { ...srv.protocols, vlessReality: { ...srv.protocols.vlessReality, sni: pick.domain, sniAuto: true, sniSource: pick.source, sniPickedAt: Date.now() } } });
-          } else store.upsert('servers', { id, protocols: { ...srv.protocols, vlessReality: { ...srv.protocols.vlessReality, sni: String(arg).trim(), sniAuto: false } } });
+            store.upsert('servers', { id, protocols: { ...srv.protocols, vlessReality: { ...srv.protocols.vlessReality, sni: pick.domain, sniAuto: true, sniSource: pick.source, sniPickedAt: Date.now(), sniCheck: pick.check } } });
+          } else {
+            // 固定目标：已部署的先在 VPS 上检测，不通过就不改
+            const d = String(arg).trim();
+            let check;
+            if (srv.deployedAt) {
+              check = await deploy.remoteTlsCheck(srv, d);
+              if (!check.ok) throw new Error(`${d} 在 VPS 上检测不通过：${(check.checks || []).filter((x) => !x.ok).map((x) => x.name).join('、') || check.error}，没有修改`);
+            }
+            store.upsert('servers', { id, protocols: { ...srv.protocols, vlessReality: { ...srv.protocols.vlessReality, sni: d, sniAuto: false, sniPickedAt: undefined, sniSource: undefined, sniCheck: check } } });
+          }
         } else if (action !== 'sync') throw new Error('未知操作');
         if (getServer(id).deployedAt) await syncOne(id, taskLogger('sync:' + id));
         ok.push(srv.name);
