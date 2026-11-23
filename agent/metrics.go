@@ -375,6 +375,9 @@ func (a *Agent) metricsLoop() {
 		}
 		a.checkVPSExpire()
 		a.checkAlerts(time.Now())
+		if time.Now().Minute() == 7 { // 每小时整理一次日志
+			trimLogs()
+		}
 	}
 }
 

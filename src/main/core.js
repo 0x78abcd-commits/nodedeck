@@ -168,10 +168,14 @@ function tlsSelfSigned(server, alpn) {
   return t;
 }
 
-// 远程规则集（SagerNet 官方，GitHub 托管；VPS 在境外可以直接下载）
+// 远程规则集（SagerNet 官方，GitHub 托管；VPS 在境外可以直接下载）。
+// sing-box 1.14 起用顶层 http_clients 定义下载用的客户端：不写 detour 就是从本机直连。
+// 注意不能写 http_client: { detour: 'direct' }——`check` 能过，但启动时会报
+// 「detour to an empty direct outbound makes no sense」直接退出（0.6.0 ~ 0.6.3 的 bug）。
+const RULESET_HTTP = 'rule-set';
 function remoteRuleSet(tag) {
   const repo = tag.startsWith('geoip-') ? 'sing-geoip' : 'sing-geosite';
-  return { type: 'remote', tag, format: 'binary', url: `https://raw.githubusercontent.com/SagerNet/${repo}/rule-set/${tag}.srs`, http_client: { detour: 'direct' } };
+  return { type: 'remote', tag, format: 'binary', url: `https://raw.githubusercontent.com/SagerNet/${repo}/rule-set/${tag}.srs`, http_client: RULESET_HTTP, update_interval: '7d' };
 }
 
 const WARP_SITES = {
@@ -320,6 +324,7 @@ function buildServerConfig(state, server, opts = {}) {
   };
   if (endpoints.length) config.endpoints = endpoints;
   if (ruleSets.size) {
+    config.http_clients = [{ tag: RULESET_HTTP }];
     config.route.rule_set = [...ruleSets].map(remoteRuleSet);
     config.experimental.cache_file = { enabled: true, path: `${REMOTE_DIR}/cache.db` };
   }

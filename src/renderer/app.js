@@ -262,7 +262,7 @@ async function viewServers(v) {
     const lamp = !s.deployedAt ? 'idle' : st && st.singbox && st.agent ? 'ok' : 'bad';
     tb.append(h('tr', { class: 'lamp-' + lamp },
       h('td', { style: { width: '28px' } }, cb),
-      h('td', {}, h('b', {}, s.name), h('div', { class: 'muted mono', style: { wordBreak: 'normal', whiteSpace: 'nowrap' } }, s.host), realityTag, s.role === 'relay' ? h('span', { class: 'tag blue' }, '中转机') : null, vpsExpireTag(s), core_cf(s) && s.deployedAt ? h('span', { class: 'tag ' + (s.lastStatus?.cf ? 'blue' : 'warn'), title: s.lastStatus?.cf ? '' : '隧道服务没在运行：检查令牌是否正确、VPS 能否连上 Cloudflare' }, s.lastStatus?.cf ? 'CF 隧道' : 'CF 隧道未连通') : null),
+      h('td', {}, h('b', {}, s.name), h('div', { class: 'muted mono', style: { wordBreak: 'normal', whiteSpace: 'nowrap' } }, s.host), hwLine(s), realityTag, s.role === 'relay' ? h('span', { class: 'tag blue' }, '中转机') : null, vpsExpireTag(s), core_cf(s) && s.deployedAt ? h('span', { class: 'tag ' + (s.lastStatus?.cf ? 'blue' : 'warn'), title: s.lastStatus?.cf ? '' : '隧道服务没在运行：检查令牌是否正确、VPS 能否连上 Cloudflare' }, s.lastStatus?.cf ? 'CF 隧道' : 'CF 隧道未连通') : null),
       h('td', {}, status, agentOutdated(s) ? h('span', { class: 'tag warn', title: '点「同步」自动升级' }, 'agent 待升级') : null, st?.version ? h('div', { class: 'muted' }, 'sing-box ' + st.version) : null, st?.mem ? h('div', { class: 'muted' }, `内存 ${st.mem} · 负载 ${st.load}`) : null),
       h('td', {}, protos.length ? protos : h('span', { class: 'muted' }, '无'), fw ? h('span', { class: 'tag blue' }, `转发 ${fw}`) : null),
       h('td', {}, exit),
@@ -627,6 +627,16 @@ function diagnoseServer(s) {
       h('ul', { style: { margin: 0, paddingLeft: '20px', lineHeight: 1.8 } }, r.advice.map((a) => h('li', {}, a))),
       r.blocked ? h('div', { style: { marginTop: '8px' } }, h('button', { class: 'primary', onclick: () => rotateServer(s) }, '一键换新')) : null));
   }).catch((e) => { running.remove(); summary.append(h('p', {}, '体检出错：' + e.message)); });
+}
+
+// 机器配置一行：1 核 · 1 GB · swap 1 GB · 磁盘剩 6.2 GB（部署 / 同步时读取）
+function hwLine(s) {
+  const hw = s.hw;
+  if (!hw?.memMB) return null;
+  const gb = (mb) => (mb >= 1024 ? (mb / 1024).toFixed(mb >= 10240 ? 0 : 1).replace(/\.0$/, '') + ' GB' : mb + ' MB');
+  const small = hw.memMB <= 1536;
+  return h('div', { class: 'muted', style: { fontSize: '12px' }, title: small ? '小内存机器：NodeDeck 已限制内存上限并在需要时加了 swap。空闲约占 50MB，每个正在传数据的连接约 0.5–0.8MB' : '' },
+    `${hw.cpus || '?'} 核 · ${gb(hw.memMB)}${hw.swapMB ? ` + swap ${gb(hw.swapMB)}` : ''} · 磁盘剩 ${gb(hw.diskFreeMB)}`);
 }
 
 function core_cf(s) { const t = s.cfTunnel; return t?.enabled && t.token && t.hostname && s.protocols?.vmess?.enabled; }
@@ -1335,6 +1345,7 @@ async function viewSettings(v) {
   const bwMode = sel([['notify', '只提醒'], ['auto', '自动一键换新（6 小时内最多一次）并提醒'], ['off', '关闭']], st.blockWatch || 'notify');
   const al = st.alerts || {};
   const alOn = h('input', { type: 'checkbox', checked: al.enabled !== false });
+  const tuneOn = h('input', { type: 'checkbox', checked: st.smallBoxTuning !== false });
   const alDisk = h('input', { type: 'number', min: 50, max: 99, value: al.diskPct || 90 });
   const alCpu = h('input', { type: 'number', min: 50, max: 100, value: al.cpuPct || 90 });
   const alLat = h('input', { type: 'number', min: 50, value: al.latencyMs || 300 });
@@ -1346,8 +1357,9 @@ async function viewSettings(v) {
     field('被墙巡检（软件开着时每 30 分钟）', bwMode, '本机连不通、海外能通，连续两次才判定被墙；电脑网络断了不会误报'),
     h('label', { class: 'f' }, alOn, ' Telegram 运维告警：sing-box 挂了（会先自动重启）、磁盘快满、CPU 持续过高、三网延迟变差'),
     h('div', { class: 'row' }, field('磁盘用到 %', alDisk), field('CPU 连续 15 分钟高于 %', alCpu), field('三网延迟高于 ms', alLat)),
+    h('label', { class: 'f' }, tuneOn, ' 小配置 VPS 自动优化：内存 ≤ 1.5GB 且没有 swap 时加一个 swap 文件，磁盘 < 20GB 时把系统日志限制在 200MB。卸载时会一并撤销'),
     h('button', { class: 'primary', onclick: async () => {
-      await api.call('settings:set', { realityPatrol: rpMode.value, blockWatch: bwMode.value, alerts: { enabled: alOn.checked, diskPct: Number(alDisk.value) || 90, cpuPct: Number(alCpu.value) || 90, latencyMs: Number(alLat.value) || 300 } });
+      await api.call('settings:set', { smallBoxTuning: tuneOn.checked, realityPatrol: rpMode.value, blockWatch: bwMode.value, alerts: { enabled: alOn.checked, diskPct: Number(alDisk.value) || 90, cpuPct: Number(alCpu.value) || 90, latencyMs: Number(alLat.value) || 300 } });
       toast('已保存，点「同步全部」后各服务器生效', 'ok'); markDirty();
     } }, '保存'));
   v.append(h('h1', {}, '设置'), h('p', { class: 'sub' }, `数据目录：${info.dataDir}`));

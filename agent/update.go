@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -120,6 +121,10 @@ func fetchManifest(url string) (*Manifest, error) {
 
 // downloadSingbox 下载、校验 sha256、解压到 bin.new 并自检，返回新文件路径
 func downloadSingbox(manifestURL string, m *Manifest, bin string) (string, error) {
+	// 小磁盘保护：下载包 + 解压后的新内核 + 旧内核备份大约要 150MB
+	if free := diskFreeMB(filepath.Dir(bin)); free > 0 && free < 200 {
+		return "", fmt.Errorf("磁盘只剩 %dMB，不够升级内核（至少要 200MB），先清理一下磁盘", free)
+	}
 	want := strings.ToLower(m.Sha256[runtime.GOARCH])
 	if want == "" {
 		return "", fmt.Errorf("版本信息里没有 %s 架构", runtime.GOARCH)

@@ -11,7 +11,16 @@ const DIR = core.REMOTE_DIR;
 const SB_BIN = '/usr/local/bin/nodedeck-sing-box';
 const AGENT_BIN = '/usr/local/bin/nodedeck-agent';
 
-const SB_UNIT = `[Unit]
+// 小内存机器的内存上限（Go 运行时的 GOMEMLIMIT）：流量高峰过后把多占的内存还给系统。
+// 实测 sing-box 空闲约 40MB，每个正在传数据的连接约 0.5–0.8MB；agent 约 10MB。
+// 2GB 以上的机器不设，按 Go 默认行为
+function memLimits(memMB) {
+  if (!memMB || memMB > 2048) return { sb: '', agent: '' };
+  return { sb: `${Math.max(128, Math.floor(memMB * 0.5))}MiB`, agent: '48MiB' };
+}
+
+function sbUnit(lim = {}) {
+  return `[Unit]
 Description=NodeDeck sing-box
 After=network-online.target
 Wants=network-online.target
@@ -19,15 +28,21 @@ Wants=network-online.target
 [Service]
 ExecStart=${SB_BIN} run -c ${DIR}/config.json
 ExecReload=/bin/kill -HUP $MAINPID
-Restart=on-failure
+Restart=always
 RestartSec=3
 LimitNOFILE=1048576
+${lim.sb ? `Environment=GOMEMLIMIT=${lim.sb}
+` : ''}# 被扫描时错误日志会很多，限速避免把日志盘写满
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=300
 
 [Install]
 WantedBy=multi-user.target
 `;
+}
 
-const AGENT_UNIT = `[Unit]
+function agentUnit(lim = {}) {
+  return `[Unit]
 Description=NodeDeck agent
 After=network-online.target
 Wants=network-online.target
@@ -36,13 +51,18 @@ Wants=network-online.target
 ExecStart=${AGENT_BIN} run -c ${DIR}/agent.json
 Restart=always
 RestartSec=3
+${lim.agent ? `Environment=GOMEMLIMIT=${lim.agent}
+` : ''}LogRateLimitIntervalSec=30s
+LogRateLimitBurst=100
 
 [Install]
 WantedBy=multi-user.target
 `;
+}
 
-const OPENRC_SB = `#!/sbin/openrc-run
-name="nodedeck-singbox"
+const openrcSb = (lim = {}) => `#!/sbin/openrc-run
+${lim.sb ? `export GOMEMLIMIT=${lim.sb}
+` : ''}name="nodedeck-singbox"
 description="NodeDeck sing-box"
 command="${SB_BIN}"
 command_args="run -c ${DIR}/config.json"
@@ -84,8 +104,8 @@ error_log="/var/log/nodedeck-cf.log"
 depend() { need net; after nodedeck-singbox; }
 `;
 
-const OPENRC_AGENT = `#!/sbin/openrc-run
-name="nodedeck-agent"
+const openrcAgent = (lim = {}) => `#!/sbin/openrc-run
+${lim.agent ? `export GOMEMLIMIT=${lim.agent}\n` : ''}name="nodedeck-agent"
 description="NodeDeck agent"
 command="${AGENT_BIN}"
 command_args="run -c ${DIR}/agent.json"
@@ -102,6 +122,7 @@ const SVC = {
   systemd: {
     install: 'systemctl daemon-reload && systemctl enable nodedeck-singbox nodedeck-agent >/dev/null 2>&1',
     restartAgent: 'systemctl restart nodedeck-agent',
+    restartSb: 'systemctl restart nodedeck-singbox',
     active: (n) => `systemctl is-active ${n} 2>/dev/null`,
     logs: 'journalctl -u nodedeck-singbox -u nodedeck-agent -u nodedeck-cf -n 120 --no-pager',
     cfOn: (unit) => `cat > /etc/systemd/system/nodedeck-cf.service <<'NDEOF'\n${unit}NDEOF\nsystemctl daemon-reload && systemctl enable nodedeck-cf >/dev/null 2>&1; systemctl restart nodedeck-cf`,
@@ -113,6 +134,7 @@ systemctl daemon-reload`,
   openrc: {
     install: 'rc-update add nodedeck-singbox default >/dev/null 2>&1; rc-update add nodedeck-agent default >/dev/null 2>&1; true',
     restartAgent: 'rc-service nodedeck-agent restart',
+    restartSb: 'rc-service nodedeck-singbox restart',
     active: (n) => `rc-service ${n} status >/dev/null 2>&1 && echo active || echo inactive`,
     logs: 'tail -n 60 /var/log/nodedeck-singbox.log /var/log/nodedeck-agent.log /var/log/nodedeck-cf.log 2>/dev/null',
     cfOn: () => `cat > /etc/init.d/nodedeck-cf <<'NDEOF'\n${OPENRC_CF}NDEOF\nchmod 755 /etc/init.d/nodedeck-cf; rc-update add nodedeck-cf default >/dev/null 2>&1; rc-service nodedeck-cf restart`,
@@ -200,10 +222,78 @@ else echo INIT=none; fi
 command -v curl >/dev/null && echo CURL=1 || echo CURL=0
 command -v wget >/dev/null && echo WGET=1 || echo WGET=0
 . /etc/os-release 2>/dev/null && echo "OS=$PRETTY_NAME" || echo OS=unknown
+echo "CPUS=$(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo)"
+echo "MEMKB=$(awk '/^MemTotal:/{print $2}' /proc/meminfo)"
+echo "SWAPKB=$(awk '/^SwapTotal:/{print $2}' /proc/meminfo)"
+echo "DISKFREEKB=$(df -Pk / | awk 'NR==2{print $4}')"
+echo "DISKTOTALKB=$(df -Pk / | awk 'NR==2{print $2}')"
+if [ -f /proc/user_beancounters ]; then echo VIRT=openvz
+elif grep -qa 'container=' /proc/1/environ 2>/dev/null; then echo VIRT=container
+else echo "VIRT=$(systemd-detect-virt 2>/dev/null || echo unknown)"; fi
 `);
   const kv = {};
   for (const line of out.split('\n')) { const i = line.indexOf('='); if (i > 0) kv[line.slice(0, i)] = line.slice(i + 1).trim(); }
   return kv;
+}
+
+function rememberHw(server, info) {
+  const n = (k) => Number(info[k]) || 0;
+  server.hw = { cpus: n('CPUS'), memMB: Math.round(n('MEMKB') / 1024), swapMB: Math.round(n('SWAPKB') / 1024), diskFreeMB: Math.round(n('DISKFREEKB') / 1024), diskTotalMB: Math.round(n('DISKTOTALKB') / 1024), virt: info.VIRT || '', at: Date.now() };
+}
+
+function hwSummary(hw) {
+  if (!hw?.memMB) return '';
+  const gb = (mb) => (mb >= 1024 ? (mb / 1024).toFixed(1) + ' GB' : mb + ' MB');
+  return `配置：${hw.cpus || '?'} 核 / 内存 ${gb(hw.memMB)}${hw.swapMB ? ` + swap ${gb(hw.swapMB)}` : '（没有 swap）'} / 磁盘剩余 ${gb(hw.diskFreeMB)}（共 ${gb(hw.diskTotalMB)}）。` +
+    `NodeDeck 在 VPS 上占用：内存空闲时约 50MB，每个正在传数据的连接再加 0.5–0.8MB；磁盘约 100MB，升级内核时临时再用 70MB`;
+}
+
+// 写系统服务文件（内容按机器内存调整）；有变化返回 true
+async function writeUnits(ssh, server) {
+  const lim = memLimits(server.hw?.memMB);
+  const files = server.initSystem === 'openrc'
+    ? [['/etc/init.d/nodedeck-singbox', openrcSb(lim), '755'], ['/etc/init.d/nodedeck-agent', openrcAgent(lim), '755']]
+    : [['/etc/systemd/system/nodedeck-singbox.service', sbUnit(lim), '644'], ['/etc/systemd/system/nodedeck-agent.service', agentUnit(lim), '644']];
+  let changed = false;
+  for (const [f, body, mode] of files) {
+    const cur = (await ssh.exec(`cat ${f} 2>/dev/null`)).stdout;
+    if (cur.trim() === body.trim()) continue;
+    await ssh.writeFile(f, body, mode);
+    changed = true;
+  }
+  if (changed && server.initSystem !== 'openrc') await ssh.run('systemctl daemon-reload');
+  return changed;
+}
+
+// 小内存 / 小磁盘 VPS 的系统优化（可在设置里关闭）：
+// 1. 内存 ≤ 1.5GB 且没有 swap：建一个 swap 文件（磁盘够才建；OpenVZ / 容器不支持就跳过），防止流量高峰时被系统杀进程
+// 2. 磁盘 < 20GB 的 systemd 系统：限制系统日志最多 200MB（Debian 默认最多可占磁盘的 10%）
+async function tuneSmallBox(ssh, state, server, info, log) {
+  if (state.settings?.smallBoxTuning === false) return;
+  const hw = server.hw || {};
+  if (hw.memMB && hw.memMB <= 1536 && !hw.swapMB) {
+    if (['openvz', 'container', 'lxc', 'lxc-libvirt'].includes(hw.virt)) log('内存较小但这台是 OpenVZ / 容器，不能加 swap，跳过');
+    else {
+      const size = hw.diskFreeMB >= 6144 ? 1024 : 512;
+      if (hw.diskFreeMB < size + 1536) log(`内存较小但磁盘只剩 ${hw.diskFreeMB}MB，不加 swap`);
+      else {
+        log(`内存只有 ${hw.memMB}MB 且没有 swap，添加 ${size}MB swap（防止流量高峰时内存不够）…`);
+        const r = await ssh.exec(`set -e
+[ -f /nodedeck.swap ] || { fallocate -l ${size}M /nodedeck.swap 2>/dev/null || dd if=/dev/zero of=/nodedeck.swap bs=1M count=${size} status=none; }
+chmod 600 /nodedeck.swap
+mkswap /nodedeck.swap >/dev/null
+swapon /nodedeck.swap
+grep -q '^/nodedeck.swap ' /etc/fstab || echo '/nodedeck.swap none swap sw 0 0' >> /etc/fstab
+printf 'vm.swappiness=10\n' > /etc/sysctl.d/99-nodedeck-swap.conf
+sysctl -q -w vm.swappiness=10 || true`);
+        if (r.code === 0) { hw.swapMB = size; log('✔ swap 已添加'); } else { await ssh.exec('swapoff /nodedeck.swap 2>/dev/null; rm -f /nodedeck.swap'); log('⚠ 添加 swap 失败（不影响使用）：' + (r.stderr || r.stdout).trim().slice(0, 200)); }
+      }
+    }
+  }
+  if (server.initSystem !== 'openrc' && hw.diskTotalMB && hw.diskTotalMB < 20480) {
+    const r = await ssh.exec(`[ -f /etc/systemd/journald.conf.d/nodedeck.conf ] && echo HAVE || { mkdir -p /etc/systemd/journald.conf.d && printf '[Journal]\n# NodeDeck：小磁盘 VPS 限制系统日志大小\nSystemMaxUse=200M\n' > /etc/systemd/journald.conf.d/nodedeck.conf && systemctl restart systemd-journald && echo SET; }`);
+    if (r.stdout.includes('SET')) log('磁盘较小，系统日志最多保留 200MB');
+  }
 }
 
 // 放行防火墙端口（ufw / firewalld），部署和每次同步都会执行，保证新加的端口也能通
@@ -237,6 +327,8 @@ async function deployServer(state, server, { resourcesDir, log }) {
     }
     const info = await detect(ssh);
     log(`系统：${info.OS}，架构：${info.ARCH}`);
+    rememberHw(server, info);
+    log(hwSummary(server.hw));
     if (info.ARCH === 'unsupported') throw new Error('不支持的 CPU 架构');
     if (info.INIT === 'none') throw new Error('系统既没有 systemd 也没有 OpenRC，暂不支持');
     server.initSystem = info.INIT;
@@ -260,13 +352,8 @@ if [ ! -f ${DIR}/cert.pem ] || [ "$(cat ${DIR}/cert.sni 2>/dev/null)" != ${shq(s
 fi`);
 
     await ssh.writeFile(`${DIR}/agent.json`, JSON.stringify(agentConfig(state, server), null, 2));
-    if (server.initSystem === 'openrc') {
-      await ssh.writeFile('/etc/init.d/nodedeck-singbox', OPENRC_SB, '755');
-      await ssh.writeFile('/etc/init.d/nodedeck-agent', OPENRC_AGENT, '755');
-    } else {
-      await ssh.writeFile('/etc/systemd/system/nodedeck-singbox.service', SB_UNIT, '644');
-      await ssh.writeFile('/etc/systemd/system/nodedeck-agent.service', AGENT_UNIT, '644');
-    }
+    await writeUnits(ssh, server);
+    await tuneSmallBox(ssh, state, server, info, log);
 
     log('开启 BBR、放行防火墙端口 …');
     await ssh.run(`
@@ -406,9 +493,14 @@ async function syncServer(state, server, { log = () => {}, resourcesDir, appVers
     const cfgText = JSON.stringify(agentConfig(state, server), null, 2);
     const curCfg = (await ssh.exec(`cat ${DIR}/agent.json`)).stdout;
     if (curCfg.trim() !== cfgText.trim()) { await ssh.writeFile(`${DIR}/agent.json`, cfgText); restart = true; }
+    // 每次同步顺便刷新机器配置、服务文件（内存上限）和小机器优化
+    const info = await detect(ssh);
+    rememberHw(server, info);
+    if (info.INIT === 'systemd' || info.INIT === 'openrc') server.initSystem = info.INIT;
+    if (await writeUnits(ssh, server)) { log('服务配置已更新（按内存调整）'); await ssh.run(`${svcOf(server).restartSb || 'true'}`); restart = true; }
+    await tuneSmallBox(ssh, state, server, info, log);
     const agv = (await ssh.exec(`${AGENT_BIN} version`)).stdout.trim();
     if (resourcesDir && appVersion && agv !== appVersion) {
-      const info = await detect(ssh);
       log(`升级 agent ${agv || '?'} → ${appVersion}`);
       await ssh.writeGz(AGENT_BIN, agentGz(resourcesDir, info.ARCH));
       restart = true;
@@ -482,6 +574,9 @@ echo '{}' > /tmp/nodedeck-empty.json && ${AGENT_BIN} apply-hops -c /tmp/nodedeck
 ${svcOf(server).remove}
 rm -f ${AGENT_BIN} ${SB_BIN} ${SB_BIN}.old ${SB_BIN}.bad
 rm -rf ${DIR}
+# NodeDeck 加的 swap、日志限制、BBR 以外的系统改动一并撤销
+if grep -q '^/nodedeck.swap ' /etc/fstab 2>/dev/null; then swapoff /nodedeck.swap 2>/dev/null; sed -i '\#^/nodedeck.swap #d' /etc/fstab; rm -f /nodedeck.swap /etc/sysctl.d/99-nodedeck-swap.conf; fi
+if [ -f /etc/systemd/journald.conf.d/nodedeck.conf ]; then rm -f /etc/systemd/journald.conf.d/nodedeck.conf; systemctl restart systemd-journald 2>/dev/null; fi
 echo ok`));
 }
 
@@ -587,4 +682,4 @@ async function gateRealityTarget(ssh, server, log, force) {
   log(`✔ Reality 目标 ${rp.sni} 检测通过（TLS 1.3、HTTP/2、X25519、证书有效，${r.ms} ms）`);
 }
 
-module.exports = { pickReality, adminNotify, realityCheck, deployServer, syncServer, updateSingbox, serverSelfCheck, notifyTest, fetchMetrics, scanReality, serverStatus, fetchStats, resetTraffic, serverLogs, uninstall, testSSH, remoteTlsCheck, agentConfig };
+module.exports = { memLimits, writeUnits, tuneSmallBox, rememberHw, pickReality, adminNotify, realityCheck, deployServer, syncServer, updateSingbox, serverSelfCheck, notifyTest, fetchMetrics, scanReality, serverStatus, fetchStats, resetTraffic, serverLogs, uninstall, testSSH, remoteTlsCheck, agentConfig };

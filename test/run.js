@@ -149,3 +149,33 @@ console.log('agent users', JSON.stringify(core.buildAgentUsers(state, node)));
   } catch (err) { if (err.code !== 'ENOENT') fail('java 检查出错：' + err.message); else console.log('SKIP java-uri（没有 Java）'); }
   if (!bad) console.log(`OK   share-links (${all.length})`);
 }
+
+// 0.6.4：真正启动一次 sing-box。有些错误 `sing-box check` 查不出来，只在启动时才报
+// （例如规则集下载客户端写成 detour: 'direct' 会直接退出）。端口挪到高位，不需要 root。
+{
+  const { spawn } = require('child_process');
+  const srv = core.newServer({ name: 'RUN1', host: '4.4.4.4' });
+  srv.protocols.shadowsocks.enabled = true;
+  srv.routing = { blockBT: true, blockAds: true, blockCN: true, warp: { enabled: true, sites: ['openai'] } };
+  srv.warp = { privateKey: k(), peerPublicKey: k(), address4: '172.16.0.2', address6: '2606:4700:110:8a36::1', reserved: [1, 2, 3], endpointHost: '162.159.192.1', endpointPort: 2408 };
+  const st = { ...state, settings: { ...state.settings, statsPort: 48085 }, servers: [srv] };
+  const cfg = core.buildServerConfig(st, srv);
+  let n = 0;
+  for (const i of cfg.inbounds || []) if (i.listen_port) i.listen_port = 41000 + (n++);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nd-run-'));
+  cfg.experimental = { ...(cfg.experimental || {}), cache_file: { enabled: true, path: path.join(dir, 'cache.db') } };
+  if (cfg.experimental.v2ray_api) cfg.experimental.v2ray_api.listen = '127.0.0.1:48085';
+  const f = path.join(dir, 'run.json');
+  fs.writeFileSync(f, JSON.stringify(cfg, null, 2).replaceAll('/etc/nodedeck/cert.pem', path.join(certDir, 'cert.pem')).replaceAll('/etc/nodedeck/key.pem', path.join(certDir, 'key.pem')));
+  const p = spawn(SB, ['run', '-c', f], { stdio: ['ignore', 'pipe', 'pipe'] });
+  let out = '';
+  p.stdout.on('data', (d) => { out += d; }); p.stderr.on('data', (d) => { out += d; });
+  const done = new Promise((res) => p.on('exit', (code) => res(code)));
+  const timer = new Promise((res) => setTimeout(() => res('alive'), 8000));
+  Promise.race([done, timer]).then((r) => {
+    p.kill();
+    const bad = out.split('\n').filter((l) => /FATAL|ERROR|deprecated/i.test(l));
+    if (r !== 'alive' || bad.length) { console.log('FAIL run-server', r, bad.join(' | ').slice(0, 400)); process.exitCode = 1; }
+    else console.log('OK   run-server（启动 8 秒无错误、无弃用警告，规则集已下载）');
+  });
+}

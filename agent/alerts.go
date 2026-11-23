@@ -3,6 +3,8 @@ package main
 // 运维告警（Telegram）：sing-box 挂了（先自动拉起）、磁盘快满、CPU 持续过高、三网延迟明显变差
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"syscall"
 	"time"
@@ -35,6 +37,40 @@ func diskPct(path string) float64 {
 		return 0
 	}
 	return 100 * float64(st.Blocks-st.Bavail) / float64(st.Blocks)
+}
+
+func diskFreeMB(path string) int64 {
+	var st syscall.Statfs_t
+	if syscall.Statfs(path, &st) != nil {
+		return 0
+	}
+	return int64(st.Bavail) * int64(st.Bsize) / 1024 / 1024
+}
+
+// OpenRC 下日志写在 /var/log/nodedeck-*.log，没有自动轮转：超过 20MB 只保留最后 2MB
+func trimLogs() {
+	files, _ := filepath.Glob("/var/log/nodedeck-*.log")
+	for _, f := range files {
+		fi, err := os.Stat(f)
+		if err != nil || fi.Size() < 20<<20 {
+			continue
+		}
+		fh, err := os.Open(f)
+		if err != nil {
+			continue
+		}
+		buf := make([]byte, 2<<20)
+		n, _ := fh.ReadAt(buf, fi.Size()-int64(len(buf)))
+		fh.Close()
+		// 原地截断再写回（supervise-daemon 用追加方式打开，截断后继续写不会出错）
+		if err := os.Truncate(f, 0); err == nil {
+			if w, err := os.OpenFile(f, os.O_WRONLY|os.O_APPEND, 0644); err == nil {
+				w.Write([]byte("…（日志太大，NodeDeck 已截掉前面的部分）\n"))
+				w.Write(buf[:n])
+				w.Close()
+			}
+		}
+	}
 }
 
 func median(v []float64) float64 {
@@ -101,6 +137,18 @@ func (a *Agent) checkAlerts(now time.Time) {
 		return
 	}
 	recent := mins[len(mins)-15:]
+	memHigh := true
+	for _, s := range recent {
+		if s.Mem < 90 {
+			memHigh = false
+			break
+		}
+	}
+	if memHigh {
+		a.mu.Lock()
+		a.notifyOnce("mem:"+now.Format("2006-01-02T15"), "🧠 内存已经连续 15 分钟用到 90% 以上，可能快不够了（同时在线的连接太多，或机器上还跑着别的程序）。小内存机器建议加 swap 或升级配置")
+		a.mu.Unlock()
+	}
 	high := true
 	for _, s := range recent {
 		if s.CPU < float64(c.CPUPct) {
