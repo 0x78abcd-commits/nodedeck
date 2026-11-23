@@ -121,9 +121,12 @@ async function syncAll() {
 async function go(p) { page = p; renderNav(); await render(); }
 
 async function render() {
+  // 每次渲染用一个新容器：连续触发两次渲染时，旧的那次写到已被移除的容器里，不会重复显示
   const v = document.getElementById('view');
+  const box = h('div', { class: 'view-inner' });
   v.innerHTML = '';
-  try { await VIEWS[page](v); } catch (e) { v.append(h('div', { class: 'card' }, '出错了：' + e.message)); }
+  v.append(box);
+  try { await VIEWS[page](box); } catch (e) { box.append(h('div', { class: 'card' }, '出错了：' + e.message)); }
 }
 
 // ---------- 概览 ----------
@@ -162,15 +165,38 @@ async function viewServers(v) {
     h('button', { onclick: (e) => busy(e.currentTarget, syncAll) }, '同步全部'),
     h('button', { class: 'primary', onclick: () => editServer() }, '+ 添加服务器')));
   if (!S.servers.length) { v.append(h('div', { class: 'card empty' }, '还没有服务器，点右上角添加')); return; }
+  for (const id of [...serverSel]) if (!S.servers.some((x) => x.id === id)) serverSel.delete(id);
+  const n = serverSel.size;
+  if (n) v.append(h('div', { class: 'toolbar', style: { marginBottom: '8px' } }, h('div', { class: 'spacer' }), h('span', { class: 'muted' }, `已选 ${n} 台`),
+    h('button', { class: 'small', onclick: (e) => menu(e.currentTarget, [
+      { label: '同步', onClick: () => serverBatch('sync') },
+      { label: '一键换新（换端口和密钥）', onClick: async () => { if (await confirmBox(`给选中的 ${n} 台服务器一键换新？用户需要刷新订阅。`)) serverBatch('rotate'); } },
+      { label: 'Reality 目标：自动重新优选', onClick: () => serverBatch('realitySni', '__auto__') },
+      { label: 'Reality 目标：统一改成…', onClick: async () => { const d = await promptText('统一 Reality 目标', '目标网站域名', 'www.microsoft.com'); if (d) serverBatch('realitySni', d); } },
+      { label: '路由规则：开启屏蔽 BT', onClick: () => serverBatch('routing', { blockBT: true }) },
+      { label: '路由规则：关闭屏蔽 BT', onClick: () => serverBatch('routing', { blockBT: false }) },
+      { label: '路由规则：开启屏蔽广告', onClick: () => serverBatch('routing', { blockAds: true }) },
+      { label: '路由规则：关闭屏蔽广告', onClick: () => serverBatch('routing', { blockAds: false }) },
+      { label: '路由规则：禁止访问国内网站', onClick: () => serverBatch('routing', { blockCN: true }) },
+      { label: '路由规则：允许访问国内网站', onClick: () => serverBatch('routing', { blockCN: false }) },
+    ]) }, '批量操作 ▾'),
+    h('button', { class: 'small', onclick: () => { serverSel.clear(); render(); } }, '取消选择')));
+  const allCb = h('input', { type: 'checkbox', checked: S.servers.every((x) => serverSel.has(x.id)) });
+  allCb.onchange = () => { for (const x of S.servers) allCb.checked ? serverSel.add(x.id) : serverSel.delete(x.id); render(); };
   const tb = h('tbody');
   for (const s of S.servers) {
+    const cb = h('input', { type: 'checkbox', checked: serverSel.has(s.id) });
+    cb.onchange = () => { cb.checked ? serverSel.add(s.id) : serverSel.delete(s.id); render(); };
+    const rs = s.realityState;
+    const realityTag = s.protocols?.vlessReality?.enabled && rs?.fails > 0 ? h('span', { class: 'tag warn', title: rs.lastErr || '' }, `Reality 目标异常 ×${rs.fails}`) : null;
     const st = s.lastStatus;
     const status = !s.deployedAt ? h('span', { class: 'tag' }, '未部署') : st && st.singbox && st.agent ? h('span', { class: 'tag ok' }, '运行中') : h('span', { class: 'tag bad' }, '异常');
     const protos = PROTOS.filter(([k]) => s.protocols?.[k]?.enabled).map(([k, l]) => h('span', { class: 'tag' }, `${l}:${s.protocols[k].port}`));
     const exit = s.exit?.type === 'landing' ? h('span', { class: 'tag blue' }, '落地: ' + (S.landings.find((l) => l.id === s.exit.landingId)?.name || '?')) : h('span', { class: 'tag' }, '直连');
     const fw = S.forwards.filter((f) => f.relayServerId === s.id).length;
     tb.append(h('tr', {},
-      h('td', {}, h('b', {}, s.name), h('div', { class: 'muted mono', style: { wordBreak: 'normal', whiteSpace: 'nowrap' } }, s.host), s.role === 'relay' ? h('span', { class: 'tag blue' }, '中转机') : null, vpsExpireTag(s), core_cf(s) && s.deployedAt ? h('span', { class: 'tag ' + (s.lastStatus?.cf ? 'blue' : 'warn'), title: s.lastStatus?.cf ? '' : '隧道服务没在运行：检查令牌是否正确、VPS 能否连上 Cloudflare' }, s.lastStatus?.cf ? 'CF 隧道' : 'CF 隧道未连通') : null),
+      h('td', { style: { width: '28px' } }, cb),
+      h('td', {}, h('b', {}, s.name), h('div', { class: 'muted mono', style: { wordBreak: 'normal', whiteSpace: 'nowrap' } }, s.host), realityTag, s.role === 'relay' ? h('span', { class: 'tag blue' }, '中转机') : null, vpsExpireTag(s), core_cf(s) && s.deployedAt ? h('span', { class: 'tag ' + (s.lastStatus?.cf ? 'blue' : 'warn'), title: s.lastStatus?.cf ? '' : '隧道服务没在运行：检查令牌是否正确、VPS 能否连上 Cloudflare' }, s.lastStatus?.cf ? 'CF 隧道' : 'CF 隧道未连通') : null),
       h('td', {}, status, agentOutdated(s) ? h('span', { class: 'tag warn', title: '点「同步」自动升级' }, 'agent 待升级') : null, st?.version ? h('div', { class: 'muted' }, 'sing-box ' + st.version) : null, st?.mem ? h('div', { class: 'muted' }, `内存 ${st.mem} · 负载 ${st.load}`) : null),
       h('td', {}, protos.length ? protos : h('span', { class: 'muted' }, '无'), fw ? h('span', { class: 'tag blue' }, `转发 ${fw}`) : null),
       h('td', {}, exit),
@@ -185,10 +211,50 @@ async function viewServers(v) {
           s.deployedAt && { label: '查看日志', onClick: () => showLogs(s) },
           s.deployedAt && { label: '升级 sing-box 内核', onClick: async () => { toast('正在检查内核更新…'); const m = await api.call('server:updateSingbox', s.id); toast(m, 'ok'); render(); } },
           { label: '一键换新（被墙时用）', onClick: () => rotateServer(s) },
+          s.deployedAt && s.protocols?.vlessReality?.enabled && { label: '重新优选 Reality 目标', onClick: () => repickReality(s) },
+          s.deployedAt && s.protocols?.vlessReality?.enabled && { label: '检查 Reality 目标', onClick: () => checkRealityNow(s) },
           { label: '删除', danger: true, onClick: () => removeServer(s) },
         ]) }, '更多 ▾')))));
   }
-  v.append(h('div', { class: 'card' }, h('table', {}, h('thead', {}, h('tr', {}, ['服务器', '状态', '协议 / 端口', '出口', '操作'].map((t) => h('th', {}, t)))), tb)));
+  v.append(h('div', { class: 'card' }, h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, allCb), ['服务器', '状态', '协议 / 端口', '出口', '操作'].map((t) => h('th', {}, t)))), tb)));
+}
+
+const serverSel = new Set();
+async function serverBatch(action, arg) {
+  const ids = [...serverSel];
+  toast(`正在处理 ${ids.length} 台服务器…`);
+  try {
+    const r = await api.call('servers:batch', ids, action, arg);
+    if (r.fail.length) toast(`成功 ${r.ok.length} 台，失败 ${r.fail.length} 台：\n` + r.fail.join('\n'), 'warn');
+    else toast(`已完成 ${r.ok.length} 台`, 'ok');
+  } catch (e) { toast(e.message, 'err'); }
+  dirty = false; renderBanner(); render();
+}
+
+function promptText(title, label, placeholder = '') {
+  return new Promise((resolve) => {
+    const inp = h('input', { placeholder });
+    modal({ title, body: field(label, inp), onClose: () => resolve(null), buttons: [{ label: '取消', onClick: () => resolve(null) }, { label: '确定', class: 'primary', onClick: () => resolve(inp.value.trim() || null) }] });
+    setTimeout(() => inp.focus(), 50);
+  });
+}
+
+async function repickReality(s) {
+  toast('正在 VPS 上寻找 Reality 目标（约 1 分钟）…');
+  try {
+    const r = await api.call('server:repickReality', s.id);
+    toast(`Reality 目标换成 ${r.domain}（${r.source === 'neighbor' ? '同网段邻居' : '备选大站里最快的'}），已同步。用户刷新订阅即可`, 'ok');
+  } catch (e) { toast(e.message, 'err'); }
+  render();
+}
+
+async function checkRealityNow(s) {
+  toast('正在检查 Reality 目标…');
+  try {
+    const r = await api.call('server:realityCheck', s.id);
+    if (r.fails === 0) toast(`Reality 目标 ${r.current} 正常`, 'ok');
+    else toast(`Reality 目标 ${r.current} 检查失败（第 ${r.fails} 次）：${r.lastErr}`, 'warn');
+  } catch (e) { toast(e.message, 'err'); }
 }
 
 async function editServer(orig) {
@@ -251,7 +317,11 @@ async function editServer(orig) {
     const els = { en, pt, fixed };
     if (k === 'vlessReality') {
       els.rsni = I(pc.sni, { placeholder: 'www.microsoft.com' });
-      extra.push(field('Reality 目标域名（可在工具箱检测）', els.rsni));
+      els.sniAuto = h('input', { type: 'checkbox', checked: !!pc.sniAuto });
+      els.rsni.oninput = () => { els.sniAuto.checked = false; };
+      const src = { neighbor: '同网段邻居', fallback: '备选大站', patrol: '巡检时自动更换' }[pc.sniSource];
+      extra.push(field('Reality 目标域名（可在工具箱检测）', els.rsni, pc.sniPickedAt ? `当前目标由「${src || '自动挑选'}」选出（${fmtDate(pc.sniPickedAt)}）` : ''),
+        h('label', { class: 'muted', style: { fontSize: '12px', display: 'block', margin: '-4px 0 8px' } }, els.sniAuto, ' 部署时自动挑选（同网段邻居优先，找不到再用连得最快的大站）'));
       extra.push(h('button', { class: 'small', onclick: async () => { const kp = await api.call('new:reality'); s.protocols.vlessReality.privateKey = kp.privateKey; s.protocols.vlessReality.publicKey = kp.publicKey; toast('已生成新密钥（保存并同步后生效）'); } }, '重新生成密钥'));
     }
     if (k === 'vmess') { els.path = I(pc.path); extra.push(field('WS 路径', els.path)); }
@@ -268,13 +338,33 @@ async function editServer(orig) {
     grid.append(h('div', { class: 'proto' }, h('div', { class: 'head' }, h('label', {}, en, ' ', h('b', {}, label)), h('span', { class: 'muted' }, netw.toUpperCase())), field('端口', pt), h('label', { class: 'muted', style: { fontSize: '12px', display: 'block', margin: '-4px 0 8px' }, title: '勾上后，部署后端口不通或一键换新时都不会自动换这个端口' }, fixed, ' 固定端口（不自动更换）'), extra));
   }
 
+  // 一键套用协议模板
+  const TEMPLATES = {
+    stealth: { label: '抗封锁版：Reality（自动选邻居、443）+ AnyTLS', on: ['vlessReality', 'anytls'] },
+    speed: { label: '高速版：Hysteria2（混淆 + 端口跳跃）+ TUIC，Reality 备用', on: ['hysteria2', 'tuic', 'vlessReality'], hy: true },
+    balanced: { label: '平衡版：Reality + Hysteria2（混淆）', on: ['vlessReality', 'hysteria2'], hyObfs: true },
+  };
+  const tpl = h('select', { style: { width: 'auto' } }, h('option', { value: '' }, '套用模板…'), Object.entries(TEMPLATES).map(([k, t]) => h('option', { value: k }, t.label)));
+  tpl.onchange = () => {
+    const t = TEMPLATES[tpl.value];
+    if (!t) return;
+    for (const [k] of PROTOS) protoEls[k].en.checked = t.on.includes(k);
+    const r = protoEls.vlessReality;
+    if (r && !r.fixed.checked) { r.pt.value = 443; r.sniAuto.checked = true; }
+    const hy = protoEls.hysteria2;
+    if (hy && (t.hy || t.hyObfs) && !hy.obfs.value) hy.obfs.value = randStr(16);
+    if (hy && t.hy && !hy.hop.value) hy.hop.value = '20000-30000';
+    toast('已套用模板，检查一下端口后保存', 'ok');
+    tpl.value = '';
+  };
+
   const body = h('div', {},
     h('div', { class: 'row' }, field('名称', name), field('地址', host)),
     h('div', { class: 'row' }, field('SSH 端口', port), field('用户名', user), field('认证方式', auth)),
     pwdBox, keyBox,
     h('div', { class: 'row' }, field('角色', role), field('出口', exit), field('VPS 到期日（可选）', vpsExp, '到期前 7 天和 1 天会 Telegram 提醒续费')),
     field('自签证书域名（Trojan/Hy2/TUIC/AnyTLS 的 SNI）', sni),
-    h('h4', {}, '协议'), grid,
+    h('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', margin: '14px 0 8px' } }, h('h4', { style: { margin: 0 } }, '协议'), h('div', { class: 'spacer' }), tpl), grid,
     h('h4', {}, '正式证书（可选）'),
     h('div', { class: 'row' }, field('域名', domain, '要先把这个域名的 A 记录指向服务器 IP（Cloudflare 请关掉小黄云）'), field('邮箱（可选）', acmeEmail)),
     h('label', { class: 'f' }, acme, ' 自动申请 Let\'s Encrypt 证书（Trojan / Hy2 / TUIC / AnyTLS 改用正式证书，客户端不再需要跳过证书验证；需要服务器 80 端口空闲）'),
@@ -305,7 +395,12 @@ async function editServer(orig) {
     for (const [k] of PROTOS) {
       const e = protoEls[k];
       s.protocols[k] = { ...s.protocols[k], enabled: e.en.checked, port: Number(e.pt.value), fixedPort: e.fixed.checked };
-      if (e.rsni) s.protocols[k].sni = e.rsni.value.trim() || 'www.microsoft.com';
+      if (e.rsni) {
+        const nv = e.rsni.value.trim() || 'www.microsoft.com';
+        if (nv !== s.protocols[k].sni) delete s.protocols[k].sniPickedAt;
+        s.protocols[k].sni = nv; s.protocols[k].sniAuto = e.sniAuto.checked;
+        if (!e.sniAuto.checked) delete s.protocols[k].sniPickedAt;
+      }
       if (e.path) s.protocols[k].path = e.path.value.trim().startsWith('/') ? e.path.value.trim() : '/' + e.path.value.trim();
       if (e.up) { s.protocols[k].upMbps = Number(e.up.value) || 0; s.protocols[k].downMbps = Number(e.down.value) || 0; }
       if (e.obfs) s.protocols[k].obfs = e.obfs.value.trim();
@@ -332,23 +427,44 @@ async function editServer(orig) {
   ] });
 }
 
+const DEPLOY_STAGES = [['ssh', '连接 SSH'], ['agent', '上传 agent'], ['kernel', '安装内核'], ['reality', 'Reality 目标 / 端口'], ['firewall', '防火墙'], ['config', '上传配置'], ['start', '启动服务'], ['ports', '测端口'], ['done', '完成']];
 function deployServer(s) {
   const pre = h('pre', { class: 'log' }, '');
   const append = (t) => { pre.textContent += t + '\n'; pre.scrollTop = pre.scrollHeight; };
-  const off = api.on('task-log', (m) => { if (m.task === 'deploy:' + s.id) append(m.line); });
+  const chips = DEPLOY_STAGES.map(([id, label]) => h('span', { class: 'stage', 'data-id': id }, label));
+  let cur = '';
+  const setStage = (id, state) => {
+    const idx = DEPLOY_STAGES.findIndex((x) => x[0] === id);
+    chips.forEach((c, i) => { c.className = 'stage' + (i < idx ? ' done' : i === idx ? ' ' + (state || 'active') : ''); });
+    cur = id;
+  };
+  const stepper = h('div', { class: 'stepper' }, chips);
+  const off = api.on('task-log', (m) => {
+    if (m.task !== 'deploy:' + s.id) return;
+    if (m.line.startsWith('§')) { setStage(m.line.slice(1)); if (m.line === '§done') chips.forEach((c) => { c.className = 'stage done'; }); return; }
+    append(m.line);
+  });
   let running = false;
-  const m = modal({ title: `部署 ${s.name}`, wide: true, body: h('div', {}, h('p', { class: 'muted' }, '会安装 sing-box（含流量统计）、NodeDeck agent、自签证书、systemd 服务，开启 BBR 并放行防火墙端口。已有的 NodeDeck 配置会被覆盖。'), pre), onClose: off, buttons: [
+  const start = async () => {
+    if (running) return;
+    running = true; append(cur ? '重新部署（已完成的步骤会很快跳过）…' : '开始部署 …');
+    try {
+      const r = await api.call('server:deploy', s.id);
+      append('✔ 完成');
+      if (r.portChanges?.length) append('以下端口因为不通已自动更换：' + r.portChanges.join('；'));
+      toast('部署成功', 'ok'); dirty = false; renderBanner(); render();
+    } catch (e) {
+      append('✘ ' + e.message);
+      if (cur) setStage(cur, 'failed');
+      const label = (DEPLOY_STAGES.find((x) => x[0] === cur) || [])[1] || '';
+      append(label ? `卡在「${label}」这一步。改好后点「重试」，已经完成的步骤会很快跳过。` : '');
+      const btn = m.el.querySelector('footer button.primary');
+      if (btn) btn.textContent = '重试';
+    } finally { running = false; }
+  };
+  const m = modal({ title: `部署 ${s.name}`, wide: true, body: h('div', {}, h('p', { class: 'muted' }, '会安装 sing-box（含流量统计）、NodeDeck agent、自签证书、系统服务，自动挑选 Reality 目标和端口，开启 BBR 并放行防火墙端口。已有的 NodeDeck 配置会被覆盖。'), stepper, pre), onClose: off, buttons: [
     { label: '关闭' },
-    { label: '开始部署', class: 'primary', close: false, onClick: async () => {
-      if (running) return;
-      running = true; append('开始部署 …');
-      try {
-        const r = await api.call('server:deploy', s.id);
-        append('✔ 完成');
-        if (r.portChanges?.length) append('以下端口因为不通已自动更换：' + r.portChanges.join('；'));
-        toast('部署成功', 'ok'); dirty = false; renderBanner(); render();
-      } catch (e) { append('✘ ' + e.message); } finally { running = false; }
-    } },
+    { label: '开始部署', class: 'primary', close: false, onClick: start },
   ] });
   return m;
 }
@@ -524,7 +640,7 @@ async function testEntry(e, cell) {
 
 async function showQr(title, text) {
   const src = await api.call('qr', text);
-  modal({ title, body: h('div', { style: { textAlign: 'center' } }, h('img', { class: 'qr', src, style: { width: '260px', height: '260px' } }), h('p', { class: 'mono' }, text)), buttons: [{ label: '复制', onClick: () => copy(text) }, { label: '关闭' }] });
+  modal({ title, body: h('div', { style: { textAlign: 'center' } }, h('img', { class: 'qr', src, style: { width: '260px', height: '260px' } }), h('p', { class: 'mono' }, text), h('p', { class: 'muted', style: { fontSize: '12px' } }, '手机请用较新版 v2rayNG（2.0 以上）/ NekoBox / Clash Meta / Hiddify；Hysteria2、TUIC 太旧的客户端会导入失败或被过滤')), buttons: [{ label: '复制', onClick: () => copy(text) }, { label: '关闭' }] });
 }
 
 // ---------- 用户 ----------
@@ -688,11 +804,30 @@ async function showSub(u) {
     body.append(h('div', { class: 'row', style: { alignItems: 'flex-start' } },
       h('img', { class: 'qr auto', src: r.qr }),
       h('div', {},
-        row('订阅地址（通用，自动识别客户端）', r.url, 'v2rayN / v2rayNG / NekoBox / Shadowrocket / Hiddify 直接用；Clash 和 sing-box 客户端也会自动拿到对应格式'),
+        row('订阅地址（通用，自动识别客户端）', r.url, 'v2rayN / v2rayNG / NekoBox / Shadowrocket / Hiddify 直接用；Clash 和 sing-box 客户端也会自动拿到对应格式。手机请用较新版 v2rayNG（2.0 以上）/ NekoBox / Clash Meta / Hiddify；Hysteria2、TUIC 太旧的客户端会导入失败或被过滤'),
         row('Clash Meta / Mihomo', r.clashUrl),
         row('sing-box（SFA / SFI / SFM，1.12 及以上）', r.singboxUrl),
         h('p', { class: 'muted' }, `状态：${r.status.reason} · 已用 ${fmtBytes(r.used)}${r.expireAt ? ' · 到期 ' + fmtDate(r.expireAt) : ''}。`, h('a', { href: r.pageUrl, target: '_blank' }, '打开订阅信息页'), '（用户在浏览器打开订阅地址会看到用量和一键导入按钮）'))));
     if (r.backups.length) body.append(h('h4', {}, '备用订阅地址（主地址打不开时用）'), r.backups.map((b) => row(b.server, b.url)));
+    // 临时订阅链接：给试用或临时分享，到期自动失效，不影响主地址
+    const tempBox = h('div', {});
+    const drawTemp = () => {
+      tempBox.innerHTML = '';
+      const list = (S.users.find((x) => x.id === u.id)?.tempSubs || []).filter((t) => t.validUntil > Date.now());
+      for (const t of list) tempBox.append(h('div', { class: 'row', style: { alignItems: 'center' } }, h('input', { value: t.url || '（同步后可用）', readonly: true }), h('span', { class: 'muted auto', style: { whiteSpace: 'nowrap' } }, '到 ' + fmtDate(t.validUntil)),
+        t.url ? h('button', { class: 'auto small', onclick: () => copy(t.url) }, '复制') : null,
+        h('button', { class: 'auto small danger', onclick: (e) => busy(e.currentTarget, async () => { await api.call('users:tempSubRemove', u.id, t.token); await reload(); drawTemp(); toast('已作废', 'ok'); }) }, '作废')));
+      if (!list.length) tempBox.append(h('p', { class: 'muted', style: { margin: '4px 0' } }, '没有生效中的临时链接'));
+    };
+    const hours = h('select', { class: 'auto', style: { width: '120px' } }, [[24, '24 小时'], [72, '3 天'], [168, '7 天']].map(([v, l]) => h('option', { value: v }, l)));
+    body.append(h('h4', {}, '临时订阅链接'), h('p', { class: 'muted', style: { marginTop: 0 } }, '内容和主订阅一样，到期后自动失效（返回 410），适合试用或临时分享；不想要了可以随时作废。'),
+      h('div', { class: 'row' }, hours, h('button', { class: 'auto', onclick: (e) => busy(e.currentTarget, async () => {
+        const t = await api.call('users:tempSub', u.id, Number(hours.value));
+        await reload();
+        copy(t.url); drawTemp();
+        if (t.errors.length) toast('部分服务器同步失败：\n' + t.errors.join('\n'), 'warn');
+      }) }, '生成并复制')), tempBox);
+    drawTemp();
   }
   body.append(h('h4', {}, `节点链接（${r.links.length}）`), h('textarea', { readonly: true, style: { minHeight: '120px' } }, r.links.join('\n')));
   modal({ title: `${u.name} 的订阅`, wide: true, body, buttons: [{ label: '复制全部链接', onClick: () => copy(r.links.join('\n')) }, { label: '关闭' }] });
@@ -1055,6 +1190,23 @@ async function viewSettings(v) {
   const saveTg = async () => {
     await api.call('settings:set', { telegram: { enabled: tgOn.checked, botToken: tgToken.value.trim(), chatId: tgChat.value.trim(), daily: tgDaily.checked, dailyHour: Number(tgHour.value) || 0, warnDays: Number(tgDays.value) || 0, warnPercent: Number(tgPct.value) || 0 } });
   };
+  const sel = (opts, val) => { const e = h('select', {}, opts.map(([k, l]) => h('option', { value: k }, l))); e.value = val; return e; };
+  const rpMode = sel([['auto', '自动换新目标并通知'], ['notify', '只通知'], ['off', '不检查']], st.realityPatrol || 'auto');
+  const bwMode = sel([['notify', '只提醒'], ['auto', '自动一键换新（6 小时内最多一次）并提醒'], ['off', '关闭']], st.blockWatch || 'notify');
+  const al = st.alerts || {};
+  const alOn = h('input', { type: 'checkbox', checked: al.enabled !== false });
+  const alDisk = h('input', { type: 'number', min: 50, max: 99, value: al.diskPct || 90 });
+  const alCpu = h('input', { type: 'number', min: 50, max: 100, value: al.cpuPct || 90 });
+  const alLat = h('input', { type: 'number', min: 50, value: al.latencyMs || 300 });
+  const guardCard = h('div', { class: 'card' }, h('h3', {}, '巡检与告警'),
+    field('Reality 目标巡检（VPS 每 6 小时检查一次）', rpMode, '目标网站下线、证书过期或不再支持 TLS 1.3 / HTTP2 时节点会连不上。自动模式下连续 3 次失败会换成同网段邻居或最快的大站，并改好本机订阅'),
+    field('被墙巡检（软件开着时每 30 分钟）', bwMode, '本机连不通、海外能通，连续两次才判定被墙；电脑网络断了不会误报'),
+    h('label', { class: 'f' }, alOn, ' Telegram 运维告警：sing-box 挂了（会先自动重启）、磁盘快满、CPU 持续过高、三网延迟变差'),
+    h('div', { class: 'row' }, field('磁盘用到 %', alDisk), field('CPU 连续 15 分钟高于 %', alCpu), field('三网延迟高于 ms', alLat)),
+    h('button', { class: 'primary', onclick: async () => {
+      await api.call('settings:set', { realityPatrol: rpMode.value, blockWatch: bwMode.value, alerts: { enabled: alOn.checked, diskPct: Number(alDisk.value) || 90, cpuPct: Number(alCpu.value) || 90, latencyMs: Number(alLat.value) || 300 } });
+      toast('已保存，点「同步全部」后各服务器生效', 'ok'); markDirty();
+    } }, '保存'));
   v.append(h('h1', {}, '设置'), h('p', { class: 'sub' }, `数据目录：${info.dataDir}`));
   v.append(h('div', { class: 'grid g2' },
     h('div', { class: 'card' }, h('h3', {}, '服务器端'),
@@ -1072,7 +1224,7 @@ async function viewSettings(v) {
           subDomain: subDomain.value.trim(), timezone: tz.value, upgradeWindow: { enabled: uwOn.checked, start: Number(uwStart.value) || 0, end: Number(uwEnd.value) || 0 } });
         toast('已保存，点「同步全部」后对各 VPS 生效（改了端口需要重新部署）', 'ok'); markDirty();
       } }, '保存')),
-    h('div', {}, updateCard(),
+    h('div', {}, updateCard(), guardCard,
       h('div', { class: 'card' }, h('h3', {}, 'Telegram 通知'),
         h('p', { class: 'muted' }, '由各台 VPS 上的 agent 直接发送，电脑关机也能收到：用户快到期 / 流量快用完 / 被停用、内核升级结果、每日流量报告。'),
         h('label', { class: 'f' }, tgOn, ' 开启'),
@@ -1115,6 +1267,7 @@ const VIEWS = { dash: viewDash, servers: viewServers, nodes: viewNodes, users: v
   renderBanner();
   render();
   showWhatsNew();
+  api.on('toast', (p) => toast(p.text, p.level || 'warn'));
   api.on('usage-updated', () => { if (page === 'users' || page === 'dash') { if (!document.querySelector('.modal-bg')) render(); } });
 })();
 

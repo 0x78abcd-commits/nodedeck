@@ -206,10 +206,15 @@ func (a *Agent) updateSingbox() (string, error) {
 	if err != nil {
 		return fail(err)
 	}
-	// 新版本必须能正常读取当前配置（防止新版删掉了旧字段）
-	if b, err := exec.Command(newBin, "check", "-c", a.path("config.json")).CombinedOutput(); err != nil {
-		os.Remove(newBin)
-		return fail(fmt.Errorf("新版 %s 与当前配置不兼容，已跳过: %s", m.Version, strings.TrimSpace(string(b))))
+	// 新版本必须能正常读取当前所有配置（防止新版删掉了旧字段）
+	for _, f := range []string{"config.json", "config.full.json", "cf.json"} {
+		if _, err := os.Stat(a.path(f)); err != nil {
+			continue
+		}
+		if b, err := exec.Command(newBin, "check", "-c", a.path(f)).CombinedOutput(); err != nil {
+			os.Remove(newBin)
+			return fail(fmt.Errorf("新版 %s 与当前配置 %s 不兼容，已跳过: %s", m.Version, f, strings.TrimSpace(string(b))))
+		}
 	}
 	a.poll() // 重启会清零计数，先收集
 	oldBin := bin + ".old"

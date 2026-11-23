@@ -105,3 +105,47 @@ const sub = core.buildSubscription(state, owner);
 console.log(sub.links.join('\n'));
 console.log(sub.clash.split('\n').slice(0, 8).join('\n'));
 console.log('agent users', JSON.stringify(core.buildAgentUsers(state, node)));
+
+// 0.6.0：分享链接回归（特殊字符密码、显式端口、自签证书指纹、IPv6），并模拟 v2rayNG 的 java.net.URI 解析
+{
+  const s1 = core.newServer({ name: '日本 东京|1', host: '1.2.3.4', certSha256: 'AB:'.repeat(31) + 'AB' });
+  s1.protocols.hysteria2.obfs = 'a/b+c=';
+  s1.protocols.hysteria2.hopPorts = '20000-30000';
+  s1.protocols.shadowsocks.enabled = true; s1.protocols.shadowsocks.port = 8388;
+  const s2 = core.newServer({ name: 'v6', host: '1.2.3.5', ipMode: 'dual', host6: '2001:db8::1' });
+  const u = core.newUser({ id: 'lk', name: 'lk', serverIds: '*' }); u.password = 'p@ss:w/rd?#&x %';
+  const st = { settings: {}, servers: [s1, s2], landings: [], forwards: [], users: [u] };
+  const all = [];
+  let bad = 0;
+  const fail = (m) => { console.log('FAIL link', m); bad++; process.exitCode = 1; };
+  for (const sv of [s1, s2]) for (const e of core.nodeEntries(st, sv)) {
+    const l = core.shareLink(st, e, u);
+    all.push(l);
+    if (/\s/.test(l)) fail('含空白：' + l.slice(0, 50));
+    if (l.startsWith('vmess://')) continue;
+    let url;
+    try { url = new URL(l); } catch (err) { fail('URL 解析失败：' + l.slice(0, 60)); continue; }
+    if (!url.port) fail('没有显式端口：' + l.slice(0, 60));
+    const user = decodeURIComponent(url.username + (url.password ? ':' + url.password : ''));
+    if (['trojan:', 'hysteria2:', 'anytls:'].includes(url.protocol) && user !== u.password) fail(`${url.protocol} 密码不一致：${user}`);
+    if (url.protocol === 'tuic:' && user !== `${u.uuid}:${u.password}`) fail('tuic 用户信息不一致');
+    const q = url.searchParams;
+    if (sv === s1 && url.protocol === 'hysteria2:') {
+      if (q.get('pinSHA256') !== 'ab'.repeat(32)) fail('hy2 缺少 pinSHA256');
+      if (q.get('obfs-password') !== 'a/b+c=') fail('hy2 混淆密码编码错误');
+      if (q.get('mport') !== '20000-30000') fail('hy2 缺少 mport');
+    }
+    if (sv === s1 && ['trojan:', 'tuic:', 'anytls:'].includes(url.protocol) && q.get('pcs') !== 'ab'.repeat(32)) fail(url.protocol + ' 缺少 pcs 证书指纹');
+    if (sv === s2 && (q.get('pinSHA256') || q.get('pcs'))) fail('没有证书指纹时不应带 pin');
+    try { links.parseShareLink(l, 't'); } catch (err) { fail('parseShareLink 失败：' + err.message + ' ' + l.slice(0, 50)); }
+  }
+  // v2rayNG 用 java.net.URI 解析；有 Java 就真的跑一遍
+  try {
+    execFileSync('javac', ['-version'], { stdio: 'ignore' });
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'uri-'));
+    execFileSync('javac', ['-d', dir, path.join(__dirname, 'java', 'UriCheck.java')], { stdio: 'ignore' });
+    const out = execFileSync('java', ['-cp', dir, 'UriCheck'], { input: all.filter((x) => !x.startsWith('vmess://')).join('\n'), stdio: ['pipe', 'pipe', 'ignore'] }).toString();
+    for (const line of out.trim().split('\n')) if (!line.startsWith('OK') || / port=-1 /.test(line) || / host=null /.test(line)) fail('java.net.URI：' + line.slice(0, 120));
+  } catch (err) { if (err.code !== 'ENOENT') fail('java 检查出错：' + err.message); else console.log('SKIP java-uri（没有 Java）'); }
+  if (!bad) console.log(`OK   share-links (${all.length})`);
+}

@@ -8,7 +8,7 @@ contextBridge.exposeInMainWorld('api', {
     return r.data;
   },
   on: (channel, fn) => {
-    if (!['task-log', 'update-status', 'usage-updated'].includes(channel)) return () => {};
+    if (!['task-log', 'update-status', 'usage-updated', 'toast'].includes(channel)) return () => {};
     const h = (_e, payload) => fn(payload);
     ipcRenderer.on(channel, h);
     return () => ipcRenderer.removeListener(channel, h);

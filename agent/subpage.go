@@ -20,6 +20,8 @@ func detectFormat(r *http.Request) string {
 	switch {
 	case strings.Contains(ua, "clash") || strings.Contains(ua, "mihomo") || strings.Contains(ua, "stash"):
 		return "clash"
+	case strings.Contains(ua, "shadowrocket"):
+		return "shadowrocket"
 	case strings.Contains(ua, "sing-box") || strings.Contains(ua, "sfa/") || strings.Contains(ua, "sfi/") || strings.Contains(ua, "sfm/") || strings.Contains(ua, "sft/"):
 		return "singbox"
 	case strings.Contains(ua, "mozilla") && !strings.Contains(ua, "v2ray") && !strings.Contains(ua, "hiddify") && !strings.Contains(ua, "nekobox") && !strings.Contains(ua, "shadowrocket") && !strings.Contains(ua, "quantumult") && !strings.Contains(ua, "surge"):

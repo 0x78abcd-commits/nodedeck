@@ -1,7 +1,8 @@
-name: 参考仓库更新提醒
+name: 上游仓库更新提醒
 
-# 每周检查参考仓库 Teminuosi/tms-client 的新版本，
-# 有新版就在本仓库开一个 Issue，列出它的更新说明，方便决定要不要跟进。
+# 每周检查上游仓库的新版本，有新版就在本仓库开一个 Issue，列出更新说明，方便决定要不要跟进。
+# 原则：sing-box 内核由 singbox.yml 自动构建、VPS 自动升级；协议字段 / 配置格式的变化要人工确认、测试通过后再合入。
+# 跟踪清单和理由见 docs/upstream-tracking.md。
 on:
   schedule:
     - cron: '41 23 * * 0'   # 每周日 23:41 UTC（北京时间周一 07:41）
@@ -11,20 +12,34 @@ permissions:
   issues: write
   contents: read
 
-env:
-  UPSTREAM: Teminuosi/tms-client
-  LABEL: upstream-tms
-
 jobs:
   watch:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - { upstream: SagerNet/sing-box,       label: upstream-singbox,  short: sing-box,  pre: false, why: '内核：协议、配置字段、弃用项（以它为准）' }
+          - { upstream: XTLS/Xray-core,          label: upstream-xray,     short: Xray,      pre: false, why: 'Reality / Vision / 抗封锁新思路（不换内核，只借鉴）' }
+          - { upstream: apernet/hysteria,        label: upstream-hysteria, short: Hysteria,  pre: false, why: 'Hysteria2 协议规范、分享链接参数' }
+          - { upstream: tuic-protocol/tuic,      label: upstream-tuic,     short: TUIC,      pre: false, why: 'TUIC v5 变更' }
+          - { upstream: 2dust/v2rayNG,           label: upstream-v2rayng,  short: v2rayNG,   pre: false, why: '安卓客户端兼容、链接导入（如 allowInsecure 被移除）' }
+          - { upstream: 2dust/v2rayN,            label: upstream-v2rayn,   short: v2rayN,    pre: false, why: 'Windows 客户端兼容' }
+          - { upstream: MetaCubeX/mihomo,        label: upstream-mihomo,   short: mihomo,    pre: false, why: 'Clash Meta 订阅字段' }
+          - { upstream: Teminuosi/tms-client,    label: upstream-tms,      short: TMS,       pre: true,  why: '功能灵感（不公开源码，只看说明，自己实现）' }
     env:
       GH_TOKEN: ${{ github.token }}
+      UPSTREAM: ${{ matrix.upstream }}
+      LABEL: ${{ matrix.label }}
+      SHORT: ${{ matrix.short }}
+      PRE: ${{ matrix.pre }}
+      WHY: ${{ matrix.why }}
     steps:
       - name: 检查新版本并开 Issue
         run: |
           set -e
-          gh label create "$LABEL" --repo "$GITHUB_REPOSITORY" --color 1d76db --description "参考仓库的更新" --force >/dev/null
+          gh label create "$LABEL" --repo "$GITHUB_REPOSITORY" --color 1d76db --description "$SHORT 的更新" --force >/dev/null
 
           # 上次已经提醒到的版本，记在最近一个 Issue 的 <!-- last: x --> 里
           LAST=$(gh issue list --repo "$GITHUB_REPOSITORY" --label "$LABEL" --state all --limit 1 --json body \
@@ -33,9 +48,10 @@ jobs:
 
           gh api "repos/$UPSTREAM/releases?per_page=30" > releases.json
           # 从新到旧取，遇到上次的版本就停；第一次运行只取最新一个，避免刷屏
-          jq -r --arg last "$LAST" '
-            [ .[] | select(.draft|not) ] as $r
-            | if $last == "" then [$r[0]]
+          jq -r --arg last "$LAST" --argjson pre "$PRE" '
+            [ .[] | select(.draft|not) | select($pre or (.prerelease|not)) ] as $r
+            | if ($r|length) == 0 then []
+              elif $last == "" then [$r[0]]
               else [ $r | to_entries[] | select(.key < ([$r[] | .tag_name] | index($last) // 30)) | .value ]
               end
             | .[] | @base64' releases.json > new.txt
@@ -46,20 +62,23 @@ jobs:
           OLDEST=$(tail -1 new.txt | base64 -d | jq -r .tag_name)
           COUNT=$(wc -l < new.txt)
           {
-            echo "参考仓库 [$UPSTREAM](https://github.com/$UPSTREAM/releases) 发布了 $COUNT 个新版本。"
+            echo "[$UPSTREAM](https://github.com/$UPSTREAM/releases) 发布了 $COUNT 个新版本。"
             echo
-            echo "看完后，想要的功能可以找 Claude 实现（每周的定时跟进也会自动处理）。"
-            echo "参考仓库不公开源码，这里只看更新说明，自己实现，不复制它的代码或安装包。"
+            echo "**为什么跟踪**：$WHY"
+            echo
+            echo "处理方式：内核自动升级不用管；新协议字段、配置格式、分享链接参数的变化需要改代码，测试通过后再合入（每周的定时跟进会自动处理）。"
             echo
             while read -r line; do
               r=$(echo "$line" | base64 -d)
               echo "## $(echo "$r" | jq -r .tag_name)（$(echo "$r" | jq -r '.published_at[:10]')）"
               echo
-              echo "$r" | jq -r '.body // "（无说明）"'
+              echo "$r" | jq -r '(.body // "（无说明）") | if length > 4000 then .[:4000] + "\n\n…（太长已截断，看原文）" else . end'
               echo
             done < new.txt
             echo "<!-- last: $NEWEST -->"
           } > body.md
 
-          if [ "$COUNT" = 1 ]; then TITLE="[参考仓库] TMS $NEWEST 更新说明"; else TITLE="[参考仓库] TMS $OLDEST ~ $NEWEST 更新说明"; fi
+          head -c 60000 body.md > body2.md && grep -q '<!-- last:' body2.md || echo "<!-- last: $NEWEST -->" >> body2.md
+          mv body2.md body.md
+          if [ "$COUNT" = 1 ]; then TITLE="[上游] $SHORT $NEWEST 更新说明"; else TITLE="[上游] $SHORT $OLDEST ~ $NEWEST 更新说明"; fi
           gh issue create --repo "$GITHUB_REPOSITORY" --label "$LABEL" --title "$TITLE" --body-file body.md

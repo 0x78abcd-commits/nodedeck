@@ -36,7 +36,16 @@ function state() {
 }
 
 function send(channel, payload) { if (win && !win.isDestroyed()) win.webContents.send(channel, payload); }
-function taskLogger(task) { return (line) => send('task-log', { task, line: String(line), time: Date.now() }); }
+// 日志脱敏：Telegram 机器人 token、私钥、密码 / token 参数不显示在界面日志里
+function redact(text) {
+  let t = String(text);
+  t = t.replace(/\b\d{6,12}:[A-Za-z0-9_-]{30,}\b/g, '<bot-token>');
+  t = t.replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, '<private-key>');
+  t = t.replace(/((?:password|passwd|token|secret|private_key|privateKey)["']?\s*[:=]\s*["']?)[^\s"'&,}]{4,}/gi, '$1***');
+  for (const sv of state().servers || []) if (sv.password && sv.password.length >= 4) t = t.split(sv.password).join('***');
+  return t;
+}
+function taskLogger(task) { return (line) => send('task-log', { task, line: String(line).startsWith('§') ? String(line) : redact(line), time: Date.now() }); }
 
 function getServer(id) {
   const s = state().servers.find((x) => x.id === id);
@@ -122,6 +131,7 @@ async function autoFixPorts(id, log) {
 }
 
 // 从各服务器拉取本周期流量、在用时间、首次使用时间
+const realityAdopted = [];
 let refreshing = null;
 async function refreshUsage() {
   if (refreshing) return refreshing;
@@ -133,6 +143,14 @@ async function refreshUsage() {
       try {
         const st = await deploy.fetchStats(srv, s);
         srv.lastStats = { today: st.today, yesterday: st.yesterday, at: now };
+        if (st.reality) {
+          srv.realityState = st.reality;
+          const rp = srv.protocols?.vlessReality;
+          if (rp?.enabled && st.reality.override && st.reality.from === rp.sni) {
+            Object.assign(rp, { sni: st.reality.override, sniSource: 'patrol', sniPickedAt: (st.reality.changedAt || 0) * 1000 });
+            realityAdopted.push(srv.id);
+          }
+        }
         for (const u of s.users) {
           if (!core.userHasServer(u, srv.id)) continue;
           const t = st.traffic?.[u.id] || { up: 0, down: 0 };
@@ -146,9 +164,67 @@ async function refreshUsage() {
       } catch (e) { errors.push(`${srv.name}: ${e.message}`); }
     }
     store.save();
+    // VPS 自动换过 Reality 目标：同步这台和共享用户的服务器，让所有订阅都更新
+    if (realityAdopted.length) {
+      const ids = new Set(realityAdopted.splice(0));
+      for (const id of ids) for (const u of state().users) if (core.userHasServer(u, id)) for (const x of state().servers) if (x.deployedAt && core.userHasServer(u, x.id)) ids.add(x.id);
+      for (const id of ids) { try { await syncOne(id, () => {}); } catch (e) { errors.push(`${getServer(id)?.name}: 同步新 Reality 目标失败：${e.message}`); } }
+      send('toast', { text: 'VPS 自动更换了失效的 Reality 目标，已同步到相关服务器的订阅', level: 'warn' });
+    }
     return { errors, users: state().users };
   })();
   try { return await refreshing; } finally { refreshing = null; }
+}
+
+// ---------- 被墙巡检（软件开着时每 30 分钟一次）----------
+// 本机连不通、海外能通，连续两次判定为被墙后：notify 只提醒；auto 自动一键换新（6 小时内最多一次），换完复测
+const blockState = {};
+function mainTcpPort(srv) {
+  for (const k of ['vlessReality', 'trojan', 'anytls', 'vmess', 'shadowsocks']) if (srv.protocols?.[k]?.enabled) return { key: k, port: Number(srv.protocols[k].port) };
+  return null;
+}
+async function notifyAll(srv, text) {
+  send('toast', { text: `${srv.name}：${text}`, level: 'warn' });
+  if (state().settings.telegram?.enabled) { try { await deploy.adminNotify(srv, text); } catch (_) { /* VPS 连不上就算了 */ } }
+}
+async function blockWatchTick() {
+  const mode = state().settings.blockWatch || 'notify';
+  if (mode === 'off') return;
+  const list = state().servers.filter((x) => x.deployedAt && x.role !== 'relay' && mainTcpPort(x));
+  if (!list.length) return;
+  // 对照组：本机连国内大站都不通，说明是自己网络的问题，不判断
+  const ctl = await tools.tcpPing('www.baidu.com', 443, 5000);
+  if (!ctl.ok) return;
+  const results = [];
+  for (const srv of list) {
+    const mp = mainTcpPort(srv);
+    const local = await tools.tcpPing(srv.host, mp.port, 5000);
+    if (local.ok) { blockState[srv.id] = 0; continue; }
+    results.push({ srv, mp });
+  }
+  if (results.length && results.length === list.length && list.length > 1) return; // 全部不通更像本机网络问题
+  for (const { srv, mp } of results) {
+    let r;
+    try { r = await diagnose.blockCheck(sysFetch, srv.host, mp.port); } catch (_) { continue; }
+    if (!r.verdict.blocked) { blockState[srv.id] = 0; continue; }
+    blockState[srv.id] = (blockState[srv.id] || 0) + 1;
+    if (blockState[srv.id] < 2) continue;
+    blockState[srv.id] = 0;
+    const label = core.PROTOCOLS[mp.key].label;
+    if (mode !== 'auto' || (srv.autoRotatedAt && Date.now() - srv.autoRotatedAt < 6 * 3600e3)) {
+      await notifyAll(srv, `🚫 ${label} 端口 ${mp.port} 疑似被墙（国内连不通、海外能通）。可以在 NodeDeck 里点「一键换新」`);
+      continue;
+    }
+    const rot = core.rotateServer(state(), getServer(srv.id));
+    store.upsert('servers', { ...rot.server, autoRotatedAt: Date.now() });
+    try { await syncOne(srv.id, () => {}); } catch (e) { await notifyAll(srv, `🚫 疑似被墙，自动换新后同步失败：${e.message}`); continue; }
+    await new Promise((res) => setTimeout(res, 30000));
+    const np = mainTcpPort(getServer(srv.id));
+    const again = await tools.tcpPing(srv.host, np.port, 5000);
+    await notifyAll(srv, again.ok
+      ? `🔁 ${label} 端口 ${mp.port} 疑似被墙，已自动一键换新（${rot.changes.join('；')}），新端口本机可连通。请让用户刷新订阅`
+      : `🚫 ${label} 疑似被墙，已自动换端口和密钥但新端口仍连不通：多半是 IP 被墙，建议换 IP 或开 Cloudflare 隧道`);
+  }
 }
 
 function parseLandingLines(lines) {
@@ -250,7 +326,9 @@ function registerIpc() {
     const st = await deploy.deployServer(state(), srv, { resourcesDir, log });
     store.upsert('servers', { id, deployedAt: Date.now(), lastStatus: st });
     let portChanges = [];
+    log('§ports');
     try { portChanges = await autoFixPorts(id, log); } catch (e) { log('端口自测出错：' + e.message); }
+    log('§done');
     return { ...st, portChanges };
   });
   handle('server:sync', async (id) => {
@@ -292,6 +370,57 @@ function registerIpc() {
       try { await syncOne(id, taskLogger('sync:' + id)); synced = true; } catch (e) { error = e.message; }
     }
     return { changes: r.changes, synced, error };
+  });
+  handle('server:repickReality', async (id) => {
+    const log = taskLogger('sync:' + id);
+    const pick = await deploy.pickReality(getServer(id), log);
+    if (!pick) throw new Error('没有找到合适的 Reality 目标');
+    const cur = getServer(id);
+    store.upsert('servers', { id, protocols: { ...cur.protocols, vlessReality: { ...cur.protocols.vlessReality, sni: pick.domain, sniAuto: true, sniSource: pick.source, sniPickedAt: Date.now() } } });
+    await syncOne(id, log);
+    return pick;
+  });
+  handle('server:realityCheck', (id) => deploy.realityCheck(getServer(id)));
+  handle('servers:batch', async (ids, action, arg) => {
+    const ok = [], fail = [];
+    for (const id of ids) {
+      const srv = getServer(id);
+      if (!srv) continue;
+      try {
+        if (action === 'rotate') store.upsert('servers', core.rotateServer(state(), srv).server);
+        else if (action === 'routing') store.upsert('servers', { id, routing: { ...(srv.routing || {}), ...arg } });
+        else if (action === 'realitySni') {
+          if (!srv.protocols?.vlessReality?.enabled) { fail.push(`${srv.name}：没开 Reality`); continue; }
+          if (arg === '__auto__') {
+            const pick = srv.deployedAt ? await deploy.pickReality(srv) : null;
+            if (!pick) throw new Error('没找到合适的目标');
+            store.upsert('servers', { id, protocols: { ...srv.protocols, vlessReality: { ...srv.protocols.vlessReality, sni: pick.domain, sniAuto: true, sniSource: pick.source, sniPickedAt: Date.now() } } });
+          } else store.upsert('servers', { id, protocols: { ...srv.protocols, vlessReality: { ...srv.protocols.vlessReality, sni: String(arg).trim(), sniAuto: false } } });
+        } else if (action !== 'sync') throw new Error('未知操作');
+        if (getServer(id).deployedAt) await syncOne(id, taskLogger('sync:' + id));
+        ok.push(srv.name);
+      } catch (e) { fail.push(`${srv.name}：${e.message}`); }
+    }
+    return { ok, fail };
+  });
+  handle('users:tempSub', async (userId, hours) => {
+    const u = state().users.find((x) => x.id === userId);
+    if (!u) throw new Error('用户不存在');
+    const now = Date.now();
+    const temp = (u.tempSubs || []).filter((t) => t.validUntil > now);
+    const t = { token: core.randId(24), validUntil: now + Math.max(1, Number(hours) || 24) * 3600e3, createdAt: now };
+    t.url = core.subscriptionUrl(state(), { ...u, token: t.token });
+    temp.push(t);
+    store.upsert('users', { id: userId, tempSubs: temp });
+    const errors = [];
+    for (const x of state().servers) if (x.deployedAt && core.userHasServer(u, x.id)) { try { await syncOne(x.id, () => {}); } catch (e) { errors.push(`${x.name}：${e.message}`); } }
+    return { url: t.url, validUntil: t.validUntil, errors };
+  });
+  handle('users:tempSubRemove', async (userId, token) => {
+    const u = state().users.find((x) => x.id === userId);
+    store.upsert('users', { id: userId, tempSubs: (u.tempSubs || []).filter((t) => t.token !== token) });
+    for (const x of state().servers) if (x.deployedAt && core.userHasServer(u, x.id)) { try { await syncOne(x.id, () => {}); } catch (_) { /* ignore */ } }
+    return true;
   });
   handle('server:metrics', (id, range) => deploy.fetchMetrics(getServer(id), range));
   handle('tools:realityScan', (serverId) => deploy.scanReality(getServer(serverId)));
@@ -409,5 +538,7 @@ app.whenReady().then(() => {
   const tick = () => { if (state().servers.some((x) => x.deployedAt)) refreshUsage().then(() => send('usage-updated', Date.now())).catch(() => {}); };
   setTimeout(tick, 15000);
   setInterval(tick, 10 * 60 * 1000);
+  setTimeout(() => blockWatchTick().catch(() => {}), 120000);
+  setInterval(() => blockWatchTick().catch(() => {}), 30 * 60 * 1000);
 });
 app.on('window-all-closed', () => app.quit());

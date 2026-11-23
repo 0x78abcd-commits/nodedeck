@@ -4,11 +4,11 @@ Windows 桌面软件：**填 VPS → 一键部署全套协议 → 分配给用�
 
 | 模块 | 功能 |
 |---|---|
-| 服务器 | SSH 一键安装 sing-box + agent，自签或 Let's Encrypt 证书、BBR、防火墙放行；支持 Debian / Ubuntu / CentOS（systemd）和 Alpine（OpenRC），x86-64 / ARM64 / ARMv7 / x86；一键体检、被墙检测、一键换新；监控面板（CPU、内存、网速、三网延迟、本月流量、VPS 到期提醒） |
-| 协议 | VLESS-Reality、Trojan、VMess-WS、Hysteria2（混淆 + 端口跳跃）、TUIC v5、AnyTLS、Shadowsocks-2022；IPv6 线路；Cloudflare 隧道（IP 被墙也能用，可配优选地址） |
+| 服务器 | 批量操作；被墙巡检（只提醒或自动换新）；SSH 一键安装 sing-box + agent，自签或 Let's Encrypt 证书、BBR、防火墙放行；支持 Debian / Ubuntu / CentOS（systemd）和 Alpine（OpenRC），x86-64 / ARM64 / ARMv7 / x86；一键体检、被墙检测、一键换新；监控面板（CPU、内存、网速、三网延迟、本月流量、VPS 到期提醒） |
+| 协议 | VLESS-Reality（部署时自动挑同网段邻居做目标，定期巡检自动换）、Trojan、VMess-WS、Hysteria2（混淆 + 端口跳跃）、TUIC v5、AnyTLS、Shadowsocks-2022；三种一键模板；IPv6 线路；Cloudflare 隧道（IP 被墙也能用，可配优选地址） |
 | 路由 | 屏蔽 BT / 广告 / 回国流量，指定网站走 Cloudflare WARP |
 | 节点 | 分享链接、二维码、本地测试（延迟 + 出口 IP + 是否机房 IP） |
-| 用户 | 多用户、按线路分配、流量上限和定期重置、到期时间或首次使用后 N 天、在用状态、批量操作；订阅自动识别 v2rayN / Clash Meta / sing-box，浏览器打开是订阅信息页；Telegram 通知 |
+| 用户 | 多用户、按线路分配、流量上限和定期重置、到期时间或首次使用后 N 天、在用状态、批量操作；订阅自动识别 v2rayN / Clash Meta / sing-box / Shadowrocket，浏览器打开是订阅信息页；临时订阅链接；自签证书自动带指纹（新版 v2rayNG 可直接用）；Telegram 通知和运维告警 |
 | 落地 | 住宅 SOCKS5 / HTTP 或机场节点（链接 / 订阅导入）做出口，分组管理，一键切换 |
 | 中转 / 隧道 | 用另一台 VPS 做端口转发；目标是节点协议时订阅里自动多一条「经中转」线路；也可以转发任意地址 |
 | 工具箱 | IP 画像、端口检测、DNS、路由追踪、被墙检测、Reality 目标检测和同网段扫描、SOCKS5 转二维码 |

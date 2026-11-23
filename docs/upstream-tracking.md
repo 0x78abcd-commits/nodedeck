@@ -1,3 +1,28 @@
+# 上游跟进
+
+## 跟踪清单
+
+`.github/workflows/upstream-watch.yml` 每周一检查下面这些仓库的正式版，有新版就开 Issue（标签 `upstream-*`）。
+
+| 优先级 | 仓库 | 跟什么 | 为什么 |
+|---|---|---|---|
+| P0 | SagerNet/sing-box | Release、配置字段、弃用项 | 唯一内核，协议和配置格式以它为准 |
+| P0 | XTLS/Xray-core | Reality / Vision / 新传输 | Reality 的源头，抗封锁思路常先出现在这里（只借鉴，不换内核） |
+| P1 | apernet/hysteria | Hysteria2 规范、URI 参数 | 分享链接要跟上（如 pinSHA256） |
+| P1 | tuic-protocol/tuic | TUIC v5 变更 | 已支持 TUIC |
+| P1 | 2dust/v2rayNG、2dust/v2rayN | 客户端兼容、导入问题 | 用户最多，链接必须能导入（例：2026-08 起移除 allowInsecure，自签证书要带证书指纹） |
+| P2 | MetaCubeX/mihomo | Clash 订阅字段 | 已出 Clash 订阅 |
+| P2 | Teminuosi/tms-client | 面板功能 | 功能灵感（不公开源码，只看说明） |
+
+## 自动化与原则
+
+- **内核可以自动升**：`singbox.yml` 每天构建 sing-box 最新正式版；发布前用新内核跑 `test/run.js`，NodeDeck 生成的所有配置都要通过 `sing-box check` 才发布。VPS 上的 agent 升级前还会用新内核校验本机的 config.json / config.full.json / cf.json，不通过就跳过，启动失败自动回滚。
+- **协议字段 / 配置变更要人工确认、测试通过后再合入**：Issue 里看到新字段或弃用项，改 `src/main/core.js` 并补测试。
+- **分享链接回归**：`test/run.js` 固定几条标准节点（特殊字符密码、IPv6、自签证书指纹、端口跳跃），用 Node 的 URL 和 `java.net.URI`（v2rayNG 的解析方式）各解析一遍。
+- **只用 sing-box 一个内核**，不切 Xray；不引入第三方面板脚本依赖。
+
+---
+
 # 参考仓库跟进记录
 
 参考仓库：https://github.com/Teminuosi/tms-client （只发布安装包，不公开源码）

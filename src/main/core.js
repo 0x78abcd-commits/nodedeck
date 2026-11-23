@@ -44,7 +44,7 @@ function realityKeypair() {
 function defaultProtocols() {
   const kp = realityKeypair();
   return {
-    vlessReality: { enabled: true, port: 443, sni: 'www.microsoft.com', privateKey: kp.privateKey, publicKey: kp.publicKey, shortId: randHex(4) },
+    vlessReality: { enabled: true, port: 443, sni: 'www.microsoft.com', sniAuto: true, fp: 'chrome', privateKey: kp.privateKey, publicKey: kp.publicKey, shortId: randHex(4) },
     trojan: { enabled: true, port: 2083 },
     vmess: { enabled: true, port: 2082, path: '/' + randId(6) },
     hysteria2: { enabled: true, port: 443, upMbps: 0, downMbps: 0 },
@@ -413,35 +413,61 @@ function hopRange(server, entry) {
   return a > 0 && b > a && b <= 65535 ? [a, b] : null;
 }
 
+// Reality 目标备选：找不到同网段邻居时，从这些大站里挑 VPS 连得最快的。
+// 不放 Google 系（国内按 SNI 阻断）和 Cloudflare（CDN，不像真实站点）
+const REALITY_FALLBACKS = ['www.microsoft.com', 'www.apple.com', 'www.amazon.com', 'www.nvidia.com', 'www.samsung.com', 'www.tesla.com', 'www.oracle.com', 'www.cisco.com', 'addons.mozilla.org'];
+
+// TCP 协议的优先端口：443 最自然，其次是常见的 HTTPS 备用端口
+const PREFERRED_TCP_PORTS = [443, 8443, 2053, 2083, 2087, 2096];
+
+// 客户端 TLS 指纹（Reality 用）。一键换新时会随机换一个
+const FINGERPRINTS = ['chrome', 'firefox', 'safari', 'edge'];
+function fpOf(pc) { return FINGERPRINTS.includes(pc?.fp) ? pc.fp : 'chrome'; }
+
+// 自签证书的 SHA-256 指纹（hex，小写、无冒号）。v2rayNG 2.x（Xray 26）已经删掉了「跳过证书验证」，
+// 自签证书必须带指纹才能连：Hysteria2 链接用 pinSHA256，其它协议用 pcs。正式证书不需要。
+function certPinOf(server) {
+  if (usesAcme(server)) return '';
+  const h = String(server.certSha256 || '').replace(/:/g, '').toLowerCase();
+  return /^[0-9a-f]{64}$/.test(h) ? h : '';
+}
+
+// 链接参数统一在这里编码，避免漏掉特殊字符
+function qs(obj) {
+  return Object.entries(obj).filter(([, v]) => v !== undefined && v !== null && v !== '').map(([k, v]) => `${k}=${encodeURIComponent(String(v))}`).join('&');
+}
+
 function shareLink(state, entry, user) {
   const server = state.servers.find((s) => s.id === entry.serverId);
   const pc = server.protocols[entry.protocol];
   const host = hostForUri(entry.host);
   const port = entry.port;
   const name = encodeURIComponent(entry.label);
-  const sni = encodeURIComponent(tlsSniFor(server));
+  const sni = tlsSniFor(server);
   const ins = usesAcme(server) ? 0 : 1;
+  const pin = certPinOf(server);
+  const pw = encodeURIComponent(user.password);
   switch (entry.protocol) {
     case 'vlessReality':
-      return `vless://${user.uuid}@${host}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${encodeURIComponent(pc.sni)}&fp=chrome&pbk=${pc.publicKey}&sid=${pc.shortId}&type=tcp#${name}`;
+      return `vless://${user.uuid}@${host}:${port}?${qs({ encryption: 'none', flow: 'xtls-rprx-vision', security: 'reality', sni: pc.sni, fp: fpOf(pc), pbk: pc.publicKey, sid: pc.shortId, type: 'tcp' })}#${name}`;
     case 'trojan':
-      return `trojan://${encodeURIComponent(user.password)}@${host}:${port}?security=tls&sni=${sni}&allowInsecure=${ins}&type=tcp#${name}`;
+      return `trojan://${pw}@${host}:${port}?${qs({ security: 'tls', sni, allowInsecure: ins, pcs: pin, type: 'tcp' })}#${name}`;
     case 'vmess': {
       const j = { v: '2', ps: entry.label, add: entry.host, port: String(port), id: user.uuid, aid: '0', scy: 'auto', net: 'ws', type: 'none', host: entry.cf || '', path: pc.path || '/', tls: entry.cf ? 'tls' : '' };
       if (entry.cf) { j.sni = entry.cf; j.fp = 'chrome'; }
       return 'vmess://' + Buffer.from(JSON.stringify(j)).toString('base64');
     }
     case 'hysteria2': {
-      let q = `sni=${sni}&insecure=${ins}`;
-      if (pc.obfs) q += `&obfs=salamander&obfs-password=${encodeURIComponent(pc.obfs)}`;
       const hop = hopRange(server, entry);
-      if (hop) q += `&mport=${hop[0]}-${hop[1]}`;
-      return `hysteria2://${encodeURIComponent(user.password)}@${host}:${port}?${q}#${name}`;
+      const q = { sni, insecure: ins, pinSHA256: pin };
+      if (pc.obfs) Object.assign(q, { obfs: 'salamander', 'obfs-password': pc.obfs });
+      if (hop) q.mport = `${hop[0]}-${hop[1]}`;
+      return `hysteria2://${pw}@${host}:${port}/?${qs(q)}#${name}`;
     }
     case 'tuic':
-      return `tuic://${user.uuid}:${encodeURIComponent(user.password)}@${host}:${port}?congestion_control=bbr&alpn=h3&sni=${sni}&allow_insecure=${ins}&udp_relay_mode=native#${name}`;
+      return `tuic://${user.uuid}:${pw}@${host}:${port}?${qs({ congestion_control: 'bbr', alpn: 'h3', sni, allow_insecure: ins, pcs: pin, udp_relay_mode: 'native' })}#${name}`;
     case 'anytls':
-      return `anytls://${encodeURIComponent(user.password)}@${host}:${port}?sni=${sni}&insecure=${ins}#${name}`;
+      return `anytls://${pw}@${host}:${port}?${qs({ sni, insecure: ins, pcs: pin })}#${name}`;
     case 'shadowsocks': {
       const ui = Buffer.from(`${SS_METHOD}:${pc.serverKey}:${ssUserKey(user)}`).toString('base64');
       return `ss://${ui}@${host}:${port}#${name}`;
@@ -457,25 +483,27 @@ function clashProxy(state, entry, user) {
   const base = { name: entry.label, server: entry.host, port: entry.port };
   const sni = tlsSniFor(server);
   const skip = !usesAcme(server);
+  const pin = certPinOf(server);
+  const pinned = (o) => (pin ? { ...o, fingerprint: pin } : o); // mihomo 按证书指纹校验自签证书
   switch (entry.protocol) {
     case 'vlessReality':
-      return { ...base, type: 'vless', uuid: user.uuid, network: 'tcp', tls: true, udp: true, flow: 'xtls-rprx-vision', servername: pc.sni, 'client-fingerprint': 'chrome', 'reality-opts': { 'public-key': pc.publicKey, 'short-id': pc.shortId } };
+      return { ...base, type: 'vless', uuid: user.uuid, network: 'tcp', tls: true, udp: true, flow: 'xtls-rprx-vision', servername: pc.sni, 'client-fingerprint': fpOf(pc), 'reality-opts': { 'public-key': pc.publicKey, 'short-id': pc.shortId } };
     case 'trojan':
-      return { ...base, type: 'trojan', password: user.password, sni, 'skip-cert-verify': skip, udp: true };
+      return pinned({ ...base, type: 'trojan', password: user.password, sni, 'skip-cert-verify': skip, udp: true });
     case 'vmess':
       if (entry.cf) return { ...base, type: 'vmess', uuid: user.uuid, alterId: 0, cipher: 'auto', network: 'ws', tls: true, servername: entry.cf, 'client-fingerprint': 'chrome', 'ws-opts': { path: pc.path || '/', headers: { Host: entry.cf } }, udp: true };
       return { ...base, type: 'vmess', uuid: user.uuid, alterId: 0, cipher: 'auto', network: 'ws', 'ws-opts': { path: pc.path || '/' }, udp: true };
     case 'hysteria2': {
-      const o = { ...base, type: 'hysteria2', password: user.password, sni, 'skip-cert-verify': skip };
+      const o = pinned({ ...base, type: 'hysteria2', password: user.password, sni, 'skip-cert-verify': skip });
       if (pc.obfs) { o.obfs = 'salamander'; o['obfs-password'] = pc.obfs; }
       const hop = hopRange(server, entry);
       if (hop) o.ports = `${hop[0]}-${hop[1]}`;
       return o;
     }
     case 'tuic':
-      return { ...base, type: 'tuic', uuid: user.uuid, password: user.password, sni, alpn: ['h3'], 'skip-cert-verify': skip, 'congestion-controller': 'bbr', 'udp-relay-mode': 'native' };
+      return pinned({ ...base, type: 'tuic', uuid: user.uuid, password: user.password, sni, alpn: ['h3'], 'skip-cert-verify': skip, 'congestion-controller': 'bbr', 'udp-relay-mode': 'native' });
     case 'anytls':
-      return { ...base, type: 'anytls', password: user.password, sni, 'skip-cert-verify': skip, udp: true, 'client-fingerprint': 'chrome' };
+      return pinned({ ...base, type: 'anytls', password: user.password, sni, 'skip-cert-verify': skip, udp: true, 'client-fingerprint': 'chrome' });
     case 'shadowsocks':
       return { ...base, type: 'ss', cipher: SS_METHOD, password: `${pc.serverKey}:${ssUserKey(user)}`, udp: true };
     default:
@@ -492,7 +520,7 @@ function clientOutbound(state, entry, user, tag = 'proxy') {
   const tlsOf = (alpn) => ({ enabled: true, server_name: sni, ...(usesAcme(server) ? {} : { insecure: true }), ...(alpn ? { alpn } : {}) });
   switch (entry.protocol) {
     case 'vlessReality':
-      return { ...base, type: 'vless', uuid: user.uuid, flow: 'xtls-rprx-vision', tls: { enabled: true, server_name: pc.sni, utls: { enabled: true, fingerprint: 'chrome' }, reality: { enabled: true, public_key: pc.publicKey, short_id: pc.shortId } } };
+      return { ...base, type: 'vless', uuid: user.uuid, flow: 'xtls-rprx-vision', tls: { enabled: true, server_name: pc.sni, utls: { enabled: true, fingerprint: fpOf(pc) }, reality: { enabled: true, public_key: pc.publicKey, short_id: pc.shortId } } };
     case 'trojan':
       return { ...base, type: 'trojan', password: user.password, tls: tlsOf() };
     case 'vmess':
@@ -664,6 +692,10 @@ function buildAgentSubs(state, server) {
       expire: exp ? Math.floor(exp / 1000) : 0,
       expireAfterDays: u.expireAfterDays && !u.firstUsedAt ? u.expireAfterDays : 0,
     };
+    // 临时订阅链接：内容一样，到期后 VPS 返回 410
+    for (const t of u.tempSubs || []) {
+      if (t.validUntil > Date.now()) subs[t.token] = { ...subs[u.token], url: subscriptionUrl(state, { ...u, token: t.token }), validUntil: Math.floor(t.validUntil / 1000) };
+    }
   }
   return subs;
 }
@@ -699,7 +731,7 @@ function subscriptionUrls(state, user) {
 function serverPorts(state, server) {
   const ports = [];
   const p = server.protocols || {};
-  for (const [k, meta] of Object.entries(PROTOCOLS)) if (p[k]?.enabled) ports.push({ port: Number(p[k].port), net: meta.net });
+  for (const [k, meta] of Object.entries(PROTOCOLS)) if (p[k]?.enabled) ports.push({ port: Number(p[k].port), net: meta.net, key: k });
   const hop = p.hysteria2?.enabled ? hopRange(server, {}) : null;
   if (hop) ports.push({ range: hop, net: 'udp' });
   if (usesAcme(server)) ports.push({ port: 80, net: 'tcp', acme: true });
@@ -752,6 +784,19 @@ function pickFreePort(state, server, protocolKey, avoid = []) {
   throw new Error('找不到空闲端口');
 }
 
+// 在优先端口里挑一个没被本服务器其它协议、端口跳跃范围和 extraUsed（VPS 上被别的程序占用的端口）用掉的
+function pickPreferredPort(state, server, protocolKey, extraUsed = []) {
+  const net = PROTOCOLS[protocolKey]?.net || 'tcp';
+  const used = new Set(extraUsed.map((p) => `tcp/${p}`));
+  const ranges = [];
+  for (const { port, net: n, range, key } of serverPorts(state, server)) {
+    if (key === protocolKey) continue;
+    if (range) { ranges.push(range); continue; }
+    for (const x of netsOf(n)) used.add(`${x}/${port}`);
+  }
+  return PREFERRED_TCP_PORTS.find((port) => !netsOf(net).some((x) => used.has(`${x}/${port}`)) && !ranges.some(([a, b]) => port >= a && port <= b)) || 0;
+}
+
 // 节点被墙后"一键换新"：换端口（固定端口的不换）、Reality 密钥和 short id、VMess 路径
 function rotateServer(state, server) {
   const s = JSON.parse(JSON.stringify(server));
@@ -770,8 +815,9 @@ function rotateServer(state, server) {
   }
   if (p.vlessReality?.enabled) {
     const kp = realityKeypair();
-    Object.assign(p.vlessReality, { privateKey: kp.privateKey, publicKey: kp.publicKey, shortId: randHex(4) });
-    changes.push('Reality 密钥和 short id 已更换');
+    const fp = FINGERPRINTS.filter((x) => x !== fpOf(p.vlessReality))[crypto.randomInt(FINGERPRINTS.length - 1)];
+    Object.assign(p.vlessReality, { privateKey: kp.privateKey, publicKey: kp.publicKey, shortId: randHex(4), fp });
+    changes.push(`Reality 密钥、short id 已更换，客户端指纹改为 ${fp}`);
   }
   if (p.vmess?.enabled) { p.vmess.path = '/' + randId(6); changes.push('VMess 路径已更换'); }
   if (p.shadowsocks?.enabled) { p.shadowsocks.serverKey = crypto.randomBytes(16).toString('base64'); changes.push('Shadowsocks 密钥已更换'); }
@@ -786,5 +832,5 @@ module.exports = {
   buildServerConfig, nodeEntries, shareLink, clashProxy, clientOutbound, clientTestConfig,
   userEntries, buildSubscription, buildAgentUsers, buildAgentSubs, subscriptionUrl,
   serverPorts, checkPortConflicts, resolveForwardTarget, landingOutbound, pickFreePort, rotateServer,
-  netsOf, ensureProtocols, ssUserKey, cfTunnelOf, buildTunnelConfig, usesAcme, tlsSniFor, hopRange, serverHosts, WARP_SITES,
+  netsOf, ensureProtocols, ssUserKey, cfTunnelOf, buildTunnelConfig, certPinOf, fpOf, FINGERPRINTS, REALITY_FALLBACKS, PREFERRED_TCP_PORTS, pickPreferredPort, usesAcme, tlsSniFor, hopRange, serverHosts, WARP_SITES,
 };

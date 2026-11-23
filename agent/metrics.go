@@ -374,6 +374,7 @@ func (a *Agent) metricsLoop() {
 			a.saveMetrics()
 		}
 		a.checkVPSExpire()
+		a.checkAlerts(time.Now())
 	}
 }
 

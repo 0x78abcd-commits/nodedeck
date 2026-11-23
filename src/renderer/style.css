@@ -121,3 +121,13 @@ a { color: var(--accent); }
 .chart-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; gap: 8px; flex-wrap: wrap; }
 .chart .legend { font-size: 12px; color: var(--muted); display: flex; gap: 10px; flex-wrap: wrap; }
 .chart .legend i { display: inline-block; width: 10px; height: 3px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
+
+/* 0.6.0 部署进度 */
+.stepper { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+.stepper .stage { font-size: 12px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--line, #24304f); color: var(--muted); }
+.stepper .stage.done { color: #22c3a6; border-color: #22c3a655; }
+.stepper .stage.active { color: #fff; background: #4f8cff33; border-color: #4f8cff; }
+.stepper .stage.failed { color: #fff; background: #ef5b6b33; border-color: #ef5b6b; }
+
+.view-inner { display: contents; }
+.row > select.auto, .row > input.auto { width: auto; }

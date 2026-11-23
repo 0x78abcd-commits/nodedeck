@@ -81,7 +81,7 @@ func TestInWindow(t *testing.T) {
 func TestDetectFormat(t *testing.T) {
 	cases := map[string]string{
 		"ClashMetaForAndroid/2.11": "clash", "mihomo/1.19": "clash", "SFA/1.12.0 (sing-box 1.12.0)": "singbox",
-		"v2rayN/7.0": "v2ray", "Shadowrocket/2000": "v2ray", "HiddifyNext/2.5": "v2ray",
+		"v2rayN/7.0": "v2ray", "Shadowrocket/2000": "shadowrocket", "HiddifyNext/2.5": "v2ray",
 		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/130": "html",
 	}
 	for ua, want := range cases {

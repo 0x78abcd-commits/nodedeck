@@ -93,6 +93,19 @@ jobs:
             '{version:$v, tags:$t, sha256:{amd64:$a, arm64:$b, arm:$c, "386":$d}}' > manifest.json
           cat manifest.json
 
+      # 新内核必须能通过 NodeDeck 生成的所有配置（各协议、路由、WARP、隧道…）的校验才发布，
+      # 否则 VPS 自动升级后可能起不来。失败时这个工作流会报错，GitHub 会发邮件提醒
+      - uses: actions/setup-node@v4
+        if: steps.check.outputs.build == 'true'
+        with:
+          node-version: 22
+      - name: 配置兼容性测试
+        if: steps.check.outputs.build == 'true'
+        run: |
+          gunzip -c out/nodedeck-sing-box-linux-amd64.gz > /tmp/sb-new && chmod +x /tmp/sb-new
+          /tmp/sb-new version
+          SINGBOX=/tmp/sb-new node test/run.js
+
       - name: 发布
         if: steps.check.outputs.build == 'true'
         run: |

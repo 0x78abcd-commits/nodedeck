@@ -12,6 +12,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"flag"
@@ -19,6 +20,7 @@ import (
 	"io"
 	"log"
 	"math/big"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -56,6 +58,9 @@ type Config struct {
 	Init           string            `json:"init"` // systemd（默认）或 openrc
 	LatencyTargets map[string]string `json:"latencyTargets"`
 	VPSExpireAt    int64             `json:"vpsExpireAt"`
+	// 0.6.0 起
+	Reality *RealityCfg `json:"reality"`
+	Alerts  AlertCfg    `json:"alerts"`
 }
 
 type User struct {
@@ -87,6 +92,8 @@ type Sub struct {
 	QR              string `json:"qr"`
 	URL             string `json:"url"`
 	ExpireAfterDays int    `json:"expireAfterDays"`
+	// 0.6.0 起：临时订阅链接的过期时间（unix 秒），过期后返回 410
+	ValidUntil int64 `json:"validUntil"`
 }
 
 type Traffic struct {
@@ -476,11 +483,44 @@ func clientIP(r *http.Request) string {
 	if i := strings.LastIndex(host, ":"); i > 0 {
 		host = host[:i]
 	}
-	return strings.Trim(host, "[]")
+	host = strings.Trim(host, "[]")
+	// 订阅域名开了 Cloudflare 代理时，来源都是 Cloudflare 的 IP，要用它转发的真实 IP，
+	// 否则限频和封禁会误伤同一个 Cloudflare 节点后面的所有用户。只信任来自 Cloudflare 的这个头
+	if cf := r.Header.Get("CF-Connecting-IP"); cf != "" && isCloudflare(host) && net.ParseIP(cf) != nil {
+		return cf
+	}
+	return host
+}
+
+var cfNets = func() []*net.IPNet {
+	var out []*net.IPNet
+	for _, c := range []string{"173.245.48.0/20", "103.21.244.0/22", "103.22.200.0/22", "103.31.4.0/22", "141.101.64.0/18", "108.162.192.0/18",
+		"190.93.240.0/20", "188.114.96.0/20", "197.234.240.0/22", "198.41.128.0/17", "162.158.0.0/15", "104.16.0.0/13", "104.24.0.0/14",
+		"172.64.0.0/13", "131.0.72.0/22", "2400:cb00::/32", "2606:4700::/32", "2803:f800::/32", "2405:b500::/32", "2405:8100::/32",
+		"2a06:98c0::/29", "2c0f:f248::/32"} {
+		if _, n, err := net.ParseCIDR(c); err == nil {
+			out = append(out, n)
+		}
+	}
+	return out
+}()
+
+func isCloudflare(ip string) bool {
+	p := net.ParseIP(ip)
+	if p == nil {
+		return false
+	}
+	for _, n := range cfNets {
+		if n.Contains(p) {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *Agent) handleSub(w http.ResponseWriter, r *http.Request) {
-	if !subLimiter.allow(clientIP(r), 30, time.Minute) {
+	ip := clientIP(r)
+	if subBans.banned(ip) || !subLimiter.allow(ip, 30, time.Minute) {
 		w.Header().Set("Retry-After", "60")
 		http.Error(w, "too many requests", http.StatusTooManyRequests)
 		return
@@ -502,7 +542,12 @@ func (a *Agent) handleSub(w http.ResponseWriter, r *http.Request) {
 	}
 	a.mu.Unlock()
 	if !ok || token == "" {
+		subBans.fail(ip) // 10 分钟内猜错 10 次 token 封 1 小时
 		http.NotFound(w, r)
+		return
+	}
+	if s.ValidUntil > 0 && time.Now().Unix() > s.ValidUntil {
+		http.Error(w, "这个临时订阅链接已过期，请向管理员要新的", http.StatusGone)
 		return
 	}
 	format := detectFormat(r)
@@ -527,6 +572,9 @@ func (a *Agent) handleSub(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		io.WriteString(w, s.Singbox)
+	case "shadowrocket":
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		io.WriteString(w, shadowrocketSub(s.V2ray, up, down, s.Total, expire))
 	default:
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		io.WriteString(w, s.V2ray)
@@ -546,6 +594,8 @@ type statsResp struct {
 	PeriodStart map[string]int64 `json:"periodStart"`
 	Today       DayStat          `json:"today"`
 	Yesterday   DayStat          `json:"yesterday"`
+	// 0.6.0 起
+	Reality *RealityState `json:"reality,omitempty"`
 }
 
 func (a *Agent) handleAdmin(w http.ResponseWriter, r *http.Request) {
@@ -555,8 +605,12 @@ func (a *Agent) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		a.mu.Lock()
 		resp := statsResp{Version: version, Traffic: a.traffic, Disabled: a.disabled, Uptime: int64(time.Since(a.started).Seconds()), LastErr: a.lastErr, Singbox: a.update,
 			LastActive: a.st.LastActive, FirstUsed: a.st.FirstUsed, PeriodStart: a.st.PeriodStart, Today: a.st.Day, Yesterday: a.st.Yesterday}
-		b, _ := json.Marshal(resp)
 		a.mu.Unlock()
+		if a.cfg.Reality != nil {
+			rs := a.loadReality()
+			resp.Reality = &rs
+		}
+		b, _ := json.Marshal(resp)
 		w.Write(b)
 	case "/admin/apply":
 		a.loadData()
@@ -584,6 +638,26 @@ func (a *Agent) handleAdmin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+	case "/admin/notify":
+		// desktop 发来的通知（如被墙检测结果），由 VPS 代发 Telegram
+		text := r.URL.Query().Get("text")
+		if text == "" {
+			http.Error(w, "缺少 text", 400)
+			return
+		}
+		if err := a.sendTG(fmt.Sprintf("【%s】%s", a.serverName(), text)); err != nil {
+			w.WriteHeader(500)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+	case "/admin/reality-check":
+		if a.cfg.Reality == nil || a.cfg.Reality.SNI == "" {
+			http.Error(w, "这台服务器没有开 Reality", 400)
+			return
+		}
+		a.realityCheckOnce()
+		json.NewEncoder(w).Encode(a.loadReality())
 	case "/admin/reset":
 		user := r.URL.Query().Get("user")
 		a.mu.Lock()
@@ -640,6 +714,7 @@ func run(cfgPath string) {
 	saveT := time.NewTicker(30 * time.Second)
 	a.update.Current = singboxVersion(a.cfg.SingBox)
 	go a.updateLoop()
+	go a.realityLoop()
 	log.Printf("NodeDeck agent %s 已启动，订阅端口 %s", version, a.cfg.SubListen)
 	for {
 		select {
@@ -731,6 +806,8 @@ func main() {
 	warpURL := fs.String("api", warpAPI, "WARP 注册接口")
 	rng := fs.String("range", "24h", "监控数据范围：1h / 24h / 7d / 30d")
 	selfIP := fs.String("ip", "", "本机公网 IPv4（扫描 Reality 目标用）")
+	text := fs.String("text", "", "通知内容（notify 用）")
+	domains := fs.String("domains", "", "逗号分隔的域名（check-reality / pick-reality 用）")
 	timeout := fs.Duration("timeout", 2*time.Second, "单个地址的超时")
 	fs.Parse(os.Args[2:])
 	switch cmd {
@@ -738,6 +815,10 @@ func main() {
 		run(*cfgPath)
 	case "stats":
 		adminCall(*cfgPath, "/admin/stats")
+	case "notify":
+		adminCall(*cfgPath, "/admin/notify?text="+url.QueryEscape(*text))
+	case "reality-check":
+		adminCall(*cfgPath, "/admin/reality-check")
 	case "apply":
 		adminCall(*cfgPath, "/admin/apply")
 	case "reset":
@@ -764,6 +845,10 @@ func main() {
 		adminCall(*cfgPath, "/admin/update-singbox")
 	case "notify-test":
 		adminCall(*cfgPath, "/admin/notify-test")
+	case "check-reality":
+		checkRealityCmd(*domains)
+	case "pick-reality":
+		pickRealityCmd(*selfIP, *domains)
 	case "gencert":
 		genCert(*host, *dir)
 	case "version":
@@ -772,4 +857,62 @@ func main() {
 		fmt.Println("未知命令:", cmd)
 		os.Exit(2)
 	}
+}
+
+// 猜错订阅 token 太多次的 IP 临时封禁
+type banList struct {
+	mu    sync.Mutex
+	fails map[string][]time.Time
+	until map[string]time.Time
+}
+
+var subBans = &banList{fails: map[string][]time.Time{}, until: map[string]time.Time{}}
+
+func (b *banList) banned(ip string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	t, ok := b.until[ip]
+	if ok && time.Now().After(t) {
+		delete(b.until, ip)
+		return false
+	}
+	return ok
+}
+
+func (b *banList) fail(ip string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	now := time.Now()
+	var keep []time.Time
+	for _, t := range b.fails[ip] {
+		if now.Sub(t) < 10*time.Minute {
+			keep = append(keep, t)
+		}
+	}
+	keep = append(keep, now)
+	if len(keep) >= 10 {
+		b.until[ip] = now.Add(time.Hour)
+		delete(b.fails, ip)
+		return
+	}
+	b.fails[ip] = keep
+	if len(b.fails) > 10000 { // 防止内存被撑爆
+		b.fails = map[string][]time.Time{}
+	}
+}
+
+// Shadowrocket：链接列表前加一行 STATUS，软件里会显示用量和到期
+func shadowrocketSub(v2ray string, up, down, total, expire int64) string {
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(v2ray))
+	if err != nil {
+		return v2ray
+	}
+	st := fmt.Sprintf("STATUS=↑%s ↓%s", fmtBytes(up), fmtBytes(down))
+	if total > 0 {
+		st += " / " + fmtBytes(total)
+	}
+	if expire > 0 {
+		st += " · 到期 " + time.Unix(expire, 0).Format("2006-01-02")
+	}
+	return base64.StdEncoding.EncodeToString([]byte(st + "\n" + string(raw)))
 }

@@ -2,6 +2,7 @@
 // 通过 SSH 在 VPS 上安装 / 同步 / 卸载 NodeDeck（sing-box + agent）
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const core = require('./core');
 const { withSSH, shq } = require('./ssh');
 const QRCode = require('qrcode');
@@ -147,7 +148,40 @@ function agentConfig(state, server = {}) {
     dataDir: DIR,
     singbox: SB_BIN,
     service: 'nodedeck-singbox',
+    reality: realityAgentCfg(state, server),
+    alerts: { off: st.alerts?.enabled === false, diskPct: Number(st.alerts?.diskPct) || 0, cpuPct: Number(st.alerts?.cpuPct) || 0, latencyMs: Number(st.alerts?.latencyMs) || 0 },
   };
+}
+
+function realityAgentCfg(state, server) {
+  const pc = server.protocols?.vlessReality;
+  if (!pc?.enabled) return null;
+  return {
+    mode: state.settings?.realityPatrol || 'auto',
+    sni: pc.sni,
+    publicKey: pc.publicKey,
+    selfIp: /^\d+\.\d+\.\d+\.\d+$/.test(server.host || '') ? server.host : '',
+    candidates: core.REALITY_FALLBACKS,
+  };
+}
+
+// 在 VPS 上挑 Reality 目标：同网段邻居优先，找不到再从备选大站里挑最快的
+async function pickRealityOn(ssh, server, log) {
+  const ip = /^\d+\.\d+\.\d+\.\d+$/.test(server.host || '') ? server.host : '';
+  log('寻找 Reality 目标（先扫同网段邻居网站，约 1 分钟）…');
+  const r = await ssh.exec(`${AGENT_BIN} pick-reality -ip ${shq(ip)} -domains ${shq(core.REALITY_FALLBACKS.join(','))}`, { timeout: 240000 });
+  let j = {};
+  try { j = JSON.parse(r.stdout); } catch (_) { /* ignore */ }
+  if (!j.domain) { log('⚠ 没找到合适的 Reality 目标，继续用 ' + server.protocols.vlessReality.sni); return null; }
+  return { domain: j.domain, source: j.source };
+}
+
+// 在 VPS 上被其它程序占用的 TCP 端口（不含我们自己的 sing-box）
+async function busyTcpPorts(ssh) {
+  const r = await ssh.exec(`(ss -Htlnp 2>/dev/null || netstat -tlnp 2>/dev/null) | grep -v nodedeck | grep -v 'sing-box'`);
+  const out = new Set();
+  for (const m of r.stdout.matchAll(/[:\]](\d{1,5})\s/g)) out.add(Number(m[1]));
+  return [...out];
 }
 
 function agentGz(resourcesDir, arch) {
@@ -194,6 +228,7 @@ true`);
 async function deployServer(state, server, { resourcesDir, log }) {
   const errs = core.checkPortConflicts(state, server);
   if (errs.length) throw new Error(errs.join('；'));
+  log('§ssh');
   return withSSH(server, async (ssh) => {
     log(`已连接 ${server.host}`);
     if (ssh.sudo) {
@@ -206,11 +241,13 @@ async function deployServer(state, server, { resourcesDir, log }) {
     if (info.INIT === 'none') throw new Error('系统既没有 systemd 也没有 OpenRC，暂不支持');
     server.initSystem = info.INIT;
 
+    log('§agent');
     log('上传 agent …');
     await ssh.run(`mkdir -p ${DIR} && chmod 700 ${DIR}`);
     await ssh.writeGz(AGENT_BIN, agentGz(resourcesDir, info.ARCH));
 
     const manifest = agentConfig(state).singboxManifest;
+    log('§kernel');
     log(`安装 sing-box（${manifest}）…`);
     const v = await ssh.run(`${AGENT_BIN} install-singbox -manifest ${shq(manifest)} -bin ${SB_BIN}`);
     log(v.trim() + '（已校验 sha256）');
@@ -235,9 +272,33 @@ fi`);
     await ssh.run(`
 grep -q nodedeck-bbr /etc/sysctl.conf 2>/dev/null || printf '\\n# nodedeck-bbr\\nnet.core.default_qdisc=fq\\nnet.ipv4.tcp_congestion_control=bbr\\n' >> /etc/sysctl.conf
 sysctl -p >/dev/null 2>&1 || true`);
+    log('§reality');
+    // 端口：被 VPS 上其它程序占了的，换成优先端口（443 → 8443 → 2053 …）或随机端口
+    const busy = await busyTcpPorts(ssh);
+    for (const [k, meta] of Object.entries(core.PROTOCOLS)) {
+      const pc = server.protocols?.[k];
+      if (!pc?.enabled || pc.fixedPort || !core.netsOf(meta.net).includes('tcp') || !busy.includes(Number(pc.port))) continue;
+      const np = core.pickPreferredPort(state, server, k, busy) || core.pickFreePort(state, server, k, busy);
+      log(`${meta.label} 端口 ${pc.port} 已被 VPS 上其它程序占用，改用 ${np}`);
+      pc.port = np;
+    }
+    // Reality 目标：新服务器自动挑（用户手动改过 SNI 的不动）
+    const rp = server.protocols?.vlessReality;
+    if (rp?.enabled && rp.sniAuto && !rp.sniPickedAt) {
+      const pick = await pickRealityOn(ssh, server, log).catch((e) => { log('⚠ 挑选 Reality 目标出错：' + e.message); return null; });
+      if (pick) {
+        Object.assign(rp, { sni: pick.domain, sniSource: pick.source, sniPickedAt: Date.now() });
+        log(`✔ Reality 目标：${pick.domain}（${pick.source === 'neighbor' ? '同网段邻居' : '备选大站里最快的'}）`);
+      }
+    }
+    await ssh.writeFile(`${DIR}/agent.json`, JSON.stringify(agentConfig(state, server), null, 2));
+
+    log('§firewall');
     await openFirewall(ssh, state, server);
 
+    log('§config');
     await pushConfig(ssh, state, server, log);
+    log('§start');
     await ssh.run(svcOf(server).install);
     await ssh.run(svcOf(server).restartAgent);
     await new Promise((r) => setTimeout(r, 2500));
@@ -267,6 +328,20 @@ async function pushConfig(ssh, state, server, log = () => {}) {
       if (!ips.includes(server.host)) log(`⚠ 域名 ${server.domain} 解析到 ${ips.join(', ')}，不是这台服务器（${server.host}）。证书会申请失败：请把 A 记录指向服务器 IP，并关闭 Cloudflare 小黄云`);
     } catch (e) { log(`⚠ 查不到域名 ${server.domain} 的解析（${e.code || e.message}），证书可能申请失败`); }
   }
+  // agent 巡检时自己换过 Reality 目标：以 VPS 上的为准，避免把它改回已经失效的旧目标
+  const rp = server.protocols?.vlessReality;
+  if (rp?.enabled) {
+    const o = (await ssh.exec(`cat ${DIR}/reality.json 2>/dev/null`)).stdout;
+    try {
+      const j = JSON.parse(o || '{}');
+      if (j.override && j.from === rp.sni) { log(`Reality 目标已被 VPS 自动换成 ${j.override}（原 ${rp.sni} 不可用），同步到本地`); Object.assign(rp, { sni: j.override, sniSource: 'patrol', sniPickedAt: (j.changedAt || 0) * 1000 }); }
+    } catch (_) { /* ignore */ }
+  }
+  // 记下自签证书的指纹，分享链接里要带上（新版 v2rayNG 不再支持跳过证书验证）
+  try {
+    const pem = (await ssh.exec(`cat ${DIR}/cert.pem 2>/dev/null`)).stdout;
+    if (pem.includes('BEGIN CERTIFICATE')) server.certSha256 = new crypto.X509Certificate(pem).fingerprint256.replace(/:/g, '').toLowerCase();
+  } catch { /* 读不到就不带指纹 */ }
   const full = core.buildServerConfig(state, server);
   await ssh.writeFile(`${DIR}/config.full.json`, JSON.stringify(full, null, 2));
   await ssh.writeFile(`${DIR}/users.json`, JSON.stringify(core.buildAgentUsers(state, server)));
@@ -449,6 +524,28 @@ echo "TIME=$(date +%s)"
 }
 
 // 在服务器上测试 Reality 目标域名（延迟应尽量低）
+// 「重新优选 Reality 目标」
+async function pickReality(server, log = () => {}) {
+  return withSSH(server, (ssh) => pickRealityOn(ssh, server, log));
+}
+
+// 让 VPS 代发一条 Telegram（被墙检测等桌面端发现的问题）
+async function adminNotify(server, text) {
+  return withSSH(server, async (ssh) => {
+    const r = await ssh.exec(`${AGENT_BIN} notify -c ${DIR}/agent.json -text ${shq(text)}`);
+    if (r.code !== 0) throw new Error((r.stdout || r.stderr).trim());
+    return true;
+  });
+}
+
+// 立即检查一次 Reality 目标
+async function realityCheck(server) {
+  return withSSH(server, async (ssh) => {
+    const r = await ssh.exec(`${AGENT_BIN} reality-check -c ${DIR}/agent.json`, { timeout: 120000 });
+    try { return JSON.parse(r.stdout); } catch (_) { throw new Error((r.stdout || r.stderr || '检查失败').trim()); }
+  });
+}
+
 async function remoteTlsCheck(server, domain) {
   return withSSH(server, async (ssh) => {
     const r = await ssh.exec(`curl -so /dev/null --tlsv1.3 --http2 -w '%{time_connect} %{time_appconnect} %{http_version}' --connect-timeout 8 https://${domain.replace(/[^a-zA-Z0-9.-]/g, '')}/`, { root: false });
@@ -457,4 +554,4 @@ async function remoteTlsCheck(server, domain) {
   });
 }
 
-module.exports = { deployServer, syncServer, updateSingbox, serverSelfCheck, notifyTest, fetchMetrics, scanReality, serverStatus, fetchStats, resetTraffic, serverLogs, uninstall, testSSH, remoteTlsCheck, agentConfig };
+module.exports = { pickReality, adminNotify, realityCheck, deployServer, syncServer, updateSingbox, serverSelfCheck, notifyTest, fetchMetrics, scanReality, serverStatus, fetchStats, resetTraffic, serverLogs, uninstall, testSSH, remoteTlsCheck, agentConfig };
