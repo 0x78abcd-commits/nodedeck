@@ -1,7 +1,7 @@
 'use strict';
 const path = require('path');
 const fs = require('fs');
-const { app, BrowserWindow, ipcMain, net, session, shell, dialog, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, net, session, shell, dialog, Menu, nativeTheme } = require('electron');
 const core = require('./core');
 const tools = require('./tools');
 const deploy = require('./deploy');
@@ -254,7 +254,8 @@ function createWindow() {
     height: 820,
     minWidth: 1000,
     minHeight: 640,
-    backgroundColor: '#0b1020',
+    // 和界面主题一致，避免打开时闪一下另一种颜色
+    backgroundColor: (() => { const t = state().settings.theme || 'system'; return t === 'dark' || (t === 'system' && nativeTheme.shouldUseDarkColors) ? '#0f1316' : '#eceff1'; })(),
     title: `NodeDeck ${app.getVersion()}`,
     icon: path.join(__dirname, '..', '..', 'build', 'icon.png'),
     webPreferences: { preload: path.join(__dirname, '..', 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true },

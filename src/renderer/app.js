@@ -23,16 +23,35 @@ let dirty = false;
 let snoozed = false;
 let page = 'dash';
 
+const NAV_ICONS = {
+  dash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="3.5" width="7" height="9" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="5" rx="1.5"/><rect x="13.5" y="11.5" width="7" height="9" rx="1.5"/><rect x="3.5" y="15.5" width="7" height="5" rx="1.5"/></svg>',
+  servers: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="4" width="17" height="6.5" rx="1.8"/><rect x="3.5" y="13.5" width="17" height="6.5" rx="1.8"/><circle cx="7.5" cy="7.25" r=".9" fill="currentColor"/><circle cx="7.5" cy="16.75" r=".9" fill="currentColor"/><path d="M12 7.25h5M12 16.75h5"/></svg>',
+  nodes: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="18" r="2.2"/><circle cx="18" cy="6" r="2.2"/><circle cx="18" cy="18" r="2.2"/><path d="M7.8 16.6 16.2 7.4M8.2 18h7.6"/></svg>',
+  users: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8.5" r="3.2"/><path d="M3.5 19.5c.6-3.2 2.8-5 5.5-5s4.9 1.8 5.5 5"/><path d="M15.5 5.6a3 3 0 0 1 0 5.8M17.5 14.8c1.6.6 2.6 2.2 3 4.7"/></svg>',
+  landings: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-6.5-5.6-6.5-11a6.5 6.5 0 0 1 13 0c0 5.4-6.5 11-6.5 11Z"/><circle cx="12" cy="10" r="2.4"/></svg>',
+  forwards: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h13l-3.5-3.5M20 16H7l3.5 3.5"/></svg>',
+  tools: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 6.5a4 4 0 0 0 5 5L13 18a2.1 2.1 0 0 1-3-3l6.5-6.5"/><path d="M5 19l3-3M4 5l5 5"/></svg>',
+  settings: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 3.5v2.2M12 18.3v2.2M3.5 12h2.2M18.3 12h2.2M6 6l1.6 1.6M16.4 16.4 18 18M6 18l1.6-1.6M16.4 7.6 18 6"/></svg>',
+};
 const PAGES = [
-  ['dash', '▦', '概览'],
-  ['servers', '⛁', '服务器'],
-  ['nodes', '⌬', '节点'],
-  ['users', '☺', '用户'],
-  ['landings', '⌂', '落地'],
-  ['forwards', '⇄', '中转 / 隧道'],
-  ['tools', '⚒', '工具箱'],
-  ['settings', '⚙', '设置'],
+  ['dash', NAV_ICONS.dash, '概览'],
+  ['servers', NAV_ICONS.servers, '服务器'],
+  ['nodes', NAV_ICONS.nodes, '节点'],
+  ['users', NAV_ICONS.users, '用户'],
+  ['landings', NAV_ICONS.landings, '落地'],
+  ['forwards', NAV_ICONS.forwards, '中转 / 隧道'],
+  ['tools', NAV_ICONS.tools, '工具箱'],
+  ['settings', NAV_ICONS.settings, '设置'],
 ];
+
+// 外观：跟随系统 / 浅色 / 深色
+const darkMQ = window.matchMedia('(prefers-color-scheme: dark)');
+function applyTheme() {
+  const pref = (S.settings && S.settings.theme) || 'system';
+  const dark = pref === 'dark' || (pref === 'system' && darkMQ.matches);
+  document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+}
+darkMQ.addEventListener('change', applyTheme);
 
 async function reload() { S = await api.call('state:get'); }
 function markDirty() { dirty = true; renderBanner(); }
@@ -66,7 +85,7 @@ function renderNav() {
   const nav = document.getElementById('nav');
   nav.innerHTML = '';
   for (const [id, ico, label] of PAGES) {
-    nav.append(h('a', { class: page === id ? 'active' : '', onclick: () => go(id) }, h('span', { class: 'ico' }, ico), label));
+    nav.append(h('a', { class: page === id ? 'active' : '', title: label, onclick: () => go(id) }, h('span', { class: 'ico', html: ico }), h('span', {}, label)));
   }
   renderFoot();
 }
@@ -136,20 +155,48 @@ async function viewDash(v) {
   const nodes = (await api.call('nodes:list')).reduce((a, g) => a + g.entries.length, 0);
   const activeUsers = S.users.filter((u) => userState(u)[1] !== 'bad').length;
   const traffic = S.users.reduce((a, u) => a + userUsed(u), 0);
-  v.append(h('h1', {}, '概览'), h('p', { class: 'sub' }, '填 VPS → 一键部署全套协议 → 分配给用户 → 用内置工具验证节点'));
-  v.append(h('div', { class: 'grid g4' },
-    stat(`${deployed.length} / ${S.servers.length}`, '已部署 / 服务器'),
-    stat(nodes, '节点入口'),
-    stat(`${activeUsers} / ${S.users.length}`, '可用用户'),
-    stat(fmtBytes(traffic), '累计流量')));
-  const steps = h('div', { class: 'card' }, h('h3', {}, '快速开始'),
-    h('ol', { style: { lineHeight: '2', margin: 0, paddingLeft: '20px' } },
-      h('li', {}, '「服务器」里添加 VPS（IP + root 密码），点「部署」'),
-      h('li', {}, '「节点」里复制链接或扫码，点「测试」看延迟和出口 IP'),
-      h('li', {}, '「用户」里创建用户、设置流量和到期时间，把订阅链接发给对方'),
-      h('li', {}, '需要住宅 IP 出口：在「落地」添加 SOCKS5，再在服务器设置里选择出口'),
-      h('li', {}, '节点被墙：在「中转 / 隧道」用另一台 VPS 转发，订阅里会自动多出中转线路')));
-  v.append(h('div', { class: 'grid g2', style: { marginTop: '14px' } }, steps, updateCard()));
+  const running = deployed.filter((s) => s.lastStatus?.singbox && s.lastStatus?.agent).length;
+  const [tv, tu] = fmtBytes(traffic).split(' ');
+  v.append(h('div', { class: 'toolbar' }, h('div', {}, h('h1', {}, '概览'), h('p', { class: 'sub' }, deployed.length ? `${running} 台在运行${deployed.length > running ? `，${deployed.length - running} 台需要看一下` : ''}` : '先添加一台 VPS，部署后就能生成节点和订阅')), h('div', { class: 'spacer' }),
+    deployed.length ? h('button', { onclick: (e) => busy(e.currentTarget, async () => { await api.call('users:refreshUsage'); toast('已刷新', 'ok'); render(); }) }, '刷新') : null,
+    h('button', { class: 'primary', onclick: () => editServer() }, '添加服务器')));
+  v.append(h('div', { class: 'statstrip' },
+    h('div', {}, h('div', { class: 'n' }, running, h('small', {}, ` / ${S.servers.length}`)), h('div', { class: 'l' }, '运行中 / 服务器')),
+    h('div', {}, h('div', { class: 'n' }, nodes), h('div', { class: 'l' }, '节点入口')),
+    h('div', {}, h('div', { class: 'n' }, activeUsers, h('small', {}, ` / ${S.users.length}`)), h('div', { class: 'l' }, '可用用户 / 全部')),
+    h('div', {}, h('div', { class: 'n' }, tv, h('small', {}, ' ' + (tu || ''))), h('div', { class: 'l' }, '本周期累计流量'))));
+
+  if (!S.servers.length) {
+    v.append(h('div', { class: 'card' }, h('h3', {}, '从这里开始'),
+      h('ol', { style: { lineHeight: '2.1', margin: '0 0 14px', paddingLeft: '20px' } },
+        h('li', {}, '在「服务器」里添加 VPS（IP 和 root 密码），点「部署」'),
+        h('li', {}, '在「节点」里复制链接或扫码，点「测试」看延迟和出口 IP'),
+        h('li', {}, '在「用户」里创建用户，设置流量和到期时间，把订阅地址发给对方'),
+        h('li', {}, '需要住宅 IP 出口：在「落地」添加，再在服务器设置里选出口'),
+        h('li', {}, '节点被墙：一键换新，或在「中转 / 隧道」用另一台 VPS 转发')),
+      h('button', { class: 'primary', onclick: () => editServer() }, '添加第一台服务器')));
+  } else {
+    const box = h('div', { class: 'lines' }, h('div', { class: 'lines-head' }, h('h3', {}, '线路'), h('div', { class: 'spacer' }), h('a', { href: '#', onclick: (e) => { e.preventDefault(); go('servers'); } }, '管理服务器')));
+    for (const s of S.servers) {
+      const st = s.lastStatus;
+      const cls = !s.deployedAt ? 'idle' : st && st.singbox && st.agent ? (s.realityState?.fails > 0 || agentOutdated(s) ? 'warn' : 'ok') : 'bad';
+      const label = { idle: h('span', { class: 'tag' }, '未部署'), ok: h('span', { class: 'tag ok' }, '运行中'), warn: h('span', { class: 'tag warn' }, s.realityState?.fails > 0 ? 'Reality 目标异常' : 'agent 待升级'), bad: h('span', { class: 'tag bad' }, '异常') }[cls];
+      const protos = PROTOS.filter(([k]) => s.protocols?.[k]?.enabled).map(([, l]) => l);
+      const today = s.lastStats?.today;
+      box.append(h('div', { class: 'line-row ' + cls },
+        h('div', { class: 'strip' }),
+        h('div', { class: 'name' }, h('b', {}, s.name), h('span', { class: 'mono muted' }, s.host)),
+        h('div', {}, label, h('span', { class: 'cap' }, protos.join(' · ') || '没有开启协议')),
+        h('div', { class: 'hide-narrow' }, h('div', { class: 'num' }, today ? fmtBytes((today.up || 0) + (today.down || 0)) : '—'), h('div', { class: 'cap' }, '今日流量')),
+        h('div', { class: 'hide-narrow' }, s.vpsExpireAt ? [h('div', { class: 'num' }, `${Math.max(0, Math.ceil((s.vpsExpireAt - Date.now()) / 86400000))} 天`), h('div', { class: 'cap' }, 'VPS 剩余')] : [h('div', { class: 'num muted' }, '—'), h('div', { class: 'cap' }, 'VPS 到期未填')]),
+        h('div', { class: 'actions' },
+          !s.deployedAt ? h('button', { class: 'small primary', onclick: () => deployServer(s) }, '部署') : null,
+          s.deployedAt ? h('button', { class: 'small', onclick: () => showMonitor(s) }, '监控') : null,
+          s.deployedAt ? h('button', { class: 'small', onclick: () => diagnoseServer(s) }, '体检') : null)));
+    }
+    v.append(box);
+  }
+  if (['available', 'downloaded'].includes(updateStatus.state)) v.append(updateCard());
 }
 function stat(n, l) { return h('div', { class: 'card stat' }, h('div', { class: 'n' }, n), h('div', { class: 'l' }, l)); }
 
@@ -161,7 +208,7 @@ function agentOutdated(s) {
 
 async function viewServers(v) {
   await reload();
-  v.append(h('div', { class: 'toolbar' }, h('div', {}, h('h1', {}, '服务器'), h('p', { class: 'sub' }, '通过 SSH 安装 sing-box 和 agent，一键部署 6 种协议')), h('div', { class: 'spacer' }),
+  v.append(h('div', { class: 'toolbar' }, h('div', {}, h('h1', {}, '服务器'), h('p', { class: 'sub' }, '通过 SSH 安装 sing-box 和 agent，一键部署 7 种协议')), h('div', { class: 'spacer' }),
     h('button', { onclick: (e) => busy(e.currentTarget, syncAll) }, '同步全部'),
     h('button', { class: 'primary', onclick: () => editServer() }, '+ 添加服务器')));
   if (!S.servers.length) { v.append(h('div', { class: 'card empty' }, '还没有服务器，点右上角添加')); return; }
@@ -194,7 +241,8 @@ async function viewServers(v) {
     const protos = PROTOS.filter(([k]) => s.protocols?.[k]?.enabled).map(([k, l]) => h('span', { class: 'tag' }, `${l}:${s.protocols[k].port}`));
     const exit = s.exit?.type === 'landing' ? h('span', { class: 'tag blue' }, '落地: ' + (S.landings.find((l) => l.id === s.exit.landingId)?.name || '?')) : h('span', { class: 'tag' }, '直连');
     const fw = S.forwards.filter((f) => f.relayServerId === s.id).length;
-    tb.append(h('tr', {},
+    const lamp = !s.deployedAt ? 'idle' : st && st.singbox && st.agent ? 'ok' : 'bad';
+    tb.append(h('tr', { class: 'lamp-' + lamp },
       h('td', { style: { width: '28px' } }, cb),
       h('td', {}, h('b', {}, s.name), h('div', { class: 'muted mono', style: { wordBreak: 'normal', whiteSpace: 'nowrap' } }, s.host), realityTag, s.role === 'relay' ? h('span', { class: 'tag blue' }, '中转机') : null, vpsExpireTag(s), core_cf(s) && s.deployedAt ? h('span', { class: 'tag ' + (s.lastStatus?.cf ? 'blue' : 'warn'), title: s.lastStatus?.cf ? '' : '隧道服务没在运行：检查令牌是否正确、VPS 能否连上 Cloudflare' }, s.lastStatus?.cf ? 'CF 隧道' : 'CF 隧道未连通') : null),
       h('td', {}, status, agentOutdated(s) ? h('span', { class: 'tag warn', title: '点「同步」自动升级' }, 'agent 待升级') : null, st?.version ? h('div', { class: 'muted' }, 'sing-box ' + st.version) : null, st?.mem ? h('div', { class: 'muted' }, `内存 ${st.mem} · 负载 ${st.load}`) : null),
@@ -501,7 +549,7 @@ function vpsExpireTag(s) {
 // ---------- 监控面板 ----------
 function fmtRate(b) { return fmtBytes(b >= 1024 ? b : Math.round(b)).replace(/ (\w+)$/, ' $1/s'); }
 function fmtDur(sec) { const d = Math.floor(sec / 86400), hh = Math.floor((sec % 86400) / 3600); return d ? `${d} 天 ${hh} 小时` : `${hh} 小时 ${Math.floor((sec % 3600) / 60)} 分`; }
-const CHART_COLORS = ['#4f8cff', '#22c3a6', '#f2a93b', '#ef5b6b'];
+const CHART_COLORS = ['var(--chart-1)', 'var(--chart-2)', 'var(--chart-3)', 'var(--chart-4)'];
 function lineChart(title, series, { unit = '', fmt = (v) => v.toFixed(1) + unit, max, empty } = {}) {
   // series: [{ name, points: [[t, v]] }]
   const W = 390, H = 150, L = 62, R = 8, T = 10, B = 22;
@@ -515,14 +563,14 @@ function lineChart(title, series, { unit = '', fmt = (v) => v.toFixed(1) + unit,
   let svg = `<svg viewBox="0 0 ${W} ${H}" width="100%" preserveAspectRatio="none" style="display:block">`;
   for (let i = 0; i <= 3; i++) {
     const v = (vmax * i) / 3, yy = y(v);
-    svg += `<line x1="${L}" x2="${W - R}" y1="${yy}" y2="${yy}" stroke="#24304f" stroke-width="1"/><text x="${L - 4}" y="${yy + 4}" fill="#8592b3" font-size="10" text-anchor="end">${esc(fmt(v))}</text>`;
+    svg += `<line x1="${L}" x2="${W - R}" y1="${yy}" y2="${yy}" class="grid-line" stroke-width="1"/><text x="${L - 4}" y="${yy + 4}" font-size="10" text-anchor="end">${esc(fmt(v))}</text>`;
   }
   const span = t1 - t0;
   const nl = span < 600 ? 1 : 4; // 时间跨度太短只标首尾，免得标签挤在一起
   for (let i = 0; i <= nl; i++) {
     const t = t0 + (span * i) / nl, d = new Date(t * 1000);
     const lab = span > 2 * 86400 ? `${d.getMonth() + 1}/${d.getDate()}` : d.toTimeString().slice(0, 5);
-    svg += `<text x="${x(t)}" y="${H - 6}" fill="#8592b3" font-size="10" text-anchor="${i === 0 ? 'start' : i === nl ? 'end' : 'middle'}">${lab}</text>`;
+    svg += `<text x="${x(t)}" y="${H - 6}" font-size="10" text-anchor="${i === 0 ? 'start' : i === nl ? 'end' : 'middle'}">${lab}</text>`;
   }
   series.forEach((sr, i) => {
     if (!sr.points.length) return;
@@ -530,7 +578,7 @@ function lineChart(title, series, { unit = '', fmt = (v) => v.toFixed(1) + unit,
     const gap = (span / Math.max(1, sr.points.length)) * 3;
     let d = '', prev = null;
     for (const [t, v] of sr.points) { d += (prev === null || t - prev > gap ? 'M' : 'L') + x(t).toFixed(1) + ',' + y(v).toFixed(1); prev = t; }
-    svg += `<path d="${d}" fill="none" stroke="${CHART_COLORS[i]}" stroke-width="1.6" stroke-linejoin="round"/>`;
+    svg += `<path d="${d}" fill="none" style="stroke:${CHART_COLORS[i]}" stroke-width="1.8" stroke-linejoin="round"/>`;
   });
   svg += '</svg>';
   box.append(h('div', { html: svg }));
@@ -1198,6 +1246,9 @@ async function viewSettings(v) {
   const alDisk = h('input', { type: 'number', min: 50, max: 99, value: al.diskPct || 90 });
   const alCpu = h('input', { type: 'number', min: 50, max: 100, value: al.cpuPct || 90 });
   const alLat = h('input', { type: 'number', min: 50, value: al.latencyMs || 300 });
+  const theme = sel([['system', '跟随系统'], ['light', '浅色'], ['dark', '深色']], st.theme || 'system');
+  theme.onchange = async () => { await api.call('settings:set', { theme: theme.value }); S.settings.theme = theme.value; applyTheme(); };
+  const lookCard = h('div', { class: 'card' }, h('h3', {}, '外观'), field('主题', theme, '深色适合长时间看监控；跟随系统会随 Windows 的深浅色自动切换'));
   const guardCard = h('div', { class: 'card' }, h('h3', {}, '巡检与告警'),
     field('Reality 目标巡检（VPS 每 6 小时检查一次）', rpMode, '目标网站下线、证书过期或不再支持 TLS 1.3 / HTTP2 时节点会连不上。自动模式下连续 3 次失败会换成同网段邻居或最快的大站，并改好本机订阅'),
     field('被墙巡检（软件开着时每 30 分钟）', bwMode, '本机连不通、海外能通，连续两次才判定被墙；电脑网络断了不会误报'),
@@ -1224,7 +1275,7 @@ async function viewSettings(v) {
           subDomain: subDomain.value.trim(), timezone: tz.value, upgradeWindow: { enabled: uwOn.checked, start: Number(uwStart.value) || 0, end: Number(uwEnd.value) || 0 } });
         toast('已保存，点「同步全部」后对各 VPS 生效（改了端口需要重新部署）', 'ok'); markDirty();
       } }, '保存')),
-    h('div', {}, updateCard(), guardCard,
+    h('div', {}, updateCard(), lookCard, guardCard,
       h('div', { class: 'card' }, h('h3', {}, 'Telegram 通知'),
         h('p', { class: 'muted' }, '由各台 VPS 上的 agent 直接发送，电脑关机也能收到：用户快到期 / 流量快用完 / 被停用、内核升级结果、每日流量报告。'),
         h('label', { class: 'f' }, tgOn, ' 开启'),
@@ -1263,6 +1314,7 @@ const VIEWS = { dash: viewDash, servers: viewServers, nodes: viewNodes, users: v
     if (prev !== st.state && (page === 'settings' || page === 'dash')) render();
   });
   await reload();
+  applyTheme();
   renderNav();
   renderBanner();
   render();
