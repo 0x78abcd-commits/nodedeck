@@ -44,6 +44,9 @@ const PAGES = [
   ['settings', NAV_ICONS.settings, '设置'],
 ];
 
+// Reality 主流目标的中文名（列表本身来自 core.REALITY_FALLBACKS）
+const REALITY_NAMES = { 'www.microsoft.com': '微软', 'www.apple.com': '苹果', 'www.nvidia.com': '英伟达', 'www.amazon.com': '亚马逊', 'www.samsung.com': '三星', 'www.tesla.com': '特斯拉', 'www.oracle.com': '甲骨文', 'www.cisco.com': '思科', 'addons.mozilla.org': 'Mozilla 扩展商店' };
+
 // 外观：跟随系统 / 浅色 / 深色
 const darkMQ = window.matchMedia('(prefers-color-scheme: dark)');
 function applyTheme() {
@@ -364,12 +367,41 @@ async function editServer(orig) {
     const extra = [];
     const els = { en, pt, fixed };
     if (k === 'vlessReality') {
-      els.rsni = I(pc.sni, { placeholder: 'www.microsoft.com' });
-      els.sniAuto = h('input', { type: 'checkbox', checked: !!pc.sniAuto });
-      els.rsni.oninput = () => { els.sniAuto.checked = false; };
-      const src = { neighbor: '同网段邻居', fallback: '备选大站', patrol: '巡检时自动更换' }[pc.sniSource];
-      extra.push(field('Reality 目标域名（可在工具箱检测）', els.rsni, pc.sniPickedAt ? `当前目标由「${src || '自动挑选'}」选出（${fmtDate(pc.sniPickedAt)}）` : ''),
-        h('label', { class: 'muted', style: { fontSize: '12px', display: 'block', margin: '-4px 0 8px' } }, els.sniAuto, ' 部署时自动挑选（同网段邻居优先，找不到再用连得最快的大站）'));
+      // Reality 目标：自动优选 / 主流大站 / 自定义。只改展示和选择方式，挑选逻辑仍在部署和巡检里
+      const targets = info.realityTargets || Object.keys(REALITY_NAMES);
+      const inList = targets.includes(pc.sni);
+      els.rmode = h('select', {},
+        h('option', { value: '__auto__' }, '自动优选（推荐）'),
+        h('optgroup', { label: '固定用主流大站' }, targets.map((d) => h('option', { value: d }, REALITY_NAMES[d] ? `${REALITY_NAMES[d]}  ${d}` : d))),
+        h('option', { value: '__custom__' }, '自定义域名…'));
+      els.rmode.value = pc.sniAuto ? '__auto__' : inList ? pc.sni : '__custom__';
+      els.rsni = I(pc.sniAuto || inList ? '' : pc.sni, { placeholder: '例如 www.example.com（要支持 TLS 1.3 和 HTTP/2）' });
+      const rhint = h('div', { class: 'muted', style: { fontSize: '12px', margin: '5px 0 0' } });
+      const rtest = h('button', { class: 'small auto' }, '检测');
+      const rcurrent = () => (els.rmode.value === '__auto__' ? '' : els.rmode.value === '__custom__' ? els.rsni.value.trim() : els.rmode.value);
+      const srcName = { neighbor: '同网段邻居', fallback: '备选大站里 VPS 连得最快的', patrol: '巡检时自动更换' }[pc.sniSource] || '自动挑选';
+      const drawR = () => {
+        const m = els.rmode.value;
+        els.rsni.classList.toggle('hidden', m !== '__custom__');
+        rtest.classList.toggle('hidden', m === '__auto__');
+        rhint.innerHTML = '';
+        if (m === '__auto__') {
+          if (pc.sniAuto && pc.sniPickedAt) rhint.append('当前用的是 ', h('b', {}, pc.sni), `（${srcName}，${fmtDate(pc.sniPickedAt)} 选出）`);
+          else if (s.deployedAt) rhint.append('保存后会马上在这台 VPS 上挑选：先找同网段的邻居网站，找不到再从主流大站里挑连得最快的');
+          else rhint.append('还没选：部署时会先找 VPS 同网段的邻居网站，找不到再从主流大站里挑 VPS 连得最快的');
+        } else rhint.append('固定使用这个目标，部署时不会自动更换。目标失效时按「设置 → 巡检与告警」处理');
+      };
+      els.rmode.onchange = drawR;
+      rtest.onclick = (e) => busy(e.currentTarget, async () => {
+        const d = rcurrent();
+        if (!d) { toast('先填域名', 'err'); return; }
+        const r = await api.call('tools:reality', d, s.deployedAt ? s.id : null);
+        const local = r.local.ok ? `本机 ✔ ${r.local.ms} ms` : `本机 ✘ ${r.local.error || (r.local.checks || []).filter((c) => !c.ok).map((c) => c.name).join('、')}`;
+        const remote = r.remote ? (r.remote.ok ? `，VPS ✔ 握手 ${r.remote.tlsMs} ms` : `，VPS ✘ ${r.remote.error}`) : '';
+        toast(`${d}：${local}${remote}`, r.local.ok && (!r.remote || r.remote.ok) ? 'ok' : 'warn');
+      });
+      drawR();
+      extra.push(field('Reality 目标网站', h('div', {}, h('div', { class: 'row' }, els.rmode, rtest), h('div', { style: { marginTop: '6px' } }, els.rsni), rhint)));
       extra.push(h('button', { class: 'small', onclick: async () => { const kp = await api.call('new:reality'); s.protocols.vlessReality.privateKey = kp.privateKey; s.protocols.vlessReality.publicKey = kp.publicKey; toast('已生成新密钥（保存并同步后生效）'); } }, '重新生成密钥'));
     }
     if (k === 'vmess') { els.path = I(pc.path); extra.push(field('WS 路径', els.path)); }
@@ -398,7 +430,8 @@ async function editServer(orig) {
     if (!t) return;
     for (const [k] of PROTOS) protoEls[k].en.checked = t.on.includes(k);
     const r = protoEls.vlessReality;
-    if (r && !r.fixed.checked) { r.pt.value = 443; r.sniAuto.checked = true; }
+    if (r && !r.fixed.checked) r.pt.value = 443;
+    if (r) { r.rmode.value = '__auto__'; r.rmode.onchange(); }
     const hy = protoEls.hysteria2;
     if (hy && (t.hy || t.hyObfs) && !hy.obfs.value) hy.obfs.value = randStr(16);
     if (hy && t.hy && !hy.hop.value) hy.hop.value = '20000-30000';
@@ -443,11 +476,17 @@ async function editServer(orig) {
     for (const [k] of PROTOS) {
       const e = protoEls[k];
       s.protocols[k] = { ...s.protocols[k], enabled: e.en.checked, port: Number(e.pt.value), fixedPort: e.fixed.checked };
-      if (e.rsni) {
-        const nv = e.rsni.value.trim() || 'www.microsoft.com';
-        if (nv !== s.protocols[k].sni) delete s.protocols[k].sniPickedAt;
-        s.protocols[k].sni = nv; s.protocols[k].sniAuto = e.sniAuto.checked;
-        if (!e.sniAuto.checked) delete s.protocols[k].sniPickedAt;
+      if (e.rmode) {
+        const pr = s.protocols[k];
+        const m = e.rmode.value;
+        if (m === '__auto__') {
+          pr.sniAuto = true; // sni 保持原值作为占位，部署 / 重新优选时会被换掉
+        } else {
+          const nv = m === '__custom__' ? e.rsni.value.trim().replace(/^https?:\/\//, '').replace(/\/.*$/, '') : m;
+          if (!nv) throw new Error('请填写 Reality 目标域名，或选「自动优选」');
+          if (!/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(nv)) throw new Error('Reality 目标域名格式不对：' + nv);
+          pr.sni = nv; pr.sniAuto = false; delete pr.sniPickedAt; delete pr.sniSource;
+        }
       }
       if (e.path) s.protocols[k].path = e.path.value.trim().startsWith('/') ? e.path.value.trim() : '/' + e.path.value.trim();
       if (e.up) { s.protocols[k].upMbps = Number(e.up.value) || 0; s.protocols[k].downMbps = Number(e.down.value) || 0; }
@@ -471,7 +510,14 @@ async function editServer(orig) {
   modal({ title: orig ? '编辑服务器' : '添加服务器', wide: true, body, buttons: [
     { label: '测试 SSH', close: false, onClick: async () => { const r = await api.call('server:testSsh', collect()); toast(`连接成功：${r.OS}（${r.ARCH}）${r.warn ? '\n⚠ ' + r.warn : ''}`, r.warn ? 'err' : 'ok'); } },
     { label: '取消' },
-    { label: '保存', class: 'primary', onClick: async () => { await api.call('col:upsert', 'servers', collect()); if (orig) markDirty(); await render(); } },
+    { label: '保存', class: 'primary', onClick: async () => {
+      const ns = collect();
+      await api.call('col:upsert', 'servers', ns);
+      if (orig) markDirty();
+      const rp = ns.protocols?.vlessReality;
+      if (orig?.deployedAt && rp?.enabled && rp.sniAuto && !orig.protocols?.vlessReality?.sniAuto) repickReality(ns); // 从固定改成自动：马上挑一次
+      await render();
+    } },
   ] });
 }
 

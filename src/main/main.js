@@ -276,7 +276,7 @@ function handle(name, fn) {
 }
 
 function registerIpc() {
-  handle('app:info', () => ({ version: app.getVersion(), packaged: app.isPackaged, portable: !!process.env.PORTABLE_EXECUTABLE_DIR, repo: publish.owner ? `${publish.owner}/${publish.repo}` : '', singbox: fs.existsSync(singboxPath), dataDir: app.getPath('userData') }));
+  handle('app:info', () => ({ version: app.getVersion(), packaged: app.isPackaged, portable: !!process.env.PORTABLE_EXECUTABLE_DIR, repo: publish.owner ? `${publish.owner}/${publish.repo}` : '', singbox: fs.existsSync(singboxPath), dataDir: app.getPath('userData'), realityTargets: core.REALITY_FALLBACKS }));
   handle('state:get', () => state());
   handle('col:upsert', (col, item) => store.upsert(col, item));
   handle('col:remove', (col, id) => store.remove(col, id));
