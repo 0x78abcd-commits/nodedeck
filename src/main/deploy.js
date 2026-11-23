@@ -265,19 +265,29 @@ async function writeUnits(ssh, server) {
   return changed;
 }
 
+// 内存 6GB 及以下、没有 swap 的机器自动加 swap
+const SWAP_MAX_MEM_MB = 6144;
+// swap 大小：1GB 内存配 1GB，更大的配 2GB；磁盘要留够余量（swap 之外至少再剩 1.5GB），不够就减半，再不够就不加
+function swapSize(memMB, diskFreeMB) {
+  for (const size of [memMB <= 1024 ? 1024 : 2048, 1024, 512]) {
+    if (diskFreeMB >= size + 1536 + (size >= 2048 ? 1024 : 0)) return size;
+  }
+  return 0;
+}
+
 // 小内存 / 小磁盘 VPS 的系统优化（可在设置里关闭）：
-// 1. 内存 ≤ 1.5GB 且没有 swap：建一个 swap 文件（磁盘够才建；OpenVZ / 容器不支持就跳过），防止流量高峰时被系统杀进程
+// 1. 内存 ≤ 6GB 且没有 swap：建一个 swap 文件（磁盘够才建；OpenVZ / 容器不支持就跳过），防止流量高峰时被系统杀进程
 // 2. 磁盘 < 20GB 的 systemd 系统：限制系统日志最多 200MB（Debian 默认最多可占磁盘的 10%）
 async function tuneSmallBox(ssh, state, server, info, log) {
   if (state.settings?.smallBoxTuning === false) return;
   const hw = server.hw || {};
-  if (hw.memMB && hw.memMB <= 1536 && !hw.swapMB) {
-    if (['openvz', 'container', 'lxc', 'lxc-libvirt'].includes(hw.virt)) log('内存较小但这台是 OpenVZ / 容器，不能加 swap，跳过');
+  if (hw.memMB && hw.memMB <= SWAP_MAX_MEM_MB && !hw.swapMB) {
+    if (['openvz', 'container', 'lxc', 'lxc-libvirt'].includes(hw.virt)) log('这台是 OpenVZ / 容器，不能加 swap，跳过');
     else {
-      const size = hw.diskFreeMB >= 6144 ? 1024 : 512;
-      if (hw.diskFreeMB < size + 1536) log(`内存较小但磁盘只剩 ${hw.diskFreeMB}MB，不加 swap`);
+      const size = swapSize(hw.memMB, hw.diskFreeMB);
+      if (!size) log(`磁盘只剩 ${hw.diskFreeMB}MB，不加 swap`);
       else {
-        log(`内存只有 ${hw.memMB}MB 且没有 swap，添加 ${size}MB swap（防止流量高峰时内存不够）…`);
+        log(`内存 ${hw.memMB}MB 且没有 swap，添加 ${size}MB swap（防止流量高峰时内存不够）…`);
         const r = await ssh.exec(`set -e
 [ -f /nodedeck.swap ] || { fallocate -l ${size}M /nodedeck.swap 2>/dev/null || dd if=/dev/zero of=/nodedeck.swap bs=1M count=${size} status=none; }
 chmod 600 /nodedeck.swap
@@ -682,4 +692,4 @@ async function gateRealityTarget(ssh, server, log, force) {
   log(`✔ Reality 目标 ${rp.sni} 检测通过（TLS 1.3、HTTP/2、X25519、证书有效，${r.ms} ms）`);
 }
 
-module.exports = { memLimits, writeUnits, tuneSmallBox, rememberHw, pickReality, adminNotify, realityCheck, deployServer, syncServer, updateSingbox, serverSelfCheck, notifyTest, fetchMetrics, scanReality, serverStatus, fetchStats, resetTraffic, serverLogs, uninstall, testSSH, remoteTlsCheck, agentConfig };
+module.exports = { swapSize, memLimits, writeUnits, tuneSmallBox, rememberHw, pickReality, adminNotify, realityCheck, deployServer, syncServer, updateSingbox, serverSelfCheck, notifyTest, fetchMetrics, scanReality, serverStatus, fetchStats, resetTraffic, serverLogs, uninstall, testSSH, remoteTlsCheck, agentConfig };
