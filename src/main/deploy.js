@@ -706,7 +706,7 @@ async function benchStart(server, kind, opts = {}) {
     if (chk.stdout.includes('RUNNING')) return { running: true, already: true };
     const free = Number((chk.stdout.match(/^\d+$/m) || [0])[0]);
     if (free && free < 1024) throw new Error(`磁盘只剩 ${free}MB，测试脚本需要下载临时系统，至少要 1GB 空闲`);
-    const script = `#!/bin/bash\nexport TERM=xterm LANG=C.UTF-8\ncd ${BENCH_DIR}\n${BENCH[kind](opts)}\necho\necho "[nodedeck] 测试结束（退出码 $?）"\n`;
+    const script = `#!/bin/bash\nexport TERM=xterm LANG=C.UTF-8\ncd ${BENCH_DIR}\n${BENCH[kind](opts)}\nrc=$?\necho\necho "[nodedeck] 测试结束（退出码 $rc）"\n`;
     await ssh.run(`mkdir -p ${BENCH_DIR} && chmod 700 ${BENCH_DIR}`);
     await ssh.writeFile(`${BENCH_DIR}/${kind}.sh`, script, '700');
     await ssh.run(`cd ${BENCH_DIR} && : > ${kind}.log && (setsid nohup bash ${kind}.sh > ${kind}.log 2>&1 < /dev/null & echo $! > ${kind}.pid)`);
@@ -720,9 +720,13 @@ async function benchPoll(server, kind, offset = 0) {
     const r = await ssh.exec(`f=${BENCH_DIR}/${kind}.log; [ -f "$f" ] || { echo NOLOG; exit 0; }; s=$(wc -c < "$f"); echo "SIZE=$s"; ( [ -f ${BENCH_DIR}/${kind}.pid ] && kill -0 "$(cat ${BENCH_DIR}/${kind}.pid)" 2>/dev/null ) && echo RUN=1 || echo RUN=0; echo ---; tail -c +$(( ${Number(offset) || 0} + 1 )) "$f" | head -c 200000`);
     if (r.stdout.startsWith('NOLOG')) return { none: true };
     const [head, ...rest] = r.stdout.split('\n---\n');
-    const size = Number((head.match(/SIZE=(\d+)/) || [])[1] || 0);
+    const total = Number((head.match(/SIZE=(\d+)/) || [])[1] || 0);
     const running = /RUN=1/.test(head);
-    const raw = rest.join('\n---\n');
+    let raw = rest.join('\n---\n');
+    // 只取到最后一个换行为止：避免把一个汉字从中间切开，也避免一次读不完（最多 200KB）时丢掉后面的内容
+    const cut = Math.max(raw.lastIndexOf('\n'), raw.lastIndexOf('\r'));
+    if (running || total > (Number(offset) || 0) + Buffer.byteLength(raw)) raw = cut >= 0 ? raw.slice(0, cut + 1) : '';
+    const size = (Number(offset) || 0) + Buffer.byteLength(raw);
     const text = raw.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '').replace(/\r(?!\n)/g, '\n');
     const all = (await ssh.exec(`cat ${BENCH_DIR}/${kind}.log 2>/dev/null | tr -d '\\033'`)).stdout;
     const urls = [...new Set(all.match(BENCH_URL) || [])];

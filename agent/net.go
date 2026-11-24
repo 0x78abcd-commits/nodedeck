@@ -409,7 +409,14 @@ func applyTune(dataDir string, keys []string) (NetInfo, []string, error) {
 		}
 	}
 	for _, it := range ni.Items {
-		if !it.Apply || (len(want) > 0 && !want[it.Key]) {
+		if len(want) > 0 && !want[it.Key] {
+			continue
+		}
+		if !it.Apply {
+			// 现在已经是想要的值（可能是运行中临时改的）：也写进配置，保证重启后还是这样
+			if it.Want != "" && it.Want == sysctlGet(it.Key) {
+				conf[it.Key] = it.Want
+			}
 			continue
 		}
 		if it.Key == "net.ipv4.tcp_congestion_control" && it.Want == "bbr" {
@@ -437,6 +444,7 @@ func applyTune(dataDir string, keys []string) (NetInfo, []string, error) {
 	if err := writeTuneConf(conf); err != nil {
 		return ni, done, err
 	}
+	disableConflicts(sysctlConf, conf)
 	var ferr error
 	if len(failed) > 0 {
 		ferr = fmt.Errorf("有 %d 项没改成：%s", len(failed), strings.Join(failed, "；"))
@@ -461,6 +469,52 @@ func writeTuneConf(conf map[string]string) error {
 	}
 	_ = os.MkdirAll(filepath.Dir(tuneConf), 0755)
 	return os.WriteFile(tuneConf, []byte(sb.String()), 0644)
+}
+
+const sysctlConf = "/etc/sysctl.conf"
+const offMark = "# nodedeck-off: "
+
+// disableConflicts 把 /etc/sysctl.conf 里和我们设置冲突的行注释掉。
+// 开机时 /etc/sysctl.conf 比 sysctl.d 里的文件后生效，不注释的话重启后会被它改回去（常见于以前跑过别的 BBR 脚本）。
+// 恢复原始设置时会去掉注释。
+func disableConflicts(path string, conf map[string]string) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	lines := strings.Split(string(b), "\n")
+	changed := false
+	for i, l := range lines {
+		t := strings.TrimSpace(l)
+		if t == "" || strings.HasPrefix(t, "#") || strings.HasPrefix(t, ";") {
+			continue
+		}
+		eq := strings.Index(t, "=")
+		if eq <= 0 {
+			continue
+		}
+		k := strings.ReplaceAll(strings.TrimSpace(strings.TrimPrefix(t[:eq], "-")), "/", ".")
+		v := strings.Join(strings.Fields(t[eq+1:]), " ")
+		if want, ok := conf[k]; ok && v != want {
+			lines[i] = offMark + l
+			changed = true
+		}
+	}
+	if changed {
+		_ = os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0644)
+	}
+}
+
+func enableConflicts(path string) {
+	b, err := os.ReadFile(path)
+	if err != nil || !strings.Contains(string(b), offMark) {
+		return
+	}
+	lines := strings.Split(string(b), "\n")
+	for i, l := range lines {
+		lines[i] = strings.TrimPrefix(l, offMark)
+	}
+	_ = os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0644)
 }
 
 func loadBBR() {
@@ -525,6 +579,7 @@ func restoreTune(dataDir string) ([]string, error) {
 	os.Remove(bbrModConf)
 	os.Remove(bpath)
 	removeOldBBRLines()
+	enableConflicts(sysctlConf)
 	return done, nil
 }
 

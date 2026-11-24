@@ -2,6 +2,8 @@ package main
 
 import (
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -68,5 +70,25 @@ func TestRecommendSmallBox(t *testing.T) {
 		if it.Key == "net.ipv4.tcp_congestion_control" {
 			t.Fatal("no bbr support should not recommend bbr")
 		}
+	}
+}
+
+func TestSysctlConflicts(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "sysctl.conf")
+	orig := "# comment\nnet.ipv4.tcp_congestion_control=cubic\n net.core.rmem_max = 16777216\nnet/ipv4/tcp_rmem = 4096 87380 6291456\nvm.swappiness=10\n"
+	os.WriteFile(p, []byte(orig), 0644)
+	disableConflicts(p, map[string]string{"net.ipv4.tcp_congestion_control": "bbr", "net.core.rmem_max": "16777216", "net.ipv4.tcp_rmem": "4096 131072 33554432"})
+	b, _ := os.ReadFile(p)
+	got := string(b)
+	if !strings.Contains(got, offMark+"net.ipv4.tcp_congestion_control=cubic") || !strings.Contains(got, offMark+"net/ipv4/tcp_rmem") {
+		t.Fatalf("冲突行没注释掉:\n%s", got)
+	}
+	if strings.Contains(got, offMark+" net.core.rmem_max") || strings.Contains(got, offMark+"vm.swappiness") {
+		t.Fatalf("不该动的行被注释了:\n%s", got)
+	}
+	enableConflicts(p)
+	b, _ = os.ReadFile(p)
+	if string(b) != orig {
+		t.Fatalf("恢复后不一致:\n%q", string(b))
 	}
 }

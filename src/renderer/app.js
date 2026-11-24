@@ -777,7 +777,9 @@ function showNetLab(srv) {
     if (m.task !== 'net:' + id) return;
     logBox.classList.remove('hidden'); logBox.textContent += m.line + '\n'; logBox.scrollTop = logBox.scrollHeight;
   });
-  let poll = null;
+  // 社区测试的输出轮询：每个脚本一个，用 setTimeout 串行（SSH 慢时不会重叠、重复追加输出）；重画界面时全部停掉，新界面会重新接上
+  const polls = {};
+  const stopPolls = () => { for (const k of Object.keys(polls)) { clearTimeout(polls[k].t); delete polls[k]; } };
   const S1 = () => S.servers.find((x) => x.id === id) || srv;
   const lab = () => S1().netLab || {};
   const run = (btn, fn) => busy(btn, async () => { await fn(); await reload(); draw(); });
@@ -787,7 +789,7 @@ function showNetLab(srv) {
   body.append(tabs, pane, logBox);
 
   function draw() {
-    if (poll && netTab !== 'bench') { clearInterval(poll); poll = null; }
+    stopPolls();
     tabs.innerHTML = '';
     for (const [k, l] of NET_TABS) tabs.append(h('a', { class: netTab === k ? 'active' : '', onclick: () => { netTab = k; draw(); } }, l));
     pane.innerHTML = '';
@@ -969,13 +971,24 @@ function showNetLab(srv) {
           return r.running;
         } catch (e) { st.textContent = e.message; return false; }
       };
+      const follow = () => {
+        if (polls[kind]) clearTimeout(polls[kind].t);
+        const me = {}; polls[kind] = me;
+        const step = async () => {
+          if (polls[kind] !== me) return;
+          const running = await tick();
+          if (polls[kind] !== me) return;
+          if (running) me.t = setTimeout(step, 3000); else delete polls[kind];
+        };
+        me.t = setTimeout(step, 3000);
+      };
       start.onclick = (e) => busy(e.currentTarget, async () => {
         await api.call('bench:start', id, kind, getOpts());
         pre.textContent = ''; offset = 0; st.textContent = '已启动…';
-        if (!poll) poll = setInterval(async () => { if (!(await tick())) { clearInterval(poll); poll = null; } }, 3000);
+        follow();
       });
       stop.onclick = (e) => busy(e.currentTarget, async () => { await api.call('bench:stop', id, kind); toast('已发送停止信号', 'ok'); });
-      tick().then((running) => { if (running && !poll) poll = setInterval(async () => { if (!(await tick())) { clearInterval(poll); poll = null; } }, 3000); });
+      tick().then((running) => { if (running && pre.isConnected) follow(); });
       return h('div', { class: 'card' }, h('h3', {}, title), note(desc), optsEl, h('div', { class: 'toolbar', style: { marginTop: '10px', marginBottom: 0 } }, start, stop, st), pre);
     };
     const sel = (opts, v) => { const e = h('select', { class: 'auto' }, opts.map(([k, l]) => h('option', { value: k }, l))); e.value = v; return e; };
@@ -993,7 +1006,7 @@ function showNetLab(srv) {
   }
 
   draw();
-  modal({ title: `网络优化 · ${srv.name}`, wide: true, body, onClose: () => { off(); if (poll) clearInterval(poll); }, buttons: [{ label: '关闭' }] });
+  modal({ title: `网络优化 · ${srv.name}`, wide: true, body, onClose: () => { off(); stopPolls(); }, buttons: [{ label: '关闭' }] });
 }
 
 async function rotateServer(s) {

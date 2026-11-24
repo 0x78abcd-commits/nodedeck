@@ -1,4 +1,5 @@
 'use strict';
+const { StringDecoder } = require('string_decoder');
 const { Client } = require('ssh2');
 const { openTunnel, proxyLabel } = require('./proxy');
 
@@ -109,10 +110,13 @@ class SSH {
         if (err) return reject(err);
         let stdout = '';
         let stderr = '';
+        // 按 UTF-8 流式解码：一个汉字被拆在两个数据包里时不会变成乱码
+        const dOut = new StringDecoder('utf8');
+        const dErr = new StringDecoder('utf8');
         const timer = setTimeout(() => { stream.close(); reject(new Error('命令执行超时')); }, timeout);
-        stream.on('data', (d) => { const t = d.toString(); stdout += t; onData && onData(t); });
-        stream.stderr.on('data', (d) => { const t = d.toString(); stderr += t; onData && onData(t); });
-        stream.on('close', (code) => { clearTimeout(timer); resolve({ code, stdout, stderr }); });
+        stream.on('data', (d) => { const t = dOut.write(d); stdout += t; onData && t && onData(t); });
+        stream.stderr.on('data', (d) => { const t = dErr.write(d); stderr += t; onData && t && onData(t); });
+        stream.on('close', (code) => { clearTimeout(timer); stdout += dOut.end(); stderr += dErr.end(); resolve({ code, stdout, stderr }); });
         if (input !== undefined) stream.end(input); else stream.end();
       });
     });
