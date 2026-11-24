@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const core = require('./core');
+const tools = require('./tools');
 const { withSSH, shq } = require('./ssh');
 const QRCode = require('qrcode');
 
@@ -196,8 +197,22 @@ async function pickRealityOn(ssh, server, log) {
   const r = await ssh.exec(`${AGENT_BIN} pick-reality -ip ${shq(ip)} -domains ${shq(core.REALITY_FALLBACKS.join(','))}`, { timeout: 240000 });
   let j = {};
   try { j = JSON.parse(r.stdout); } catch (_) { /* ignore */ }
-  if (!j.domain) { log('⚠ 没找到合适的 Reality 目标，继续用 ' + server.protocols.vlessReality.sni); return null; }
-  return { domain: j.domain, source: j.source, check: { domain: j.domain, ok: true, at: Date.now(), where: 'vps', via: 'pick' } };
+  // 旧 agent 只返回一个 domain
+  const all = Array.isArray(j.list) && j.list.length ? j.list : j.domain ? [{ domain: j.domain, source: j.source }] : [];
+  const cands = all.filter((c) => c.domain && !core.sniBlocked(c.domain)).slice(0, 10);
+  if (!cands.length) { log('⚠ 没找到合适的 Reality 目标，继续用 ' + server.protocols.vlessReality.sni); return null; }
+  // VPS 上能用不代表国内能用：邻居网站可能在国内被屏蔽（客户端一连就被掐断）。从这台电脑（国内）再测一遍，按原来的优先顺序取第一个通过的
+  log(`从这台电脑复测 ${cands.length} 个候选（排除在国内连不上的）…`);
+  const local = await Promise.all(cands.map((c) => tools.realityCheck(c.domain, 6000).catch((e) => ({ ok: false, error: e.message }))));
+  cands.forEach((c, i) => log(`  ${local[i].ok ? '✔' : '✗'} ${c.domain}${c.source === 'neighbor' ? '（邻居）' : ''}${local[i].ok ? `  ${local[i].ms} ms` : '：' + (local[i].error || '不通过')}`));
+  let k = local.findIndex((x) => x.ok);
+  if (k < 0) {
+    // 本机全都测不通：多半是本机网络的问题，退回 VPS 测到的最快的大站（大站在国内基本都能连）
+    k = Math.max(0, cands.findIndex((c) => c.source === 'fallback'));
+    log(`⚠ 本机复测都没通过（可能是这台电脑的网络问题），先用 ${cands[k].domain}`);
+  }
+  const c = cands[k];
+  return { domain: c.domain, source: c.source, check: { domain: c.domain, ok: true, at: Date.now(), where: 'vps', via: 'pick', localOk: !!local[k].ok } };
 }
 
 // 在 VPS 上被其它程序占用的 TCP 端口（不含我们自己的 sing-box）

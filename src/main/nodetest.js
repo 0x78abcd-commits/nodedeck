@@ -25,6 +25,27 @@ async function waitPort(port, ms = 4000) {
   return false;
 }
 
+// 去掉颜色码和时间戳，只留最后一条 sing-box 报错
+function lastSingboxError(text) {
+  const lines = String(text || '').replace(/\x1b\[[0-9;]*m/g, '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const errs = lines.filter((l) => /\b(ERROR|FATAL|WARN)\b/.test(l));
+  const l = errs[errs.length - 1] || lines[lines.length - 1] || '';
+  return l.replace(/^[-+\d:. TZ]*\s*(ERROR|FATAL|WARN)\s*(\[\d+\s*\d*ms\]\s*)?(\[[^\]]*\]\s*)*/, '').replace(/\s*\[\d+ \d+ms\]\s*/, ' ').slice(0, 300);
+}
+
+function explainError(msg, stderr, outbound) {
+  const detail = lastSingboxError(stderr);
+  let out = msg.replace(/\x1b\[[0-9;]*m/g, '');
+  if (detail && !out.includes(detail)) out += '\n' + detail;
+  const reset = /RESET|forcibly closed|connection reset|EOF/i.test(msg + ' ' + detail);
+  if (reset && outbound?.tls?.reality?.enabled) {
+    out += `\n可能原因：连上之后被掐断，多半是 Reality 目标 ${outbound.tls.server_name || ''} 在国内被屏蔽或被针对（同一台的其它协议能通说明 IP 没被墙）。在服务器「更多」里点「重新优选 Reality 目标」，或者把目标换成主流大站（如 www.apple.com），同步后再测`;
+  } else if (reset) {
+    out += '\n可能原因：连上之后被掐断，常见于端口被针对或协议特征被识别，可以试试「一键换新」换端口';
+  }
+  return out;
+}
+
 // fetchVia(proxyPort, url, timeoutMs) => Response，由主进程注入（使用 Electron 独立 session + 代理）
 async function testOutbound({ singboxPath, outbound, fetchVia }) {
   const port = await freePort();
@@ -55,11 +76,11 @@ async function testOutbound({ singboxPath, outbound, fetchVia }) {
     result.ok = true;
     return result;
   } catch (e) {
-    return { ok: false, error: (e.message || String(e)) + (stderr ? '\n' + stderr.trim().slice(-300) : '') };
+    return { ok: false, error: explainError(e.message || String(e), stderr, outbound) };
   } finally {
     proc.kill();
     setTimeout(() => fs.rm(cfgFile, { force: true }, () => {}), 1000);
   }
 }
 
-module.exports = { testOutbound, freePort };
+module.exports = { testOutbound, freePort, lastSingboxError };

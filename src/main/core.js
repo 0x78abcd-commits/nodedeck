@@ -420,6 +420,13 @@ function hopRange(server, entry) {
 
 // Reality 目标备选：找不到同网段邻居时，从这些大站里挑 VPS 连得最快的。
 // 不放 Google 系（国内按 SNI 阻断）和 Cloudflare（CDN，不像真实站点）
+// 在国内按域名（SNI）屏蔽的网站，不能当 Reality 目标 / 自签证书域名（和 agent/reality.go 的 blockedSNI 一致）
+const SNI_BLOCKED = ['google.com', 'googleapis.com', 'gstatic.com', 'googlevideo.com', 'youtube.com', 'ytimg.com', 'facebook.com', 'fbcdn.net', 'instagram.com', 'whatsapp.com', 'whatsapp.net', 'twitter.com', 'x.com', 'twimg.com', 'telegram.org', 't.me', 'wikipedia.org', 'wikimedia.org', 'netflix.com', 'reddit.com', 'discord.com', 'discord.gg', 'pinterest.com', 'dropbox.com', 'openai.com', 'chatgpt.com', 'blogspot.com', 'nytimes.com', 'medium.com', 'github.io', 'pornhub.com', 'xvideos.com', 'onlyfans.com', 'bbc.com', 'voanews.com', 'rfa.org', 'theepochtimes.com', 'ntdtv.com'];
+function sniBlocked(d) {
+  d = String(d || '').toLowerCase().replace(/\.$/, '');
+  return SNI_BLOCKED.some((b) => d === b || d.endsWith('.' + b));
+}
+
 const REALITY_FALLBACKS = ['www.microsoft.com', 'www.apple.com', 'www.amazon.com', 'www.nvidia.com', 'www.samsung.com', 'www.tesla.com', 'www.oracle.com', 'www.cisco.com', 'addons.mozilla.org'];
 
 // TCP 协议的优先端口：443 最自然，其次是常见的 HTTPS 备用端口
@@ -836,6 +843,6 @@ module.exports = {
   newServer, newUser, userStatus, userExpireAt, homeServerId, subscriptionUrls, buildSingboxClient, uniqueEntries, userUsedBytes, userHasServer, usersForServer,
   buildServerConfig, nodeEntries, shareLink, clashProxy, clientOutbound, clientTestConfig,
   userEntries, buildSubscription, buildAgentUsers, buildAgentSubs, subscriptionUrl,
-  serverPorts, checkPortConflicts, resolveForwardTarget, landingOutbound, pickFreePort, rotateServer,
+  SNI_BLOCKED, sniBlocked, serverPorts, checkPortConflicts, resolveForwardTarget, landingOutbound, pickFreePort, rotateServer,
   netsOf, ensureProtocols, ssUserKey, cfTunnelOf, buildTunnelConfig, certPinOf, fpOf, FINGERPRINTS, REALITY_FALLBACKS, PREFERRED_TCP_PORTS, pickPreferredPort, usesAcme, tlsSniFor, hopRange, serverHosts, WARP_SITES,
 };

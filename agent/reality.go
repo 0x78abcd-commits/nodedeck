@@ -144,26 +144,57 @@ func checkTargets(domains []string, timeout time.Duration) []TargetResult {
 	return out
 }
 
-// pickTarget 选一个新目标：同网段邻居优先，其次备选大站，都按延迟排序；exclude 里的不要
-func pickTarget(selfIP string, candidates []string, exclude map[string]bool) (string, string) {
+// 在国内按域名（SNI）屏蔽的网站：拿来当 Reality 目标，客户端一连就被掐断。和桌面端 core.js 的 SNI_BLOCKED 一致
+var blockedSNI = []string{"google.com", "googleapis.com", "gstatic.com", "googlevideo.com", "youtube.com", "ytimg.com", "facebook.com", "fbcdn.net", "instagram.com", "whatsapp.com", "whatsapp.net", "twitter.com", "x.com", "twimg.com", "telegram.org", "t.me", "wikipedia.org", "wikimedia.org", "netflix.com", "reddit.com", "discord.com", "discord.gg", "pinterest.com", "dropbox.com", "openai.com", "chatgpt.com", "blogspot.com", "nytimes.com", "medium.com", "github.io", "pornhub.com", "xvideos.com", "onlyfans.com", "bbc.com", "voanews.com", "rfa.org", "theepochtimes.com", "ntdtv.com"}
+
+func sniBlocked(d string) bool {
+	d = strings.ToLower(strings.TrimSuffix(d, "."))
+	for _, b := range blockedSNI {
+		if d == b || strings.HasSuffix(d, "."+b) {
+			return true
+		}
+	}
+	return false
+}
+
+type targetCand struct {
+	Domain string `json:"domain"`
+	Source string `json:"source"` // neighbor / fallback
+	Ms     int64  `json:"ms"`
+}
+
+// rankTargets 候选目标按优先顺序排好：同网段邻居（按延迟）在前，备选大站（按延迟）在后；国内屏蔽的和 exclude 里的不要
+func rankTargets(selfIP string, candidates []string, exclude map[string]bool) []targetCand {
+	var out []targetCand
 	if selfIP != "" {
 		if hits, err := scanReality(selfIP, 2*time.Second, 48); err == nil {
 			for _, h := range hits {
-				if !exclude[h.Domain] {
-					return h.Domain, "neighbor"
+				if !exclude[h.Domain] && !sniBlocked(h.Domain) {
+					out = append(out, targetCand{h.Domain, "neighbor", h.Ms})
+					if len(out) >= 8 {
+						break
+					}
 				}
 			}
 		}
 	}
 	var ok []TargetResult
 	for _, r := range checkTargets(candidates, 6*time.Second) {
-		if r.OK && !exclude[r.Domain] {
+		if r.OK && !exclude[r.Domain] && !sniBlocked(r.Domain) {
 			ok = append(ok, r)
 		}
 	}
 	sort.Slice(ok, func(i, j int) bool { return ok[i].Ms < ok[j].Ms })
-	if len(ok) > 0 {
-		return ok[0].Domain, "fallback"
+	for _, r := range ok {
+		out = append(out, targetCand{r.Domain, "fallback", r.Ms})
+	}
+	return out
+}
+
+// pickTarget 选一个新目标（VPS 自己巡检换目标时用）
+func pickTarget(selfIP string, candidates []string, exclude map[string]bool) (string, string) {
+	if l := rankTargets(selfIP, candidates, exclude); len(l) > 0 {
+		return l[0].Domain, l[0].Source
 	}
 	return "", ""
 }
@@ -374,7 +405,7 @@ func checkRealityCmd(domains string) {
 	fmt.Println(string(b))
 }
 
-// pick-reality：部署时用，输出 {"domain","source","hits"}
+// pick-reality：部署时用，输出 {"domain","source","list"}；list 是按优先顺序的全部候选，桌面端会再从国内测一遍
 func pickRealityCmd(selfIP, candidates string) {
 	var list []string
 	for _, d := range strings.Split(candidates, ",") {
@@ -382,7 +413,11 @@ func pickRealityCmd(selfIP, candidates string) {
 			list = append(list, d)
 		}
 	}
-	d, src := pickTarget(selfIP, list, map[string]bool{})
-	b, _ := json.Marshal(map[string]string{"domain": d, "source": src})
+	l := rankTargets(selfIP, list, map[string]bool{})
+	res := map[string]any{"domain": "", "source": "", "list": l}
+	if len(l) > 0 {
+		res["domain"], res["source"] = l[0].Domain, l[0].Source
+	}
+	b, _ := json.Marshal(res)
 	fmt.Println(string(b))
 }

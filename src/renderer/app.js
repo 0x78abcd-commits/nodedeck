@@ -694,7 +694,7 @@ function hwLine(s) {
 }
 
 // 国内按 SNI 屏蔽的常见域名（TLS / QUIC 握手里带这些名字会被直接重置）
-const SNI_BLOCKED = ['google.com', 'googleapis.com', 'gstatic.com', 'youtube.com', 'ytimg.com', 'facebook.com', 'fbcdn.net', 'instagram.com', 'whatsapp.com', 'twitter.com', 'x.com', 'twimg.com', 'telegram.org', 't.me', 'wikipedia.org', 'netflix.com', 'reddit.com', 'discord.com', 'pinterest.com', 'dropbox.com', 'openai.com', 'chatgpt.com', 'blogspot.com', 'nytimes.com'];
+const SNI_BLOCKED = ['google.com', 'googleapis.com', 'gstatic.com', 'googlevideo.com', 'youtube.com', 'ytimg.com', 'facebook.com', 'fbcdn.net', 'instagram.com', 'whatsapp.com', 'whatsapp.net', 'twitter.com', 'x.com', 'twimg.com', 'telegram.org', 't.me', 'wikipedia.org', 'wikimedia.org', 'netflix.com', 'reddit.com', 'discord.com', 'discord.gg', 'pinterest.com', 'dropbox.com', 'openai.com', 'chatgpt.com', 'blogspot.com', 'nytimes.com', 'medium.com', 'github.io', 'pornhub.com', 'xvideos.com', 'onlyfans.com', 'bbc.com', 'voanews.com', 'rfa.org', 'theepochtimes.com', 'ntdtv.com']; // 和 core.js 一致
 function sniBlocked(d) {
   d = String(d || '').toLowerCase();
   return SNI_BLOCKED.some((b) => d === b || d.endsWith('.' + b));
