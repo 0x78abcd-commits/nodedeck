@@ -1357,7 +1357,7 @@ async function viewSettings(v) {
     field('被墙巡检（软件开着时每 30 分钟）', bwMode, '本机连不通、海外能通，连续两次才判定被墙；电脑网络断了不会误报'),
     h('label', { class: 'f' }, alOn, ' Telegram 运维告警：sing-box 挂了（会先自动重启）、磁盘快满、CPU 持续过高、三网延迟变差'),
     h('div', { class: 'row' }, field('磁盘用到 %', alDisk), field('CPU 连续 15 分钟高于 %', alCpu), field('三网延迟高于 ms', alLat)),
-    h('label', { class: 'f' }, tuneOn, ' 小配置 VPS 自动优化：内存 ≤ 6GB 且没有 swap 时加一个 swap 文件（1GB 内存加 1GB，更大的加 2GB，磁盘不够会减小或跳过），磁盘 < 20GB 时把系统日志限制在 200MB。卸载时会一并撤销'),
+    h('label', { class: 'f' }, tuneOn, ' 小配置 VPS 自动优化：内存 ≤ 2GB 且没有 swap 时加一个 swap 文件（1GB 内存加 1GB，2GB 内存加 2GB，磁盘不够会减小或跳过），磁盘 < 20GB 时把系统日志限制在 200MB。卸载时会一并撤销'),
     h('button', { class: 'primary', onclick: async () => {
       await api.call('settings:set', { smallBoxTuning: tuneOn.checked, realityPatrol: rpMode.value, blockWatch: bwMode.value, alerts: { enabled: alOn.checked, diskPct: Number(alDisk.value) || 90, cpuPct: Number(alCpu.value) || 90, latencyMs: Number(alLat.value) || 300 } });
       toast('已保存，点「同步全部」后各服务器生效', 'ok'); markDirty();

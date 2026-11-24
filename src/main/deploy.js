@@ -265,8 +265,9 @@ async function writeUnits(ssh, server) {
   return changed;
 }
 
-// 内存 6GB 及以下、没有 swap 的机器自动加 swap
-const SWAP_MAX_MEM_MB = 6144;
+// 内存 2GB 及以下、没有 swap 的机器自动加 swap（原来是 1.5GB）。
+// 卖家常见的 2GB 套餐系统里显示约 1.9~2.0GB，留点余量写 2560；3GB 以上一般不缺内存
+const SWAP_MAX_MEM_MB = 2560;
 // swap 大小：1GB 内存配 1GB，更大的配 2GB；磁盘要留够余量（swap 之外至少再剩 1.5GB），不够就减半，再不够就不加
 function swapSize(memMB, diskFreeMB) {
   for (const size of [memMB <= 1024 ? 1024 : 2048, 1024, 512]) {
@@ -276,7 +277,7 @@ function swapSize(memMB, diskFreeMB) {
 }
 
 // 小内存 / 小磁盘 VPS 的系统优化（可在设置里关闭）：
-// 1. 内存 ≤ 6GB 且没有 swap：建一个 swap 文件（磁盘够才建；OpenVZ / 容器不支持就跳过），防止流量高峰时被系统杀进程
+// 1. 内存 ≤ 2GB 且没有 swap：建一个 swap 文件（磁盘够才建；OpenVZ / 容器不支持就跳过），防止流量高峰时被系统杀进程
 // 2. 磁盘 < 20GB 的 systemd 系统：限制系统日志最多 200MB（Debian 默认最多可占磁盘的 10%）
 async function tuneSmallBox(ssh, state, server, info, log) {
   if (state.settings?.smallBoxTuning === false) return;
