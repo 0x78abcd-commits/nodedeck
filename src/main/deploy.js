@@ -373,15 +373,34 @@ async function deployServer(state, server, { resourcesDir, log }) {
     await writeUnits(ssh, server);
     await tuneSmallBox(ssh, state, server, info, log);
 
-    // 网络优化：先检测内核和现有设置，只改有依据的几项（BBR + fq、缓冲区、MTU 探测），原值会备份，可以一键恢复
+    // BBR + fq：部署时默认写进去（持久化，原值备份，可在「网络优化」里恢复）
+    log('开启 BBR …');
+    const ccKeys = 'net.ipv4.tcp_congestion_control,net.core.default_qdisc';
+    try {
+      const r = await agentJSON(ssh, `net-tune -c ${DIR}/agent.json -domains ${ccKeys}`);
+      const cc = r.info?.cc;
+      if (r.done?.length) for (const d of r.done) log('  ' + d);
+      if (!r.info?.bbrSupport) log('  ⚠ ' + (r.info?.bbrNote || '这个内核不支持 BBR'));
+      else log(cc === 'bbr' ? '  ✔ BBR 已开启' : '  ⚠ BBR 没开成：' + (r.error || cc));
+      if (r.error && r.info?.bbrSupport) log('  ⚠ ' + r.error);
+    } catch (e) {
+      // agent 出问题时用老办法直接写
+      log('  agent 没能处理（' + e.message + '），直接写入系统配置');
+      await ssh.run(`
+mkdir -p /etc/sysctl.d
+grep -q tcp_congestion_control /etc/sysctl.d/99-nodedeck-net.conf 2>/dev/null || printf 'net.core.default_qdisc = fq\\nnet.ipv4.tcp_congestion_control = bbr\\n' >> /etc/sysctl.d/99-nodedeck-net.conf
+modprobe tcp_bbr 2>/dev/null; sysctl -w net.core.default_qdisc=fq >/dev/null 2>&1; sysctl -w net.ipv4.tcp_congestion_control=bbr >/dev/null 2>&1; true`);
+    }
+    // 其余网络优化（缓冲区、MTU 探测等）：检测后只改有依据的几项，设置里可关
     if (state.settings?.netAutoTune !== false) {
-      log('检测网络设置并优化（BBR、缓冲区等，原值已备份）…');
+      log('检测其它网络设置并优化（缓冲区等，原值已备份）…');
       try {
         const r = await agentJSON(ssh, `net-tune -c ${DIR}/agent.json`);
         server.netTunedAt = Date.now();
-        if (r.done?.length) for (const d of r.done) log('  ' + d);
+        const rest = (r.done || []).filter((d) => !/^TCP 拥塞控制|^发包队列/.test(d));
+        if (rest.length) for (const d of rest) log('  ' + d);
         else log('  现有设置已经合适，没有改动');
-        if (r.error) log('  ⚠ ' + r.error);
+        if (r.error && !/发包队列/.test(r.error)) log('  ⚠ ' + r.error);
       } catch (e) { log('⚠ 网络优化没做成（不影响使用）：' + e.message); }
     }
     log('§reality');
