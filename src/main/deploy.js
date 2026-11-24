@@ -796,32 +796,53 @@ async function benchStop(server, kind) {
 }
 
 // ---------- 清理其他面板 / 代理程序（不重装系统）----------
-// 只认识下面这些常见的面板和代理程序，只删这里列出的服务和目录；配置先打包备份到 /root。
-// stopOnly：网站类面板（宝塔、1Panel 等）下面可能还挂着网站和数据库，只停用、取消开机自启，不删文件
+// 只认识下面这些常见的面板和代理程序，只删这里列出的服务和目录。默认彻底删除；勾选备份时整套（程序、配置、
+// 服务文件、定时任务）打包到 /root/nodedeck-backup/<时间>/，之后可以在 NodeDeck 里一键恢复。
+// detect：判断装没装用的路径（默认就是 paths）；markers：服务文件内容里出现这些目录也算它的服务；
+// extraPaths：运行时才知道的路径（shell 片段，每行输出一个）；pre：删除前要做的事（shell 片段）
 const OTHER_APPS = [
-  { id: 'x-ui', name: 'x-ui / 3x-ui 面板', units: ['x-ui'], paths: ['/usr/local/x-ui', '/etc/x-ui', '/usr/bin/x-ui'], keep: ['/etc/x-ui'] },
-  { id: 's-ui', name: 's-ui 面板', units: ['s-ui'], paths: ['/usr/local/s-ui', '/usr/bin/s-ui'], keep: ['/usr/local/s-ui/db'] },
-  { id: 'h-ui', name: 'h-ui 面板', units: ['h-ui'], paths: ['/usr/local/h-ui'], keep: ['/usr/local/h-ui/data'] },
-  { id: 'xray', name: 'Xray', units: ['xray', 'xray@*'], paths: ['/usr/local/bin/xray', '/usr/local/etc/xray', '/usr/local/share/xray', '/var/log/xray', '/etc/xray', '/usr/local/xray'], keep: ['/usr/local/etc/xray', '/etc/xray'] },
-  { id: 'v2ray', name: 'V2Ray', units: ['v2ray', 'v2ray@*'], paths: ['/usr/local/bin/v2ray', '/usr/local/bin/v2ctl', '/usr/local/etc/v2ray', '/usr/local/share/v2ray', '/var/log/v2ray', '/etc/v2ray', '/usr/bin/v2ray'], keep: ['/usr/local/etc/v2ray', '/etc/v2ray'] },
-  { id: 'sing-box', name: 'sing-box（其他脚本装的）', units: ['sing-box', 'sing-box@*', 'sb'], paths: ['/usr/local/bin/sing-box', '/usr/bin/sing-box', '/etc/sing-box', '/usr/local/etc/sing-box', '/var/lib/sing-box', '/etc/s-box', '/root/sbox'], keep: ['/etc/sing-box', '/usr/local/etc/sing-box', '/etc/s-box'], pkgs: ['sing-box'] },
-  { id: 'hysteria', name: 'Hysteria / Hysteria2', units: ['hysteria-server', 'hysteria-server@*', 'hysteria', 'hysteria2'], paths: ['/usr/local/bin/hysteria', '/etc/hysteria', '/etc/hysteria2'], keep: ['/etc/hysteria', '/etc/hysteria2'] },
-  { id: 'tuic', name: 'TUIC', units: ['tuic', 'tuic-server'], paths: ['/usr/local/bin/tuic', '/usr/local/bin/tuic-server', '/etc/tuic', '/opt/tuic', '/root/tuic'], keep: ['/etc/tuic', '/opt/tuic'] },
-  { id: 'trojan', name: 'Trojan / Trojan-Go', units: ['trojan-go', 'trojan'], paths: ['/usr/local/bin/trojan-go', '/usr/local/etc/trojan-go', '/etc/trojan-go', '/usr/local/bin/trojan', '/usr/local/etc/trojan'], keep: ['/usr/local/etc/trojan-go', '/etc/trojan-go', '/usr/local/etc/trojan'] },
-  { id: 'ss-rust', name: 'shadowsocks-rust', units: ['shadowsocks-rust', 'ssserver', 'shadowsocks'], paths: ['/usr/local/bin/ssserver', '/usr/local/bin/sslocal', '/etc/shadowsocks-rust', '/etc/shadowsocks'], keep: ['/etc/shadowsocks-rust', '/etc/shadowsocks'] },
-  { id: 'ss-libev', name: 'shadowsocks-libev', units: ['shadowsocks-libev', 'shadowsocks-libev-server@*'], paths: ['/etc/shadowsocks-libev'], keep: ['/etc/shadowsocks-libev'], pkgs: ['shadowsocks-libev'] },
-  { id: 'gost', name: 'GOST 转发', units: ['gost'], paths: ['/usr/local/bin/gost', '/etc/gost'], keep: ['/etc/gost'] },
-  { id: 'realm', name: 'Realm 转发', units: ['realm'], paths: ['/usr/local/bin/realm', '/etc/realm', '/root/realm'], keep: ['/etc/realm'] },
-  { id: 'brook', name: 'Brook', units: ['brook'], paths: ['/usr/local/bin/brook', '/etc/brook'], keep: [] },
-  { id: 'bt', name: '宝塔面板', units: ['bt', 'btpanel'], paths: ['/www/server/panel'], stopOnly: true, note: '只停用面板、取消开机自启。宝塔下面可能还有网站和数据库（在 /www），NodeDeck 不动；要彻底删除请用宝塔官方卸载脚本' },
-  { id: '1panel', name: '1Panel', units: ['1panel', '1panel-core', '1panel-agent'], paths: ['/opt/1panel', '/usr/local/bin/1panel'], stopOnly: true, note: '只停用面板、取消开机自启。要彻底删除请在 VPS 上运行 1pctl uninstall' },
-  { id: 'hiddify', name: 'Hiddify Manager', units: ['hiddify-panel', 'hiddify-xray', 'hiddify-singbox', 'hiddify-haproxy', 'hiddify-nginx'], paths: ['/opt/hiddify-manager'], stopOnly: true, note: '组件很多，只停用它的服务、取消开机自启，不删文件' },
+  { id: 'x-ui', name: 'x-ui / 3x-ui 面板', units: ['x-ui'], paths: ['/usr/local/x-ui', '/etc/x-ui', '/usr/bin/x-ui'] },
+  { id: 's-ui', name: 's-ui 面板', units: ['s-ui'], paths: ['/usr/local/s-ui', '/usr/bin/s-ui'] },
+  { id: 'h-ui', name: 'h-ui 面板', units: ['h-ui'], paths: ['/usr/local/h-ui'] },
+  { id: 'xray', name: 'Xray', units: ['xray', 'xray@*'], paths: ['/usr/local/bin/xray', '/usr/local/etc/xray', '/usr/local/share/xray', '/var/log/xray', '/etc/xray', '/usr/local/xray'] },
+  { id: 'v2ray', name: 'V2Ray', units: ['v2ray', 'v2ray@*'], paths: ['/usr/local/bin/v2ray', '/usr/local/bin/v2ctl', '/usr/local/etc/v2ray', '/usr/local/share/v2ray', '/var/log/v2ray', '/etc/v2ray', '/usr/bin/v2ray'] },
+  { id: 'sing-box', name: 'sing-box（其他脚本装的）', units: ['sing-box', 'sing-box@*', 'sb'], paths: ['/usr/local/bin/sing-box', '/usr/bin/sing-box', '/etc/sing-box', '/usr/local/etc/sing-box', '/var/lib/sing-box', '/etc/s-box', '/root/sbox'], pkgs: ['sing-box'] },
+  { id: 'hysteria', name: 'Hysteria / Hysteria2', units: ['hysteria-server', 'hysteria-server@*', 'hysteria', 'hysteria2'], paths: ['/usr/local/bin/hysteria', '/etc/hysteria', '/etc/hysteria2'] },
+  { id: 'tuic', name: 'TUIC', units: ['tuic', 'tuic-server'], paths: ['/usr/local/bin/tuic', '/usr/local/bin/tuic-server', '/etc/tuic', '/opt/tuic', '/root/tuic'] },
+  { id: 'trojan', name: 'Trojan / Trojan-Go', units: ['trojan-go', 'trojan'], paths: ['/usr/local/bin/trojan-go', '/usr/local/etc/trojan-go', '/etc/trojan-go', '/usr/local/bin/trojan', '/usr/local/etc/trojan'] },
+  { id: 'ss-rust', name: 'shadowsocks-rust', units: ['shadowsocks-rust', 'ssserver', 'shadowsocks'], paths: ['/usr/local/bin/ssserver', '/usr/local/bin/sslocal', '/etc/shadowsocks-rust', '/etc/shadowsocks'] },
+  { id: 'ss-libev', name: 'shadowsocks-libev', units: ['shadowsocks-libev', 'shadowsocks-libev-server@*'], paths: ['/etc/shadowsocks-libev'], pkgs: ['shadowsocks-libev'] },
+  { id: 'gost', name: 'GOST 转发', units: ['gost'], paths: ['/usr/local/bin/gost', '/etc/gost'] },
+  { id: 'realm', name: 'Realm 转发', units: ['realm'], paths: ['/usr/local/bin/realm', '/etc/realm', '/root/realm'] },
+  { id: 'brook', name: 'Brook', units: ['brook'], paths: ['/usr/local/bin/brook', '/etc/brook'] },
+  {
+    id: 'bt', name: '宝塔面板', units: ['bt', 'btpanel'], markers: ['/www/server'], detect: ['/www/server/panel', '/etc/init.d/bt'],
+    paths: ['/www', '/usr/bin/bt', '/etc/init.d/bt'], extraPaths: `grep -l '/www/server' /etc/my.cnf 2>/dev/null`,
+    danger: '连同它装的 Nginx / MySQL / PHP 等，以及 /www 下的网站文件、数据库、宝塔备份一起删除',
+  },
+  {
+    id: '1panel', name: '1Panel', units: ['1panel', '1panel-core', '1panel-agent'],
+    paths: ['/usr/local/bin/1panel', '/usr/local/bin/1pctl', '/usr/local/bin/1panel-core', '/usr/local/bin/1panel-agent', '/usr/bin/1panel', '/usr/bin/1pctl', '/opt/1panel'],
+    extraPaths: `B=$(sed -n 's/^BASE_DIR=//p' /usr/local/bin/1pctl /usr/bin/1pctl 2>/dev/null | head -1 | tr -d "\\"' "); [ -n "$B" ] && [ -d "$B/1panel" ] && echo "$B/1panel"`,
+    pre: `if command -v docker >/dev/null; then for c in $(docker ps -aq --filter label=createdBy=1Panel 2>/dev/null); do docker rm -f -v "$c" >/dev/null 2>&1 && echo "  删除 1Panel 应用容器 $c"; done; docker network rm 1panel-network >/dev/null 2>&1; fi`,
+    danger: '连同 1Panel 装的应用（Docker 容器）和网站数据一起删除；应用容器不会备份',
+  },
+  {
+    id: 'hiddify', name: 'Hiddify Manager', units: ['hiddify-*'], markers: ['/opt/hiddify-manager'],
+    paths: ['/opt/hiddify-manager', '/opt/hiddify-config', '/opt/hiddify-server'],
+    danger: '它装的 Nginx、HAProxy、MariaDB、Redis 等系统软件包保留（别的程序可能也在用），它自己的服务和目录全部删除',
+  },
 ];
 // 不当作「其他程序」的系统 / 自己的进程
 const SYSTEM_PROCS = /^(sshd|systemd|systemd-resolve|systemd-network|systemd-timesyn|chronyd|ntpd|dhclient|dhcpcd|rpcbind|nodedeck-agent|nodedeck-sing|docker-proxy|dockerd|containerd|master|exim4|postfix|cupsd|avahi-daemon|qemu-ga|cloud-init|snapd)$/;
+const BACKUP_ROOT = '/root/nodedeck-backup';
 
 function unitFileFn() {
-  return `unit_files() { for d in /etc/systemd/system /usr/lib/systemd/system /lib/systemd/system; do for f in "$d"/$1.service; do [ -f "$f" ] && echo "$f"; done; done; [ -f "/etc/init.d/$1" ] && echo "/etc/init.d/$1"; return 0; }`;
+  return [
+    `unit_files() { for d in /etc/systemd/system /usr/lib/systemd/system /lib/systemd/system; do for f in "$d"/$1.service; do [ -f "$f" ] && echo "$f"; done; done; [ -f "/etc/init.d/$1" ] && echo "/etc/init.d/$1"; return 0; }`,
+    // 内容里引用了某个目录的服务文件（宝塔装的 nginx / mysqld 等）
+    `marker_units() { for f in /etc/systemd/system/*.service /usr/lib/systemd/system/*.service /lib/systemd/system/*.service /etc/init.d/*; do [ -f "$f" ] && grep -qs "$1" "$f" && echo "$f"; done; return 0; }`,
+  ].join('\n');
 }
 
 async function scanOthers(server) {
@@ -829,18 +850,19 @@ async function scanOthers(server) {
     const lines = [unitFileFn()];
     for (const a of OTHER_APPS) {
       for (const u of a.units) lines.push(`for f in $(unit_files '${u}'); do n=$(basename "$f" .service); st=$( (systemctl is-active "$n" 2>/dev/null || rc-service "$n" status 2>/dev/null | grep -q started && echo active) | head -1); echo "U|${a.id}|$n|$st|$f"; done`);
+      for (const p of a.detect || a.paths) lines.push(`[ -e ${shq(p)} ] && echo "D|${a.id}|${p}"`);
       for (const p of a.paths) lines.push(`[ -e ${shq(p)} ] && echo "P|${a.id}|${p}|$(du -sm ${shq(p)} 2>/dev/null | cut -f1)"`);
     }
     lines.push(`echo "---LISTEN"; (ss -tulnpH 2>/dev/null || netstat -tulnp 2>/dev/null | tail -n +3)`);
     lines.push(`echo "---PIDS"; for p in $( (ss -tulnpH 2>/dev/null || netstat -tulnp 2>/dev/null) | grep -o 'pid=[0-9]*\\|[0-9]*/' | tr -dc '0-9\\n' | sort -u); do [ -d /proc/$p ] || continue; echo "I|$p|$(readlink /proc/$p/exe 2>/dev/null)|$(grep -o '[^/]*\\.service' /proc/$p/cgroup 2>/dev/null | head -1)|$(tr '\\0' ' ' < /proc/$p/cmdline 2>/dev/null | cut -c1-120)"; done`);
-    lines.push(`for f in /root/nodedeck-cleanup-*.tar.gz; do [ -f "$f" ] && echo "B|$f|$(du -k "$f" | cut -f1)"; done`);
+    // 备份：新格式（可恢复）和旧版留下的压缩包
+    lines.push(`for d in ${BACKUP_ROOT}/*/; do [ -f "$d/meta.json" ] && echo "K|$(basename "$d")|$(du -sk "$d" | cut -f1)|$(tr -d '\\n' < "$d/meta.json")"; done; for f in /root/nodedeck-cleanup-*.tar.gz; do [ -f "$f" ] && echo "B|$f|$(du -k "$f" | cut -f1)"; done`);
     lines.push(`echo "---DOCKER"; command -v docker >/dev/null && docker ps -a --format '{{.ID}}|{{.Names}}|{{.Image}}|{{.Status}}|{{.Ports}}' 2>/dev/null`);
     lines.push('true');
-    const out = (await ssh.exec(lines.join('\n'), { timeout: 60000 })).stdout;
+    const out = (await ssh.exec(lines.join('\n'), { timeout: 90000 })).stdout;
     const [head, rest1 = ''] = out.split('---LISTEN');
     const [listen, rest2 = ''] = rest1.split('---PIDS');
     const [pidsTxt, dockerTxt = ''] = rest2.split('---DOCKER');
-    // 进程信息
     const procs = {};
     for (const l of pidsTxt.split('\n')) { const f = l.split('|'); if (f[0] === 'I') procs[f[1]] = { pid: f[1], exe: f[2] || '', unit: (f[3] || '').replace(/\.service$/, ''), cmd: (f[4] || '').trim() }; }
     // 监听端口：只看对外的（不含 127.0.0.1 / ::1）
@@ -857,27 +879,24 @@ async function scanOthers(server) {
       ports.push({ proto, port: Number(m[2]), pid, pname });
     }
     const portsOf = (pred) => [...new Set(ports.filter((p) => p.pid && procs[p.pid] && pred(procs[p.pid], p)).map((p) => `${p.port}/${p.proto}`))];
-    // 认识的面板 / 程序
     const apps = [];
     for (const a of OTHER_APPS) {
-      const units = []; const paths = [];
+      const units = []; const paths = []; let found = false;
       for (const l of head.split('\n')) {
         const f = l.split('|');
         if (f[1] !== a.id) continue;
         if (f[0] === 'U' && !units.some((u) => u.name === f[2])) units.push({ name: f[2], active: f[3] === 'active', file: f[4] });
+        if (f[0] === 'D') found = true;
         if (f[0] === 'P') paths.push({ path: f[2], mb: Number(f[3]) || 0 });
       }
-      // 只有一个泛用的文件名（比如 /usr/local/bin/trojan）不算装过，至少要有服务或目录
-      if (!units.length && !paths.length) continue;
+      if (!units.length && !found) continue;
       const unitNames = units.map((u) => u.name);
-      const p = portsOf((pr) => unitNames.includes(pr.unit) || a.paths.some((x) => pr.exe && (pr.exe === x || pr.exe.startsWith(x + '/'))));
-      apps.push({ kind: 'app', id: a.id, name: a.name, stopOnly: !!a.stopOnly, note: a.note || '', units, paths, ports: p, running: units.some((u) => u.active) || p.length > 0 });
+      const p = portsOf((pr) => unitNames.includes(pr.unit) || a.paths.some((x) => pr.exe && (pr.exe === x || pr.exe.startsWith(x + '/'))) || (a.markers || []).some((m) => pr.exe.startsWith(m + '/')));
+      apps.push({ kind: 'app', id: a.id, name: a.name, danger: a.danger || '', units, paths, ports: p, running: units.some((u) => u.active) || p.length > 0, mb: paths.reduce((x, y) => x + y.mb, 0) });
     }
     const known = new Set(apps.flatMap((a) => a.units.map((u) => u.name)));
-    const knownExe = (exe) => OTHER_APPS.some((a) => a.paths.some((x) => exe === x || exe.startsWith(x + '/')));
-    // Docker 容器
+    const knownExe = (exe) => OTHER_APPS.some((a) => a.paths.concat(a.markers || []).some((x) => exe === x || exe.startsWith(x + '/')));
     const containers = dockerTxt.split('\n').map((l) => l.split('|')).filter((f) => f.length >= 4 && /^[0-9a-f]{6,}$/.test(f[0])).map((f) => ({ kind: 'docker', id: f[0], name: f[1], image: f[2], status: f[3], ports: f[4] || '', running: /^Up/i.test(f[3]) }));
-    // 其他占用公网端口的程序（按 systemd 服务归组；不是服务的只列出来，不提供删除）
     const others = new Map();
     for (const p of ports) {
       const pr = p.pid && procs[p.pid];
@@ -891,58 +910,107 @@ async function scanOthers(server) {
       if (!o.ports.includes(pp)) o.ports.push(pp);
       others.set(key, o);
     }
-    // 以前清理时留下的备份
-    const backups = out.split('\n').map((l) => l.split('|')).filter((f) => f[0] === 'B' && /^\/root\/nodedeck-cleanup-\d+\.tar\.gz$/.test(f[1])).map((f) => ({ path: f[1], kb: Number(f[2]) || 0 }));
-    return { apps, containers, others: [...others.values()], backups, at: Date.now() };
+    const backups = [];
+    for (const l of out.split('\n')) {
+      const f = l.split('|');
+      if (f[0] === 'K' && /^\d{12,14}$/.test(f[1])) { let meta = {}; try { meta = JSON.parse(f.slice(3).join('|')); } catch (_) { /* ignore */ } backups.push({ id: f[1], kb: Number(f[2]) || 0, ...meta }); }
+    }
+    const oldBackups = out.split('\n').map((l) => l.split('|')).filter((f) => f[0] === 'B' && /^\/root\/nodedeck-cleanup-\d+\.tar\.gz$/.test(f[1])).map((f) => ({ path: f[1], kb: Number(f[2]) || 0 }));
+    return { apps, containers, others: [...others.values()], backups: backups.sort((x, y) => (y.at || 0) - (x.at || 0)), oldBackups, at: Date.now() };
   });
 }
 
-// 删除选中的：items = [{ kind:'app', id } | { kind:'docker', id } | { kind:'other', unit }]
+function streamLog(log) {
+  let buf = '';
+  return { onData: (t) => { buf += t; let i; while ((i = buf.indexOf('\n')) >= 0) { const line = buf.slice(0, i); buf = buf.slice(i + 1); if (line.trim()) log(line); } }, flush: () => { if (buf.trim()) log(buf.trim()); buf = ''; } };
+}
+
+// 删除选中的：items = [{ kind:'app', id } | { kind:'docker', id, image } | { kind:'other', unit } | { kind:'oldBackups' }]
+// backup=true 时先把要删的程序整套打包，之后可以一键恢复
 async function cleanOthers(server, items, log = () => {}, { backup: doBackup = false } = {}) {
   return withSSH(server, async (ssh) => {
-    const ts = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 12);
-    const backup = `/root/nodedeck-cleanup-${ts}.tar.gz`;
+    const ts = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+    const BK = `${BACKUP_ROOT}/${ts}`;
+    const apps = items.filter((it) => it.kind === 'app').map((it) => OTHER_APPS.find((x) => x.id === it.id)).filter(Boolean);
     const sh = [unitFileFn(), 'set +e',
-      // 停止 + 取消自启；不属于任何软件包的服务文件才删
-      `stop_unit() { n="$1"; f="$2"; echo "  停止服务 $n"; systemctl stop "$n" >/dev/null 2>&1; systemctl disable "$n" >/dev/null 2>&1; rc-service "$n" stop >/dev/null 2>&1; rc-update del "$n" >/dev/null 2>&1; }`,
-      `rm_unit() { f="$1"; [ -f "$f" ] || return 0; if (dpkg -S "$f" >/dev/null 2>&1 || rpm -qf "$f" >/dev/null 2>&1 || apk info -W "$f" >/dev/null 2>&1); then echo "  服务文件属于系统软件包，保留：$f"; else rm -f "$f" && echo "  删除服务文件 $f"; fi; }`];
-    const keep = []; const rmPaths = []; const cronPats = [];
+      'T=$(mktemp -d); : > $T/units; : > $T/paths',
+      // 记下服务：名字|文件
+      `note_unit() { n=$(basename "$1" .service); grep -qx "$n|$1" $T/units || echo "$n|$1" >> $T/units; }`,
+      `stop_unit() { n="$1"; f="$2"; echo "  停止服务 $n"; case "$f" in /etc/init.d/*) "$f" stop >/dev/null 2>&1; update-rc.d -f "$n" remove >/dev/null 2>&1; chkconfig --del "$n" >/dev/null 2>&1; rc-update del "$n" >/dev/null 2>&1;; *) systemctl stop "$n" >/dev/null 2>&1; systemctl disable "$n" >/dev/null 2>&1;; esac; }`,
+      `owned() { dpkg -S "$1" >/dev/null 2>&1 || rpm -qf "$1" >/dev/null 2>&1 || apk info -W "$1" >/dev/null 2>&1; }`,
+      `safe_path() { case "$1" in /www|/usr/?*/?*|/usr/local/?*|/etc/?*|/opt/?*|/var/?*/?*|/root/?*|/www/?*) case "$1" in *nodedeck*|*..*) return 1;; esac; return 0;; esac; return 1; }`,
+    ];
+    // 第一步：找出每个程序的服务和路径，停掉服务
+    const cronPats = [];
+    for (const a of apps) {
+      sh.push(`echo "▶ ${a.name}"`);
+      for (const u of a.units) sh.push(`for f in $(unit_files '${u}'); do note_unit "$f"; done`);
+      for (const m of a.markers || []) sh.push(`for f in $(marker_units ${shq(m)}); do note_unit "$f"; done`);
+      for (const p of a.paths) sh.push(`[ -e ${shq(p)} ] && echo ${shq(p)} >> $T/paths`);
+      if (a.extraPaths) sh.push(`for p in $(${a.extraPaths}); do safe_path "$p" && [ -e "$p" ] && echo "$p" >> $T/paths; done`);
+      cronPats.push(...a.paths.filter((x) => x !== '/www'), ...(a.markers || []));
+    }
+    if (apps.length) sh.push(`while IFS='|' read -r n f; do [ -n "$n" ] && stop_unit "$n" "$f"; done < $T/units`);
+    for (const a of apps) if (a.pre) sh.push(a.pre);
+    // 第二步（可选）：整套备份
+    if (doBackup && apps.length) {
+      const meta = { at: Date.now(), apps: apps.map((a) => ({ id: a.id, name: a.name })), host: server.host };
+      sh.push(`mkdir -p ${BK} && chmod 700 ${BACKUP_ROOT} ${BK}`,
+        `{ cut -d'|' -f2 $T/units; cat $T/paths; } | sort -u | sed 's#^/##' > $T/list`,
+        `echo "  打包备份（程序、配置、服务文件）…"; tar czf ${BK}/files.tar.gz -C / -T $T/list 2>/dev/null; cp $T/units ${BK}/units.txt`,
+        cronPats.length ? `crontab -l 2>/dev/null | grep -F ${[...new Set(cronPats)].map((x) => '-e ' + shq(x)).join(' ')} > ${BK}/cron.txt` : `: > ${BK}/cron.txt`,
+        `printf '%s' ${shq(JSON.stringify(meta))} > ${BK}/meta.json`,
+        `[ -s ${BK}/files.tar.gz ] && echo "备份完成：${BK}（$(du -sh ${BK} | cut -f1)），可以在 NodeDeck 里一键恢复" || echo "⚠ 备份失败"`);
+    }
+    // 第三步：删除服务文件、路径、软件包、定时任务
+    if (apps.length) {
+      sh.push(`while IFS='|' read -r n f; do [ -f "$f" ] || continue; if owned "$f"; then echo "  服务文件属于系统软件包，保留：$f"; else rm -f "$f" && echo "  删除服务文件 $f"; fi; done < $T/units`);
+      sh.push(`sort -u $T/paths | while read -r p; do safe_path "$p" && [ -e "$p" ] && rm -rf "$p" && echo "  删除 $p"; done`);
+      for (const a of apps) for (const pk of a.pkgs || []) sh.push(`if dpkg -s ${shq(pk)} >/dev/null 2>&1; then echo "  卸载软件包 ${pk}"; DEBIAN_FRONTEND=noninteractive apt-get purge -y -qq ${shq(pk)} >/dev/null 2>&1; elif rpm -q ${shq(pk)} >/dev/null 2>&1; then yum remove -y -q ${shq(pk)} >/dev/null 2>&1; elif apk info -e ${shq(pk)} >/dev/null 2>&1; then apk del -q ${shq(pk)} >/dev/null 2>&1; fi`);
+      if (cronPats.length) sh.push(`if crontab -l >$T/cron 2>/dev/null; then grep -v -F ${[...new Set(cronPats)].map((x) => '-e ' + shq(x)).join(' ')} $T/cron > $T/cron2; cmp -s $T/cron $T/cron2 || { crontab $T/cron2 && echo "  已清理相关的定时任务"; }; fi`);
+    }
     for (const it of items) {
-      if (it.kind === 'app') {
-        const a = OTHER_APPS.find((x) => x.id === it.id);
-        if (!a) continue;
-        sh.push(`echo "▶ ${a.name}${a.stopOnly ? '（只停用）' : ''}"`);
-        for (const u of a.units) sh.push(`for f in $(unit_files '${u}'); do n=$(basename "$f" .service); stop_unit "$n" "$f"; ${a.stopOnly ? '' : 'rm_unit "$f";'} done`);
-        if (a.stopOnly) continue;
-        for (const pk of a.pkgs || []) sh.push(`if dpkg -s ${shq(pk)} >/dev/null 2>&1; then echo "  卸载软件包 ${pk}"; DEBIAN_FRONTEND=noninteractive apt-get purge -y -qq ${shq(pk)} >/dev/null 2>&1; elif rpm -q ${shq(pk)} >/dev/null 2>&1; then yum remove -y -q ${shq(pk)} >/dev/null 2>&1; elif apk info -e ${shq(pk)} >/dev/null 2>&1; then apk del -q ${shq(pk)} >/dev/null 2>&1; fi`);
-        keep.push(...(a.keep || []));
-        rmPaths.push(...a.paths);
-        cronPats.push(...a.paths);
-      } else if (it.kind === 'backups') {
-        sh.push('echo "▶ 删除以前清理时留下的备份"; for f in /root/nodedeck-cleanup-*.tar.gz; do [ -f "$f" ] && rm -f "$f" && echo "  删除 $f"; done');
+      if (it.kind === 'oldBackups') {
+        sh.push('echo "▶ 删除旧版留下的备份"; for f in /root/nodedeck-cleanup-*.tar.gz; do [ -f "$f" ] && rm -f "$f" && echo "  删除 $f"; done');
       } else if (it.kind === 'docker' && /^[0-9a-f]{6,64}$/.test(it.id)) {
         const img = /^[\w./:@-]+$/.test(it.image || '') ? it.image : '';
         sh.push(`echo "▶ 删除 Docker 容器 ${String(it.name || it.id).replace(/[^\w.-]/g, '')}"; docker rm -f -v ${it.id} >/dev/null 2>&1 && echo "  已删除容器和它的匿名数据卷" || echo "  删除失败"${img ? `; docker image rm ${shq(img)} >/dev/null 2>&1 && echo "  已删除镜像 ${img}"` : ''}`);
       } else if (it.kind === 'other' && /^[\w@.:-]+$/.test(it.unit || '') && !/nodedeck|ssh|systemd|docker|containerd/.test(it.unit)) {
-        sh.push(`echo "▶ 停用服务 ${it.unit}"; for f in $(unit_files ${shq(it.unit)}); do stop_unit ${shq(it.unit)} "$f"; case "$f" in /etc/systemd/system/*) rm_unit "$f";; esac; done`);
+        sh.push(`echo "▶ 停用服务 ${it.unit}"; for f in $(unit_files ${shq(it.unit)}); do stop_unit ${shq(it.unit)} "$f"; done`);
       }
     }
-    // 选了备份才打包配置目录（不含程序本身）；默认彻底删除，不留备份
-    const keepQ = [...new Set(keep)].map(shq).join(' ');
-    if (doBackup && keep.length) sh.push(`ex=""; for p in ${keepQ}; do [ -e "$p" ] && ex="$ex $p"; done; if [ -n "$ex" ]; then tar czf ${backup} $ex 2>/dev/null && chmod 600 ${backup} && echo "配置已备份到 ${backup}"; fi`);
-    // 删除目录 / 文件（只删上面清单里的路径，绝不碰 NodeDeck 自己的）
-    for (const p of [...new Set(rmPaths)]) {
-      if (!/^\/(usr|etc|opt|var|root|www)\/[\w./@-]+$/.test(p) || /nodedeck/.test(p)) continue;
-      sh.push(`[ -e ${shq(p)} ] && rm -rf ${shq(p)} && echo "  删除 ${p}"`);
-    }
-    // 定时任务里引用这些路径的行一起去掉（比如自动续证书）
-    if (cronPats.length) sh.push(`if crontab -l >/tmp/nd-cron 2>/dev/null; then grep -v -F ${[...new Set(cronPats)].map((x) => '-e ' + shq(x)).join(' ')} /tmp/nd-cron >/tmp/nd-cron2; if ! cmp -s /tmp/nd-cron /tmp/nd-cron2; then crontab /tmp/nd-cron2 && echo "  已清理相关的定时任务"; fi; rm -f /tmp/nd-cron /tmp/nd-cron2; fi`);
-    sh.push('systemctl daemon-reload >/dev/null 2>&1; systemctl reset-failed >/dev/null 2>&1; echo "完成"');
-    let buf = '';
-    const r = await ssh.exec(sh.join('\n'), { timeout: 600000, onData: (t) => { buf += t; let i; while ((i = buf.indexOf('\n')) >= 0) { const line = buf.slice(0, i); buf = buf.slice(i + 1); if (line.trim()) log(line); } } });
-    if (buf.trim()) log(buf.trim());
-    return { backup: doBackup && keep.length && r.stdout.includes(backup) ? backup : '', output: r.stdout };
+    sh.push('rm -rf $T; systemctl daemon-reload >/dev/null 2>&1; systemctl reset-failed >/dev/null 2>&1; echo "完成"');
+    const st = streamLog(log);
+    const r = await ssh.exec(sh.join('\n'), { timeout: 1200000, onData: st.onData });
+    st.flush();
+    return { backup: doBackup && apps.length && /备份完成/.test(r.stdout) ? BK : '', output: r.stdout };
   }, { log });
+}
+
+// 一键恢复：解压回原位置、恢复定时任务、重新启用并启动服务
+async function restoreBackup(server, id, log = () => {}) {
+  if (!/^\d{12,14}$/.test(String(id))) throw new Error('备份编号不对');
+  const BK = `${BACKUP_ROOT}/${id}`;
+  return withSSH(server, async (ssh) => {
+    const sh = ['set +e',
+      `[ -f ${BK}/files.tar.gz ] || { echo "找不到备份文件"; exit 1; }`,
+      `echo "▶ 解压程序和配置到原来的位置…"; tar xzf ${BK}/files.tar.gz -C / && echo "  完成"`,
+      `if [ -s ${BK}/cron.txt ]; then T=$(mktemp); crontab -l 2>/dev/null > $T; while IFS= read -r l; do grep -qxF "$l" $T || echo "$l" >> $T; done < ${BK}/cron.txt; crontab $T && echo "  定时任务已恢复"; rm -f $T; fi`,
+      'systemctl daemon-reload >/dev/null 2>&1',
+      `while IFS='|' read -r n f; do [ -n "$n" ] || continue; case "$f" in /etc/init.d/*) (update-rc.d "$n" defaults >/dev/null 2>&1 || chkconfig --add "$n" >/dev/null 2>&1 || rc-update add "$n" default >/dev/null 2>&1); "$f" start >/dev/null 2>&1;; *) systemctl enable "$n" >/dev/null 2>&1; systemctl start "$n" >/dev/null 2>&1;; esac; echo "  启动服务 $n"; done < ${BK}/units.txt`,
+      'echo "恢复完成"',
+    ];
+    const st = streamLog(log);
+    const r = await ssh.exec(sh.join('\n'), { timeout: 1200000, onData: st.onData });
+    st.flush();
+    if (r.code !== 0) throw new Error((r.stdout + r.stderr).trim().split('\n').pop() || '恢复失败');
+    return true;
+  }, { log });
+}
+
+async function deleteBackup(server, id) {
+  if (!/^\d{12,14}$/.test(String(id))) throw new Error('备份编号不对');
+  return withSSH(server, (ssh) => ssh.run(`rm -rf ${BACKUP_ROOT}/${id}; rmdir ${BACKUP_ROOT} 2>/dev/null; true`));
 }
 
 // BBR 和 CUBIC 对比：交替切换拥塞控制，各测几轮下载速度（由调用方测），最后恢复原来的设置
@@ -1010,4 +1078,4 @@ async function gateRealityTarget(ssh, server, log, force) {
   log(`✔ Reality 目标 ${rp.sni} 检测通过（TLS 1.3、HTTP/2、X25519、证书有效，${r.ms} ms）`);
 }
 
-module.exports = { scanOthers, cleanOthers, netPing, netInfo, netTune, netRestore, netTrace, netMtu, withCC, benchStart, benchPoll, benchStop, swapSize, memLimits, writeUnits, tuneSmallBox, rememberHw, pickReality, adminNotify, realityCheck, deployServer, syncServer, updateSingbox, serverSelfCheck, notifyTest, fetchMetrics, scanReality, serverStatus, fetchStats, resetTraffic, serverLogs, uninstall, testSSH, remoteTlsCheck, agentConfig };
+module.exports = { OTHER_APPS, scanOthers, cleanOthers, restoreBackup, deleteBackup, netPing, netInfo, netTune, netRestore, netTrace, netMtu, withCC, benchStart, benchPoll, benchStop, swapSize, memLimits, writeUnits, tuneSmallBox, rememberHw, pickReality, adminNotify, realityCheck, deployServer, syncServer, updateSingbox, serverSelfCheck, notifyTest, fetchMetrics, scanReality, serverStatus, fetchStats, resetTraffic, serverLogs, uninstall, testSSH, remoteTlsCheck, agentConfig };

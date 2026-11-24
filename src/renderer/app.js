@@ -1186,7 +1186,7 @@ function benchModal(srv, kind, name, onClosed) {
   step();
 }
 
-// 清理 VPS 上以前装的其他面板 / 代理程序（不重装系统）
+// 清理 VPS 上以前装的其他面板 / 代理程序（不重装系统）。默认彻底删除；勾选备份时整套打包，之后可以一键恢复
 async function cleanOthers(s) {
   const body = h('div', {});
   const logBox = h('pre', { class: 'log hidden', style: { maxHeight: '220px', marginTop: '10px' } });
@@ -1194,8 +1194,18 @@ async function cleanOthers(s) {
   const goBtn = h('button', { class: 'danger', disabled: true }, '删除选中的');
   const bakCb = h('input', { type: 'checkbox' }); // 默认不备份，彻底删干净
   const ourPorts = new Set(Object.entries(s.protocols || {}).filter(([, p]) => p?.enabled).map(([, p]) => Number(p.port)));
+  const mbText = (mb) => (mb >= 1024 ? (mb / 1024).toFixed(1) + 'GB' : Math.max(1, Math.round(mb)) + 'MB');
   let picks = [];
   let update = () => {};
+  let busyNow = false;
+  const runTask = async (fn) => {
+    if (busyNow) return;
+    busyNow = true; logBox.textContent = '';
+    try { await fn(); } catch (e) { toast(e.message, 'err'); }
+    busyNow = false;
+    const keepLog = logBox.textContent;
+    setTimeout(async () => { await scan(); if (keepLog) { logBox.textContent = keepLog; logBox.classList.remove('hidden'); } }, 0);
+  };
   const scan = async () => {
     body.innerHTML = '';
     body.append(h('p', { class: 'muted' }, h('span', { class: 'spin' }), ' 正在扫描 VPS 上的面板、代理程序、Docker 容器和占用端口的程序…'));
@@ -1204,7 +1214,13 @@ async function cleanOthers(s) {
     try { r = await api.call('server:scanOthers', s.id); } catch (e) { body.innerHTML = ''; body.append(h('p', {}, h('span', { class: 'tag bad' }, '扫描失败'), ' ', e.message)); return; }
     body.innerHTML = '';
     picks = [];
-    update = () => { const n = picks.filter((p) => p.cb.checked).length; goBtn.disabled = !n; goBtn.textContent = n ? `删除选中的（${n}）` : '删除选中的'; };
+    update = () => {
+      const sel = picks.filter((p) => p.cb.checked);
+      goBtn.disabled = !sel.length || busyNow;
+      goBtn.textContent = sel.length ? `删除选中的（${sel.length}）` : '删除选中的';
+      const anyApp = sel.some((p) => p.it.kind === 'app');
+      bakRow.classList.toggle('hidden', !anyApp);
+    };
     const conflict = (ports) => ports.map((p) => Number(String(p).split('/')[0])).filter((p) => ourPorts.has(p));
     const portTags = (ports) => ports.map((p) => { const bad = conflict([p]).length; return h('span', { class: 'tag ' + (bad ? 'bad' : ''), title: bad ? '和 NodeDeck 的节点端口冲突' : '' }, p); });
     const item = (it, checked, title, sub, extra) => {
@@ -1214,41 +1230,55 @@ async function cleanOthers(s) {
       return h('label', { class: 'cl-item' }, cb, h('div', { style: { flex: 1, minWidth: 0 } }, h('div', { class: 'cl-title' }, title), sub ? h('div', { class: 'muted cl-sub' }, sub) : null, extra));
     };
     const section = (t, desc, rows) => rows.length ? h('div', { class: 'cl-sec' }, h('h4', {}, t), desc ? h('p', { class: 'muted', style: { fontSize: '12px', margin: '0 0 6px' } }, desc) : null, rows) : null;
-    const apps = r.apps.map((a) => item({ kind: 'app', id: a.id }, !a.stopOnly, h('span', {}, h('b', {}, a.name), ' ', h('span', { class: 'tag ' + (a.running ? 'warn' : '') }, a.running ? '运行中' : '没在运行'), a.stopOnly ? h('span', { class: 'tag blue' }, '只停用') : null, conflict(a.ports).length ? h('span', { class: 'tag bad' }, '占用了节点端口') : null),
-      [a.units.length ? '服务 ' + a.units.map((u) => u.name).join('、') : '', a.paths.length ? '目录 ' + a.paths.map((x) => `${x.path}${x.mb > 1 ? `（${x.mb}MB）` : ''}`).join('、') : ''].filter(Boolean).join(' · '),
-      h('div', {}, a.ports.length ? h('span', { class: 'muted', style: { fontSize: '12px' } }, '端口 ', portTags(a.ports)) : null, a.note ? h('div', { class: 'muted', style: { fontSize: '12px' } }, a.note) : null)));
+    const apps = r.apps.map((a) => item({ kind: 'app', id: a.id }, true,
+      h('span', {}, h('b', {}, a.name), ' ', h('span', { class: 'tag ' + (a.running ? 'warn' : '') }, a.running ? '运行中' : '没在运行'), a.mb ? h('span', { class: 'tag' }, mbText(a.mb)) : null, conflict(a.ports).length ? h('span', { class: 'tag bad' }, '占用了节点端口') : null),
+      [a.units.length ? '服务 ' + a.units.map((u) => u.name).join('、') : '', a.paths.length ? '目录 ' + a.paths.map((x) => `${x.path}${x.mb > 1 ? `（${mbText(x.mb)}）` : ''}`).join('、') : ''].filter(Boolean).join(' · '),
+      h('div', {}, a.ports.length ? h('span', { class: 'muted', style: { fontSize: '12px' } }, '端口 ', portTags(a.ports)) : null, a.danger ? h('div', { class: 'cl-danger' }, '⚠ ' + a.danger) : null)));
     const docks = r.containers.map((c) => item({ kind: 'docker', id: c.id, name: c.name, image: c.image }, false, h('span', {}, h('b', {}, c.name), ' ', h('span', { class: 'tag ' + (c.running ? 'warn' : '') }, c.running ? '运行中' : '已停止')), `镜像 ${c.image}${c.ports ? ' · ' + c.ports : ''}`));
-    const olds = (r.backups || []).length ? [item({ kind: 'backups' }, true, h('b', {}, `以前清理时留下的备份（${r.backups.length} 个，共 ${Math.max(1, Math.round(r.backups.reduce((a, b) => a + b.kb, 0) / 1024))}MB）`), r.backups.map((b) => b.path).join('、'))] : [];
     const others = r.others.map((o) => o.unit
       ? item({ kind: 'other', unit: o.unit }, false, h('span', {}, h('b', {}, o.unit), ' ', conflict(o.ports).length ? h('span', { class: 'tag bad' }, '占用了节点端口') : null), `${o.exe || o.cmd}`, h('div', {}, h('span', { class: 'muted', style: { fontSize: '12px' } }, '端口 ', portTags(o.ports)), h('div', { class: 'muted', style: { fontSize: '12px' } }, '只停止这个服务、取消开机自启，不删除程序文件')))
       : h('div', { class: 'cl-item' }, h('span', { style: { width: '16px' } }), h('div', {}, h('b', {}, o.name), ' ', h('span', { class: 'muted', style: { fontSize: '12px' } }, o.cmd || o.exe), h('div', {}, portTags(o.ports), h('span', { class: 'muted', style: { fontSize: '12px' } }, ' 不是系统服务，NodeDeck 不处理，可以 SSH 登录后自己看')))));
+    const olds = r.oldBackups.length ? [item({ kind: 'oldBackups' }, true, h('b', {}, `旧版留下的配置备份（${r.oldBackups.length} 个）`), r.oldBackups.map((b) => b.path).join('、'))] : [];
+    // 可以恢复的备份
+    const bks = r.backups.map((b) => h('div', { class: 'cl-item cl-bk' },
+      h('div', { style: { flex: 1, minWidth: 0 } }, h('div', { class: 'cl-title' }, h('b', {}, (b.apps || []).map((x) => x.name).join('、') || '备份'), h('span', { class: 'tag' }, mbText(b.kb / 1024))), h('div', { class: 'muted cl-sub' }, `${fmtDate(b.at)} · /root/nodedeck-backup/${b.id}`)),
+      h('button', { class: 'small primary', onclick: async () => {
+        if (!(await confirmBox(`把「${(b.apps || []).map((x) => x.name).join('、')}」恢复回去？\n\n程序、配置、服务文件和定时任务会放回原来的位置并启动。如果它和 NodeDeck 的节点用了同一个端口，会互相抢端口，恢复后注意检查。`, '恢复'))) return;
+        await runTask(async () => { await api.call('server:restoreBackup', s.id, b.id); toast('已恢复', 'ok'); });
+      } }, '一键恢复'),
+      h('button', { class: 'small danger', onclick: async () => {
+        if (!(await confirmBox(`删除这份备份？删除后就不能恢复了。`, '删除'))) return;
+        await runTask(async () => { await api.call('server:deleteBackup', s.id, b.id); toast('备份已删除', 'ok'); });
+      } }, '删除')));
+    const bakRow = h('label', { class: 'f cl-bakrow' }, bakCb, ' 删除前整套备份（程序、配置、服务文件、定时任务），以后可以在这里一键恢复。默认不备份，彻底删干净');
     if (!apps.length && !docks.length && !others.length && !olds.length) {
       body.append(h('div', { class: 'cl-empty' }, h('b', {}, '很干净'), h('p', { class: 'muted' }, '没有发现其他面板、代理程序、Docker 容器，也没有别的程序占用公网端口。')));
     } else {
       body.append(
-        h('div', { class: 'cl-warn' }, '删除是彻底删除，不能恢复。不放心的话可以先在服务商后台给 VPS 做个快照。SSH、系统服务和 NodeDeck 自己的东西不会动。'),
-        section('面板 / 代理程序', '认识的常见程序：停止服务、取消开机自启、删除它的服务文件和目录。', apps),
-        section('Docker 容器', '默认不勾。勾上的容器连同它的匿名数据卷和镜像一起删除（镜像还被别的容器用着时保留）。', docks),
+        h('div', { class: 'cl-warn' }, '默认是彻底删除，不能恢复；需要留后路就勾选下面的「删除前整套备份」。SSH、系统服务和 NodeDeck 自己的东西不会动。'),
+        section('面板 / 代理程序', '停止服务、取消开机自启，删除它的程序、配置、服务文件和定时任务。', apps),
+        section('Docker 容器', '默认不勾。勾上的容器连同它的匿名数据卷和镜像一起删除（镜像还被别的容器用着时保留）。容器不会备份。', docks),
         section('其他占用公网端口的程序', '不认识的程序默认不勾，只停用不删除。', others),
         section('旧备份', '', olds),
-        apps.some((a) => !a.stopOnly) ? h('label', { class: 'f', style: { marginTop: '4px' } }, bakCb, ' 删除前把这些程序的配置打包备份到 VPS 的 /root（默认不备份，彻底删干净）') : null);
+        bakRow);
     }
+    if (bks.length) body.append(h('div', { class: 'cl-sec', style: { marginTop: '16px' } }, h('h4', {}, '备份（可以一键恢复）'), h('p', { class: 'muted', style: { fontSize: '12px', margin: '0 0 6px' } }, '保存在 VPS 的 /root/nodedeck-backup 里。确定不需要了可以删掉，省磁盘空间。'), bks));
     body.append(logBox);
     update();
   };
-  goBtn.onclick = () => busy(goBtn, async () => {
+  goBtn.onclick = async () => {
     const sel = picks.filter((p) => p.cb.checked).map((p) => p.it);
     if (!sel.length) return;
-    if (!(await confirmBox(`确定处理选中的 ${sel.length} 项？\n\n${bakCb.checked ? '配置会先备份到 VPS 的 /root。' : '会彻底删除，不留备份，不能恢复。'}`, '删除'))) return;
-    logBox.textContent = '';
-    try {
+    const big = picks.filter((p) => p.cb.checked && p.it.kind === 'app' && ['bt', '1panel'].includes(p.it.id)).length;
+    const msg = `确定处理选中的 ${sel.length} 项？\n\n${bakCb.checked ? '会先整套备份，以后可以一键恢复。' : '会彻底删除，不留备份，不能恢复。'}${big ? '\n\n⚠ 选中了宝塔 / 1Panel：它们下面的网站文件和数据库也会一起删除。' : ''}`;
+    if (!(await confirmBox(msg, '删除'))) return;
+    goBtn.disabled = true;
+    await runTask(async () => {
       const r = await api.call('server:cleanOthers', s.id, sel, { backup: bakCb.checked });
-      toast(r.backup ? `清理完成，配置备份在 ${r.backup}` : '清理完成', 'ok');
-    } catch (e) { toast('清理出错：' + e.message, 'err'); }
-    const keepLog = logBox.textContent;
-    setTimeout(async () => { await scan(); if (keepLog) { logBox.textContent = keepLog; logBox.classList.remove('hidden'); } }, 0); // 等按钮的「处理中」状态恢复后再重画
-  });
-  modal({ title: `清理其他面板 / 程序 · ${s.name}`, wide: true, body, onClose: off, buttons: [{ label: '重新扫描', close: false, onClick: scan }, { label: '删除选中的', close: false, el: goBtn }, { label: '关闭' }] });
+      toast(r.backup ? `清理完成，备份在 ${r.backup}，可以在这里一键恢复` : '清理完成', 'ok');
+    });
+  };
+  modal({ title: `清理其他面板 / 程序 · ${s.name}`, wide: true, body, onClose: off, buttons: [{ label: '重新扫描', close: false, onClick: () => scan() }, { label: '删除选中的', close: false }, { label: '关闭' }] });
   const ph = [...document.querySelectorAll('.modal footer button')].reverse().find((b) => b.textContent === '删除选中的' && b !== goBtn);
   if (ph) ph.replaceWith(goBtn);
   scan();
