@@ -349,3 +349,23 @@ pre.term { background: #0e1214; color: #d7dee2; border-radius: 10px; padding: 12
 .srv-actions { display: grid; grid-template-columns: repeat(2, auto); gap: 6px; justify-content: start; }
 .srv-actions button { min-width: 64px; }
 .menu-sep { height: 1px; background: var(--line); margin: 4px 0; }
+
+/* 服务器列表：协议 / 端口竖排 */
+.proto-list { display: grid; gap: 2px; min-width: 170px; max-width: 220px; }
+.pl-row { display: grid; grid-template-columns: 8px 1fr auto; align-items: center; gap: 8px; font-size: 12.5px; padding: 2px 8px; border-radius: 6px; }
+.pl-row:nth-child(odd) { background: color-mix(in srgb, var(--muted) 7%, transparent); }
+.pl-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--chart-1, var(--accent)); }
+.pl-dot.udp { background: var(--chart-3); }
+.pl-dot.both { background: linear-gradient(90deg, var(--chart-1, var(--accent)) 50%, var(--chart-3) 50%); }
+.pl-name { white-space: nowrap; }
+.pl-port { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+
+/* 清理其他程序 */
+.cl-warn { background: var(--warn-soft); border: 1px solid color-mix(in srgb, var(--warn) 35%, transparent); border-radius: 10px; padding: 10px 12px; font-size: 13px; margin-bottom: 12px; }
+.cl-sec { margin-bottom: 14px; }
+.cl-sec h4 { margin: 0 0 4px; }
+.cl-item { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; margin-bottom: 6px; cursor: pointer; }
+.cl-item input { margin-top: 3px; }
+.cl-title { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.cl-sub { font-size: 12px; margin-top: 3px; word-break: break-all; }
+.cl-empty { text-align: center; padding: 30px 0; }

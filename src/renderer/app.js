@@ -279,7 +279,10 @@ async function viewServers(v) {
     const realityTag = s.protocols?.vlessReality?.enabled && rs?.fails > 0 ? h('span', { class: 'tag warn', title: rs.lastErr || '' }, `Reality 目标异常 ×${rs.fails}`) : null;
     const st = s.lastStatus;
     const status = !s.deployedAt ? h('span', { class: 'tag' }, '未部署') : st && st.singbox && st.agent ? h('span', { class: 'tag ok' }, '运行中') : h('span', { class: 'tag bad' }, '异常');
-    const protos = PROTOS.filter(([k]) => s.protocols?.[k]?.enabled).map(([k, l]) => h('span', { class: 'tag' }, `${l}:${s.protocols[k].port}`));
+    // 协议 / 端口：竖着一行一个，名称左、端口右，前面的小点区分 TCP / UDP
+    const NETS = { vlessReality: 'tcp', trojan: 'tcp', vmess: 'tcp', anytls: 'tcp', hysteria2: 'udp', tuic: 'udp', shadowsocks: 'both' };
+    const protos = PROTOS.filter(([k]) => s.protocols?.[k]?.enabled).map(([k, l]) => h('div', { class: 'pl-row', title: { tcp: 'TCP', udp: 'UDP', both: 'TCP + UDP' }[NETS[k]] },
+      h('i', { class: 'pl-dot ' + NETS[k] }), h('span', { class: 'pl-name' }, l), h('span', { class: 'pl-port mono' }, s.protocols[k].port)));
     const exit = s.exit?.type === 'landing' ? h('span', { class: 'tag blue' }, '落地: ' + (S.landings.find((l) => l.id === s.exit.landingId)?.name || '?')) : h('span', { class: 'tag' }, '直连');
     const fw = S.forwards.filter((f) => f.relayServerId === s.id).length;
     const lamp = !s.deployedAt ? 'idle' : st && st.singbox && st.agent ? 'ok' : 'bad';
@@ -287,7 +290,7 @@ async function viewServers(v) {
       h('td', { style: { width: '28px' } }, cb),
       h('td', {}, h('div', { class: 'srv-name' }, s.name), h('div', { class: 'muted mono', style: { wordBreak: 'normal', whiteSpace: 'nowrap', fontSize: '12px' } }, s.host), specChips(s), realityTag, s.role === 'relay' ? h('span', { class: 'tag blue' }, '中转机') : null, vpsExpireTag(s), core_cf(s) && s.deployedAt ? h('span', { class: 'tag ' + (s.lastStatus?.cf ? 'blue' : 'warn'), title: s.lastStatus?.cf ? '' : '隧道服务没在运行：检查令牌是否正确、VPS 能否连上 Cloudflare' }, s.lastStatus?.cf ? 'CF 隧道' : 'CF 隧道未连通') : null),
       h('td', { class: 'st-cell' }, h('div', { class: 'st-top' }, status, st?.version ? h('span', { class: 'muted', style: { fontSize: '12px' } }, 'sing-box ' + st.version) : null, agentOutdated(s) ? h('span', { class: 'tag warn', title: '点「同步」自动升级' }, 'agent 待升级') : null), s.deployedAt ? serverMeters(s) : null),
-      h('td', {}, protos.length ? protos : h('span', { class: 'muted' }, '无'), fw ? h('span', { class: 'tag blue' }, `转发 ${fw}`) : null),
+      h('td', {}, protos.length ? h('div', { class: 'proto-list' }, protos) : h('span', { class: 'muted' }, '无'), fw ? h('span', { class: 'tag blue', style: { marginTop: '6px' } }, `转发 ${fw}`) : null),
       h('td', {}, exit),
       h('td', {}, h('div', { class: 'srv-actions' },
         s.deployedAt
@@ -306,6 +309,7 @@ async function viewServers(v) {
           s.deployedAt && { label: '升级 sing-box 内核', onClick: async () => { toast('正在检查内核更新…'); const m = await api.call('server:updateSingbox', s.id); toast(m, 'ok'); render(); } },
           s.deployedAt && { label: '重新部署', onClick: () => deployServer(s) },
           { label: '一键换新（被墙时用）', onClick: () => rotateServer(s) },
+          { label: '清理其他面板 / 程序', onClick: () => cleanOthers(s) },
           { sep: true },
           { label: '删除', danger: true, onClick: () => removeServer(s) },
         ]) }, '更多 ▾')))));
@@ -766,7 +770,7 @@ function serverMeters(s) {
   const out = [meter('CPU', cpu, `${cpu}%`, `负载 ${st.load || '—'}（${cores} 核）`)];
   if (memT) { const p = Math.round((memU / memT) * 100); out.push(meter('内存', p, `${gb(memU)} / ${gb(memT)}`, `已用 ${p}%（不含可回收的缓存）`)); }
   if (st.diskTotal) { const p = Math.round((st.diskUsed / st.diskTotal) * 100); out.push(meter('磁盘', p, `${gb(st.diskUsed)} / ${gb(st.diskTotal)}`, `已用 ${p}%`)); }
-  const up = st.uptimeSec ? (st.uptimeSec >= 86400 ? `${Math.floor(st.uptimeSec / 86400)} 天` : `${Math.floor(st.uptimeSec / 3600)} 小时`) : '';
+  const up = st.uptimeSec ? (st.uptimeSec >= 86400 ? `${Math.floor(st.uptimeSec / 86400)} 天` : st.uptimeSec >= 3600 ? `${Math.floor(st.uptimeSec / 3600)} 小时` : `${Math.max(1, Math.floor(st.uptimeSec / 60))} 分钟`) : '';
   return h('div', { class: 'meters' }, out, h('div', { class: 'm-foot muted' }, `负载 ${(st.load || '—').split(' ')[0]}`, up ? ` · 已运行 ${up}` : '', st.at ? ` · ${fmtAgo(st.at)}更新` : ''));
 }
 function fmtAgo(t) { const m = Math.round((Date.now() - t) / 60000); return m < 1 ? '刚刚' : m < 60 ? `${m} 分钟前` : m < 1440 ? `${Math.round(m / 60)} 小时前` : `${Math.round(m / 1440)} 天前`; }
@@ -1180,6 +1184,70 @@ function benchModal(srv, kind, name, onClosed) {
   const footBtn = [...document.querySelectorAll('.modal footer button')].reverse().find((b) => b.textContent === '停止测试');
   if (footBtn) footBtn.replaceWith(stopBtn);
   step();
+}
+
+// 清理 VPS 上以前装的其他面板 / 代理程序（不重装系统）
+async function cleanOthers(s) {
+  const body = h('div', {});
+  const logBox = h('pre', { class: 'log hidden', style: { maxHeight: '220px', marginTop: '10px' } });
+  const off = api.on('task-log', (m) => { if (m.task !== 'clean:' + s.id) return; logBox.classList.remove('hidden'); logBox.textContent += m.line + '\n'; logBox.scrollTop = logBox.scrollHeight; });
+  const goBtn = h('button', { class: 'danger', disabled: true }, '删除选中的');
+  const ourPorts = new Set(Object.entries(s.protocols || {}).filter(([, p]) => p?.enabled).map(([, p]) => Number(p.port)));
+  let picks = [];
+  let update = () => {};
+  const scan = async () => {
+    body.innerHTML = '';
+    body.append(h('p', { class: 'muted' }, h('span', { class: 'spin' }), ' 正在扫描 VPS 上的面板、代理程序、Docker 容器和占用端口的程序…'));
+    goBtn.disabled = true;
+    let r;
+    try { r = await api.call('server:scanOthers', s.id); } catch (e) { body.innerHTML = ''; body.append(h('p', {}, h('span', { class: 'tag bad' }, '扫描失败'), ' ', e.message)); return; }
+    body.innerHTML = '';
+    picks = [];
+    update = () => { const n = picks.filter((p) => p.cb.checked).length; goBtn.disabled = !n; goBtn.textContent = n ? `删除选中的（${n}）` : '删除选中的'; };
+    const conflict = (ports) => ports.map((p) => Number(String(p).split('/')[0])).filter((p) => ourPorts.has(p));
+    const portTags = (ports) => ports.map((p) => { const bad = conflict([p]).length; return h('span', { class: 'tag ' + (bad ? 'bad' : ''), title: bad ? '和 NodeDeck 的节点端口冲突' : '' }, p); });
+    const item = (it, checked, title, sub, extra) => {
+      const cb = h('input', { type: 'checkbox', checked });
+      cb.onchange = update;
+      picks.push({ cb, it });
+      return h('label', { class: 'cl-item' }, cb, h('div', { style: { flex: 1, minWidth: 0 } }, h('div', { class: 'cl-title' }, title), sub ? h('div', { class: 'muted cl-sub' }, sub) : null, extra));
+    };
+    const section = (t, desc, rows) => rows.length ? h('div', { class: 'cl-sec' }, h('h4', {}, t), desc ? h('p', { class: 'muted', style: { fontSize: '12px', margin: '0 0 6px' } }, desc) : null, rows) : null;
+    const apps = r.apps.map((a) => item({ kind: 'app', id: a.id }, !a.stopOnly, h('span', {}, h('b', {}, a.name), ' ', h('span', { class: 'tag ' + (a.running ? 'warn' : '') }, a.running ? '运行中' : '没在运行'), a.stopOnly ? h('span', { class: 'tag blue' }, '只停用') : null, conflict(a.ports).length ? h('span', { class: 'tag bad' }, '占用了节点端口') : null),
+      [a.units.length ? '服务 ' + a.units.map((u) => u.name).join('、') : '', a.paths.length ? '目录 ' + a.paths.map((x) => `${x.path}${x.mb > 1 ? `（${x.mb}MB）` : ''}`).join('、') : ''].filter(Boolean).join(' · '),
+      h('div', {}, a.ports.length ? h('span', { class: 'muted', style: { fontSize: '12px' } }, '端口 ', portTags(a.ports)) : null, a.note ? h('div', { class: 'muted', style: { fontSize: '12px' } }, a.note) : null)));
+    const docks = r.containers.map((c) => item({ kind: 'docker', id: c.id, name: c.name }, false, h('span', {}, h('b', {}, c.name), ' ', h('span', { class: 'tag ' + (c.running ? 'warn' : '') }, c.running ? '运行中' : '已停止')), `镜像 ${c.image}${c.ports ? ' · ' + c.ports : ''}`));
+    const others = r.others.map((o) => o.unit
+      ? item({ kind: 'other', unit: o.unit }, false, h('span', {}, h('b', {}, o.unit), ' ', conflict(o.ports).length ? h('span', { class: 'tag bad' }, '占用了节点端口') : null), `${o.exe || o.cmd}`, h('div', {}, h('span', { class: 'muted', style: { fontSize: '12px' } }, '端口 ', portTags(o.ports)), h('div', { class: 'muted', style: { fontSize: '12px' } }, '只停止这个服务、取消开机自启，不删除程序文件')))
+      : h('div', { class: 'cl-item' }, h('span', { style: { width: '16px' } }), h('div', {}, h('b', {}, o.name), ' ', h('span', { class: 'muted', style: { fontSize: '12px' } }, o.cmd || o.exe), h('div', {}, portTags(o.ports), h('span', { class: 'muted', style: { fontSize: '12px' } }, ' 不是系统服务，NodeDeck 不处理，可以 SSH 登录后自己看')))));
+    if (!apps.length && !docks.length && !others.length) {
+      body.append(h('div', { class: 'cl-empty' }, h('b', {}, '很干净'), h('p', { class: 'muted' }, '没有发现其他面板、代理程序、Docker 容器，也没有别的程序占用公网端口。')));
+    } else {
+      body.append(
+        h('div', { class: 'cl-warn' }, '删除后不能恢复。被删程序的配置会先打包备份到 VPS 的 /root 目录；保险起见，可以先在服务商后台给 VPS 做个快照。SSH、系统服务和 NodeDeck 自己的东西不会动。'),
+        section('面板 / 代理程序', '认识的常见程序：停止服务、取消开机自启、删除它的服务文件和目录。', apps),
+        section('Docker 容器', '默认不勾。勾上的容器会被强制删除（镜像和数据卷保留）。', docks),
+        section('其他占用公网端口的程序', '不认识的程序默认不勾，只停用不删除。', others));
+    }
+    body.append(logBox);
+    update();
+  };
+  goBtn.onclick = () => busy(goBtn, async () => {
+    const sel = picks.filter((p) => p.cb.checked).map((p) => p.it);
+    if (!sel.length) return;
+    if (!(await confirmBox(`确定处理选中的 ${sel.length} 项？\n\n删除后不能恢复（配置会备份到 VPS 的 /root）。`, '删除'))) return;
+    logBox.textContent = '';
+    try {
+      const r = await api.call('server:cleanOthers', s.id, sel);
+      toast(r.backup ? `清理完成，配置备份在 ${r.backup}` : '清理完成', 'ok');
+    } catch (e) { toast('清理出错：' + e.message, 'err'); }
+    const keepLog = logBox.textContent;
+    setTimeout(async () => { await scan(); if (keepLog) { logBox.textContent = keepLog; logBox.classList.remove('hidden'); } }, 0); // 等按钮的「处理中」状态恢复后再重画
+  });
+  modal({ title: `清理其他面板 / 程序 · ${s.name}`, wide: true, body, onClose: off, buttons: [{ label: '重新扫描', close: false, onClick: scan }, { label: '删除选中的', close: false, el: goBtn }, { label: '关闭' }] });
+  const ph = [...document.querySelectorAll('.modal footer button')].reverse().find((b) => b.textContent === '删除选中的' && b !== goBtn);
+  if (ph) ph.replaceWith(goBtn);
+  scan();
 }
 
 async function rotateServer(s) {
