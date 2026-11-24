@@ -900,6 +900,15 @@ func main() {
 		printJSON(readTCPStats())
 	case "trace":
 		printJSON(traceAll())
+	case "dns-fix":
+		// 系统 DNS 自检，解析不了就换成能通的公共 DNS
+		printJSON(fixDNS(cfgDataDir(*cfgPath)))
+	case "dns-restore":
+		if err := restoreDNS(cfgDataDir(*cfgPath)); err != nil {
+			printJSON(map[string]string{"error": err.Error()})
+		} else {
+			printJSON(map[string]bool{"ok": true})
+		}
 	case "net-mtu":
 		type mtuRes struct {
 			Name  string `json:"name"`

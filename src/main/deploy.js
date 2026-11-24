@@ -363,6 +363,7 @@ async function deployServer(state, server, { resourcesDir, log }) {
 
     const manifest = agentConfig(state).singboxManifest;
     log('§kernel');
+    await ensureDNS(ssh, log, true);
     log(`安装 sing-box（${manifest}）…`);
     const v = await ssh.run(`${AGENT_BIN} install-singbox -manifest ${shq(manifest)} -bin ${SB_BIN}`);
     log(v.trim() + '（已校验 sha256）');
@@ -552,6 +553,7 @@ async function syncServer(state, server, { log = () => {}, resourcesDir, appVers
       await ssh.writeGz(AGENT_BIN, agentGz(resourcesDir, info.ARCH));
       restart = true;
     }
+    await ensureDNS(ssh, log, false).catch(() => {});
     if (restart) {
       await ssh.run(svcOf(server).restartAgent);
       await new Promise((res) => setTimeout(res, 2500));
@@ -618,6 +620,8 @@ async function serverLogs(server) {
 async function uninstall(server) {
   return withSSH(server, (ssh) => ssh.run(`
 echo '{}' > /tmp/nodedeck-empty.json && ${AGENT_BIN} apply-hops -c /tmp/nodedeck-empty.json >/dev/null 2>&1; rm -f /tmp/nodedeck-empty.json
+# DNS 还原（部署时改过才会动；原来的 DNS 仍然不通就保留现在的）
+${AGENT_BIN} dns-restore -c ${DIR}/agent.json >/dev/null 2>&1
 # 网络优化恢复成部署前的原值（有备份才会改）
 ${AGENT_BIN} net-restore -c ${DIR}/agent.json >/dev/null 2>&1; rm -f /etc/sysctl.d/99-nodedeck-net.conf /etc/modules-load.d/nodedeck-bbr.conf
 ${svcOf(server).remove}
@@ -671,6 +675,18 @@ echo "TIME=$(date +%s)"
 }
 
 // 在服务器上测试 Reality 目标域名（延迟应尽量低）
+// 系统 DNS 自检：解析不了域名（比如 resolv.conf 写的是连不上的内网地址）就换成能通的公共 DNS。
+// 不修的话下载内核、申请证书都会失败，sing-box 也解析不了用户访问的网站
+async function ensureDNS(ssh, log, strict) {
+  let r;
+  try { r = await agentJSON(ssh, `dns-fix -c ${DIR}/agent.json`, 90000); } catch (e) { if (strict) log('  DNS 自检跳过：' + e.message); return; }
+  if (r.fixed && r.ok) log(`VPS 的 DNS 服务器（${(r.old || []).join('、') || '无'}）解析不了域名，已改成 ${r.new.join('、')}（原配置已备份，卸载时还原）`);
+  else if (!r.ok) {
+    if (strict) throw new Error(r.error || 'VPS 解析不了域名');
+    log('⚠ ' + (r.error || 'VPS 解析不了域名'));
+  }
+}
+
 // 运行 agent 的一个返回 JSON 的命令
 async function agentJSON(ssh, args, timeout = 120000) {
   const r = await ssh.exec(`${AGENT_BIN} ${args}`, { timeout });
