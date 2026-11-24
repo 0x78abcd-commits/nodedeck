@@ -61,8 +61,10 @@ type Config struct {
 	// 0.6.0 起
 	Reality *RealityCfg `json:"reality"`
 	// 0.7.0 起：测速口令（桌面端测速、UDP 丢包测试用，防止别人拿来刷流量）
-	SpeedToken string   `json:"speedToken"`
-	Alerts     AlertCfg `json:"alerts"`
+	SpeedToken string `json:"speedToken"`
+	// 0.7.2 起：后台每 5 分钟测三网延迟 / 丢包（默认关，需要时在设置里打开；平时在「网络优化」里手动测）
+	LatencyProbe bool     `json:"latencyProbe"`
+	Alerts       AlertCfg `json:"alerts"`
 }
 
 type User struct {
@@ -877,6 +879,23 @@ func main() {
 		} else {
 			printJSON(map[string]string{"cc": sysctlGet("net.ipv4.tcp_congestion_control")})
 		}
+	case "net-ping":
+		// 手动测一次三网延迟 / 丢包 / 抖动：每家 20 个 ping
+		out := map[string]PingResult{}
+		var mu sync.Mutex
+		var wg sync.WaitGroup
+		for name, host := range defaultLatTargets {
+			wg.Add(1)
+			go func(name, host string) {
+				defer wg.Done()
+				r := icmpPing(host, 20, 200*time.Millisecond, 2*time.Second)
+				mu.Lock()
+				out[name] = r
+				mu.Unlock()
+			}(name, host)
+		}
+		wg.Wait()
+		printJSON(out)
 	case "net-tcp":
 		printJSON(readTCPStats())
 	case "trace":

@@ -754,7 +754,7 @@ function showMonitor(s) {
     body.append(h('div', { class: 'grid g2' },
       lineChart('CPU / 内存', [{ name: 'CPU', points: pts('cpu') }, { name: '内存', points: pts('mem') }], { unit: '%', max: 100, fmt: (v) => v.toFixed(0) + '%' }),
       lineChart('网速', [{ name: '上行', points: pts('tx') }, { name: '下行', points: pts('rx') }], { fmt: (v) => fmtRate(v) }),
-      lineChart('三网延迟（TCP）', latKeys.map((k) => ({ name: k, points: (m.series || []).filter((x) => x.lat && x.lat[k] > 0).map((x) => [x.t, x.lat[k]]) })), { fmt: (v) => v.toFixed(0) + 'ms', empty: '暂无数据（VPS 连不上国内测速点，或刚开始采集）' }),
+      lineChart('三网延迟（TCP）', latKeys.map((k) => ({ name: k, points: (m.series || []).filter((x) => x.lat && x.lat[k] > 0).map((x) => [x.t, x.lat[k]]) })), { fmt: (v) => v.toFixed(0) + 'ms', empty: S.settings.latencyProbe ? '暂无数据（VPS 连不上国内测速点，或刚开始采集）' : '后台记录三网延迟没开（设置 → 巡检与告警），可以在「网络优化 → 质量」里手动测' }),
       lineChart('负载', [{ name: '1 分钟', points: pts('load') }], { fmt: (v) => v.toFixed(2) })));
   };
   modal({ title: `监控 · ${s.name}`, wide: true, body, buttons: [{ label: '刷新', close: false, onClick: load }, { label: '关闭' }] });
@@ -864,19 +864,32 @@ function showNetLab(srv) {
 
   // 3. 质量 / 晚高峰
   function quality() {
+    const pg = lab().ping;
+    const pbox = h('div', { class: 'card' }, h('div', { class: 'toolbar' }, h('h3', { style: { margin: 0 } }, '三网延迟 / 丢包 / 抖动'), h('div', { class: 'spacer' }), pg ? h('span', { class: 'muted' }, netAgo(pg.at)) : null,
+      h('button', { class: pg ? '' : 'primary', onclick: (e) => run(e.currentTarget, () => api.call('net:ping', id)) }, pg ? '重新测' : '测一次（约 5 秒）')),
+      note('从 VPS 往国内电信、联通、移动各发 20 个 ping，流量很小。晚高峰（20–24 点）再测一次，可以对比平时和高峰的差别。'));
+    if (pg) pbox.append(h('table', { style: { marginTop: '8px' } }, h('thead', {}, h('tr', {}, ['', '延迟', '丢包', '抖动', '最低 / 最高'].map((t) => h('th', {}, t)))),
+      h('tbody', {}, Object.entries(pg.list || {}).map(([k, r]) => h('tr', {}, h('td', {}, k),
+        r.recv ? [h('td', {}, fmtMs(r.avg)), h('td', { style: { color: r.loss >= 5 ? 'var(--danger)' : r.loss > 0 ? 'var(--warn)' : '' } }, fmtPct(r.loss, 0)), h('td', {}, fmtMs(r.jitter)), h('td', { class: 'muted' }, `${r.min.toFixed(0)} / ${r.max.toFixed(0)} ms`)]
+          : h('td', { colspan: 4, class: 'muted' }, r.error || '全部丢包：可能是这条线路不通，也可能是对方不回应 ping'))))));
+    pane.append(pbox);
+    // 后台记录（设置里打开后才有）
     const out = h('div', {});
+    pane.append(h('div', { class: 'card' }, h('h3', {}, '平时 vs 晚高峰（后台记录）'), out));
+    if (!S.settings.latencyProbe) out.append(note('后台记录没开（默认关，省流量）。需要长期对比的话，在「设置 → 巡检与告警」里打开「后台记录三网延迟」，VPS 每 5 分钟测一次，攒一两天后这里会显示 7 天的平时和晚高峰对比。'));
+    else {
+      out.append(h('p', { class: 'muted' }, h('span', { class: 'spin' }), ' 读取中…'));
+      api.call('net:peak', id).then((r) => {
+        out.innerHTML = '';
+        const keys = Object.keys(r.report || {});
+        if (!keys.length) { out.append(note('还没有数据：需要 0.7.0 以上的 agent（点「同步」升级），运行几个小时后再看。')); return; }
+        const cell = (a, b, f, badAt) => { const worse = a != null && b != null && b > a * 1.3 && b > badAt; return h('td', {}, f(a), ' / ', h('span', { style: { color: worse ? 'var(--danger)' : '' } }, f(b))); };
+        out.append(h('table', {}, h('thead', {}, h('tr', {}, ['', '延迟（平时 / 晚高峰）', '丢包', '抖动'].map((t) => h('th', {}, t)))),
+          h('tbody', {}, keys.map((k) => { const x = r.report[k]; return h('tr', {}, h('td', {}, k), cell(x.off.lat, x.peak.lat, fmtMs, 20), cell(x.off.loss, x.peak.loss, (v) => fmtPct(v), 1), cell(x.off.jit, x.peak.jit, fmtMs, 5)); }))));
+        if (r.now) out.append(note(`当前 TCP 重传率 ${fmtPct(r.now.retr, 2)} · TCP 连接 ${r.now.conn ?? '—'} 个（重传率持续高于 2% 说明线路丢包多）`));
+      }).catch((e) => { out.innerHTML = ''; out.append(h('p', {}, h('span', { class: 'tag bad' }, '读取失败'), ' ', e.message)); });
+    }
     const mtu = lab().mtu;
-    pane.append(h('div', { class: 'card' }, h('h3', {}, '三网延迟、丢包、抖动：平时 vs 晚高峰'), note('VPS 每 5 分钟往国内三网各发 10 个 ping，这里汇总最近 7 天。晚高峰按 20:00–23:59 算。数据要攒一两天才准。'), out));
-    out.append(h('p', { class: 'muted' }, h('span', { class: 'spin' }), ' 读取中…'));
-    api.call('net:peak', id).then((r) => {
-      out.innerHTML = '';
-      const keys = Object.keys(r.report || {});
-      if (!keys.length) { out.append(note('还没有数据：需要 0.7.0 以上的 agent（点「同步」升级），运行几个小时后再看。')); return; }
-      const cell = (a, b, f, badAt) => { const worse = a != null && b != null && b > a * 1.3 && b > badAt; return h('td', {}, f(a), ' / ', h('span', { style: { color: worse ? 'var(--danger)' : '' } }, f(b))); };
-      out.append(h('table', {}, h('thead', {}, h('tr', {}, ['', '延迟（平时 / 晚高峰）', '丢包', '抖动'].map((t) => h('th', {}, t)))),
-        h('tbody', {}, keys.map((k) => { const x = r.report[k]; return h('tr', {}, h('td', {}, k), cell(x.off.lat, x.peak.lat, fmtMs, 20), cell(x.off.loss, x.peak.loss, (v) => fmtPct(v), 1), cell(x.off.jit, x.peak.jit, fmtMs, 5)); }))));
-      if (r.now) out.append(note(`当前 TCP 重传率 ${fmtPct(r.now.retr, 2)} · TCP 连接 ${r.now.conn ?? '—'} 个（重传率持续高于 2% 说明线路丢包多）`));
-    }).catch((e) => { out.innerHTML = ''; out.append(h('p', {}, h('span', { class: 'tag bad' }, '读取失败'), ' ', e.message)); });
     const mbox = h('div', { class: 'card' }, h('div', { class: 'toolbar' }, h('h3', { style: { margin: 0 } }, '路径 MTU'), h('div', { class: 'spacer' }), mtu ? h('span', { class: 'muted' }, netAgo(mtu.at)) : null,
       h('button', { onclick: (e) => run(e.currentTarget, () => api.call('net:mtu', id)) }, mtu ? '重新测' : '开始测')),
       note('测 VPS 到三网能通过的最大包。小于 1500 说明中间有隧道之类的设备，已开启的「路径 MTU 探测」会自动处理，一般不用管。'));
@@ -981,7 +994,6 @@ function showNetLab(srv) {
 
   draw();
   modal({ title: `网络优化 · ${srv.name}`, wide: true, body, onClose: () => { off(); if (poll) clearInterval(poll); }, buttons: [{ label: '关闭' }] });
-  if (!lab().info) api.call('net:info', id).then(() => reload()).then(() => { if (netTab === 'overview') draw(); }).catch(() => {});
 }
 
 async function rotateServer(s) {
@@ -1608,6 +1620,7 @@ async function viewSettings(v) {
   const alOn = h('input', { type: 'checkbox', checked: al.enabled !== false });
   const tuneOn = h('input', { type: 'checkbox', checked: st.smallBoxTuning !== false });
   const netOn = h('input', { type: 'checkbox', checked: st.netAutoTune !== false });
+  const probeOn = h('input', { type: 'checkbox', checked: !!st.latencyProbe });
   const alDisk = h('input', { type: 'number', min: 50, max: 99, value: al.diskPct || 90 });
   const alCpu = h('input', { type: 'number', min: 50, max: 100, value: al.cpuPct || 90 });
   const alLat = h('input', { type: 'number', min: 50, value: al.latencyMs || 300 });
@@ -1619,10 +1632,11 @@ async function viewSettings(v) {
     field('被墙巡检（软件开着时每 30 分钟）', bwMode, '本机连不通、海外能通，连续两次才判定被墙；电脑网络断了不会误报'),
     h('label', { class: 'f' }, alOn, ' Telegram 运维告警：sing-box 挂了（会先自动重启）、磁盘快满、CPU 持续过高、三网延迟变差'),
     h('div', { class: 'row' }, field('磁盘用到 %', alDisk), field('CPU 连续 15 分钟高于 %', alCpu), field('三网延迟高于 ms', alLat)),
+    h('label', { class: 'f' }, probeOn, ' 后台记录三网延迟和丢包：VPS 每 5 分钟往国内三网各发 10 个 ping（每台每月几十 MB 流量）。打开后监控面板的延迟曲线、「网络优化」的晚高峰对比和延迟告警才有数据。默认关，平时在「网络优化 → 质量」里手动测'),
     h('label', { class: 'f' }, netOn, ' 部署时自动做其它网络优化：检测后只改有依据的几项（缓冲区、路径 MTU 探测）。BBR + fq 部署时总会开启。原值都会备份，在服务器「更多 → 网络优化」里可以随时恢复'),
     h('label', { class: 'f' }, tuneOn, ' 小配置 VPS 自动优化：内存 ≤ 2GB 且没有 swap 时加一个 swap 文件（1GB 内存加 1GB，2GB 内存加 2GB，磁盘不够会减小或跳过），磁盘 < 20GB 时把系统日志限制在 200MB。卸载时会一并撤销'),
     h('button', { class: 'primary', onclick: async () => {
-      await api.call('settings:set', { netAutoTune: netOn.checked, smallBoxTuning: tuneOn.checked, realityPatrol: rpMode.value, blockWatch: bwMode.value, alerts: { enabled: alOn.checked, diskPct: Number(alDisk.value) || 90, cpuPct: Number(alCpu.value) || 90, latencyMs: Number(alLat.value) || 300 } });
+      await api.call('settings:set', { latencyProbe: probeOn.checked, netAutoTune: netOn.checked, smallBoxTuning: tuneOn.checked, realityPatrol: rpMode.value, blockWatch: bwMode.value, alerts: { enabled: alOn.checked, diskPct: Number(alDisk.value) || 90, cpuPct: Number(alCpu.value) || 90, latencyMs: Number(alLat.value) || 300 } });
       toast('已保存，点「同步全部」后各服务器生效', 'ok'); markDirty();
     } }, '保存'));
   v.append(h('h1', {}, '设置'), h('p', { class: 'sub' }, `数据目录：${info.dataDir}`));

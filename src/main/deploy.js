@@ -172,6 +172,7 @@ function agentConfig(state, server = {}) {
     service: 'nodedeck-singbox',
     reality: realityAgentCfg(state, server),
     speedToken: server.speedToken || '',
+    latencyProbe: !!st.latencyProbe, // 后台定时测三网延迟，默认关（省流量）
     alerts: { off: st.alerts?.enabled === false, diskPct: Number(st.alerts?.diskPct) || 0, cpuPct: Number(st.alerts?.cpuPct) || 0, latencyMs: Number(st.alerts?.latencyMs) || 0 },
   };
 }
@@ -684,6 +685,7 @@ const netInfo = (server) => withSSH(server, (ssh) => agentJSON(ssh, `net-info -c
 const netTune = (server, keys = []) => withSSH(server, (ssh) => agentJSON(ssh, `net-tune -c ${DIR}/agent.json${keys.length ? ' -domains ' + shq(keys.join(',')) : ''}`));
 const netRestore = (server) => withSSH(server, (ssh) => agentJSON(ssh, `net-restore -c ${DIR}/agent.json`));
 const netTrace = (server) => withSSH(server, (ssh) => agentJSON(ssh, `trace -c ${DIR}/agent.json`, 180000));
+const netPing = (server) => withSSH(server, (ssh) => agentJSON(ssh, `net-ping -c ${DIR}/agent.json`, 60000));
 const netMtu = (server) => withSSH(server, (ssh) => agentJSON(ssh, `net-mtu -c ${DIR}/agent.json`, 120000));
 const netTcp = (ssh) => agentJSON(ssh, `net-tcp -c ${DIR}/agent.json`);
 const netSetCC = (ssh, cc) => agentJSON(ssh, `net-cc -c ${DIR}/agent.json -text ${shq(cc)}`);
@@ -797,4 +799,4 @@ async function gateRealityTarget(ssh, server, log, force) {
   log(`✔ Reality 目标 ${rp.sni} 检测通过（TLS 1.3、HTTP/2、X25519、证书有效，${r.ms} ms）`);
 }
 
-module.exports = { netInfo, netTune, netRestore, netTrace, netMtu, withCC, benchStart, benchPoll, benchStop, swapSize, memLimits, writeUnits, tuneSmallBox, rememberHw, pickReality, adminNotify, realityCheck, deployServer, syncServer, updateSingbox, serverSelfCheck, notifyTest, fetchMetrics, scanReality, serverStatus, fetchStats, resetTraffic, serverLogs, uninstall, testSSH, remoteTlsCheck, agentConfig };
+module.exports = { netPing, netInfo, netTune, netRestore, netTrace, netMtu, withCC, benchStart, benchPoll, benchStop, swapSize, memLimits, writeUnits, tuneSmallBox, rememberHw, pickReality, adminNotify, realityCheck, deployServer, syncServer, updateSingbox, serverSelfCheck, notifyTest, fetchMetrics, scanReality, serverStatus, fetchStats, resetTraffic, serverLogs, uninstall, testSSH, remoteTlsCheck, agentConfig };

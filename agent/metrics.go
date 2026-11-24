@@ -412,10 +412,15 @@ func currentHour(m *Metrics) Sample { return avgSamples(m.hourBuf, m.hourMark) }
 
 func (a *Agent) metricsLoop() {
 	a.collect(false)
+	if !a.cfg.LatencyProbe {
+		a.metrics.mu.Lock()
+		a.metrics.lastLat, a.metrics.lastLoss, a.metrics.lastJit = nil, nil, nil // 关掉后不再沿用旧数据
+		a.metrics.mu.Unlock()
+	}
 	tick := time.NewTicker(time.Minute)
 	n := 0
 	for range tick.C {
-		a.collect(n%5 == 0) // 每 5 分钟测一次三网延迟
+		a.collect(a.cfg.LatencyProbe && n%5 == 0) // 打开了后台测速才每 5 分钟测一次三网延迟
 		n++
 		if n%10 == 0 {
 			a.saveMetrics()

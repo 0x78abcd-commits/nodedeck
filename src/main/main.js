@@ -457,6 +457,7 @@ function registerIpc() {
   });
   handle('net:trace', async (id) => netSave(id, { trace: { list: await deploy.netTrace(getServer(id)), at: Date.now() } }));
   handle('net:traceForward', async (id) => netSave(id, { fwd: { ...(await netlab.forwardTrace(getServer(id).host)), at: Date.now() } }));
+  handle('net:ping', async (id) => netSave(id, { ping: { list: await deploy.netPing(getServer(id)), at: Date.now() } }));
   handle('net:mtu', async (id) => netSave(id, { mtu: { ...(await deploy.netMtu(getServer(id))), at: Date.now() } }));
   handle('net:speed', async (id) => {
     await ensureSpeedToken(id);
