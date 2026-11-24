@@ -48,6 +48,7 @@ type TargetResult struct {
 	Domain string      `json:"domain"`
 	OK     bool        `json:"ok"`
 	Ms     int64       `json:"ms"`
+	IP     string      `json:"ip,omitempty"` // 目标网站实际连到的 IP（和 VPS 是否同网段）
 	Checks []CheckItem `json:"checks,omitempty"`
 	Error  string      `json:"error,omitempty"`
 }
@@ -58,12 +59,12 @@ type TargetResult struct {
 func checkTarget(domain string, timeout time.Duration) TargetResult {
 	r := TargetResult{Domain: domain}
 	addr := net.JoinHostPort(domain, targetPort)
-	st, ms, err := tlsProbeOpen(addr, domain, timeout)
+	st, ms, ip, err := tlsProbeOpen(addr, domain, timeout)
 	if err != nil {
 		r.Error = "连接失败：" + err.Error()
 		return r
 	}
-	r.Ms = ms
+	r.Ms, r.IP = ms, ip
 	ver := map[uint16]string{tls.VersionTLS10: "TLS 1.0", tls.VersionTLS11: "TLS 1.1", tls.VersionTLS12: "TLS 1.2", tls.VersionTLS13: "TLS 1.3"}[st.Version]
 	alpn := st.NegotiatedProtocol
 	if alpn == "" {
@@ -119,17 +120,21 @@ func checkTarget(domain string, timeout time.Duration) TargetResult {
 var targetPort = "443"
 
 // 不限制版本和曲线的握手，只用来读取对方支持什么
-func tlsProbeOpen(addr, sni string, timeout time.Duration) (*tls.ConnectionState, int64, error) {
+func tlsProbeOpen(addr, sni string, timeout time.Duration) (*tls.ConnectionState, int64, string, error) {
 	d := &net.Dialer{Timeout: timeout}
 	cfg := &tls.Config{ServerName: sni, InsecureSkipVerify: true, NextProtos: []string{"h2", "http/1.1"}, MinVersion: tls.VersionTLS12}
 	t0 := time.Now()
 	c, err := tls.DialWithDialer(d, "tcp", addr, cfg)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, "", err
 	}
 	defer c.Close()
 	st := c.ConnectionState()
-	return &st, time.Since(t0).Milliseconds(), nil
+	ip := ""
+	if ta, ok := c.RemoteAddr().(*net.TCPAddr); ok {
+		ip = ta.IP.String()
+	}
+	return &st, time.Since(t0).Milliseconds(), ip, nil
 }
 
 func checkTargets(domains []string, timeout time.Duration) []TargetResult {

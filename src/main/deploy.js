@@ -540,11 +540,23 @@ echo AGV=$(${AGENT_BIN} version 2>/dev/null)
 echo LOAD=$(cut -d' ' -f1-3 /proc/loadavg)
 echo MEM=$(free -m | awk '/Mem:/{print $3"/"$2"MB"}')
 echo UP=$(uptime -p 2>/dev/null)
+echo UPS=$(cut -d. -f1 /proc/uptime)
+echo CPUS=$(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo)
+echo MEMI=$(awk '/^MemTotal:/{t=$2} /^MemAvailable:/{a=$2} END{print int((t-a)/1024)" "int(t/1024)}' /proc/meminfo)
+echo DISK=$(df -Pm / | awk 'NR==2{print $3" "$2}')
+echo CPU=$(a=$(head -1 /proc/stat); sleep 0.5; b=$(head -1 /proc/stat); printf '%s|%s' "$a" "$b" | awk -F'|' '{n=split($1,x," "); split($2,y," "); for(i=2;i<=9&&i<=n;i++){ta+=x[i]; tb+=y[i]}; d=tb-ta; printf "%.0f", (d > 0 ? 100*(1-((y[5]+y[6])-(x[5]+x[6]))/d) : 0)}')
 echo IP6=$(ip -6 addr show scope global 2>/dev/null | awk '/inet6/{print $2}' | cut -d/ -f1 | grep -v '^f[cd]' | head -1)
 `);
   const kv = {};
   for (const line of r.stdout.split('\n')) { const i = line.indexOf('='); if (i > 0) kv[line.slice(0, i)] = line.slice(i + 1).trim(); }
-  return { singbox: kv.SB === 'active', agent: kv.AG === 'active', version: kv.VER || '', agentVersion: kv.AGV || '', cf: kv.CF === 'active', ipv6: kv.IP6 || '', load: kv.LOAD, mem: kv.MEM, uptime: kv.UP };
+  const nums = (v) => String(v || '').split(/\s+/).map(Number);
+  const [memUsed, memTotal] = nums(kv.MEMI);
+  const [diskUsed, diskTotal] = nums(kv.DISK);
+  return {
+    singbox: kv.SB === 'active', agent: kv.AG === 'active', version: kv.VER || '', agentVersion: kv.AGV || '', cf: kv.CF === 'active', ipv6: kv.IP6 || '', load: kv.LOAD, mem: kv.MEM, uptime: kv.UP,
+    // 给服务器列表画仪表用（MB）
+    memUsed: memUsed || 0, memTotal: memTotal || 0, diskUsed: diskUsed || 0, diskTotal: diskTotal || 0, cpus: Number(kv.CPUS) || 0, cpu: kv.CPU === '' || kv.CPU == null ? null : Number(kv.CPU), uptimeSec: Number(kv.UPS) || 0, at: Date.now(),
+  };
 }
 
 // 同步：推送配置；如果 agent 版本和本软件不一致（软件更新过），顺便升级 agent
@@ -732,8 +744,13 @@ const BENCH_URL = /https?:\/\/(?:www\.)?(?:nodequality\.com|tcpquality\.ibsgss\.
 async function benchStart(server, kind, opts = {}) {
   if (!BENCH[kind]) throw new Error('未知的测试');
   return withSSH(server, async (ssh) => {
+    // 精简系统常常没装 curl（Debian 最小安装只有 wget），测试脚本要用：缺了就先装上
+    const need = await ssh.exec('command -v bash >/dev/null && command -v curl >/dev/null && echo OK');
+    if (!need.stdout.includes('OK')) {
+      await ssh.exec(`if command -v apt-get >/dev/null; then (apt-get update -qq || true) && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq curl bash; elif command -v dnf >/dev/null; then dnf install -y -q curl bash; elif command -v yum >/dev/null; then yum install -y -q curl bash; elif command -v apk >/dev/null; then apk add --no-cache -q curl bash; fi`, { timeout: 240000 });
+    }
     const chk = await ssh.exec(`command -v bash >/dev/null && command -v curl >/dev/null && echo OK; df -Pm /root | awk 'NR==2{print $4}'; [ -f ${BENCH_DIR}/${kind}.pid ] && kill -0 "$(cat ${BENCH_DIR}/${kind}.pid)" 2>/dev/null && echo RUNNING`);
-    if (!chk.stdout.includes('OK')) throw new Error('VPS 上缺少 bash 或 curl（Alpine 可以先 apk add bash curl）');
+    if (!chk.stdout.includes('OK')) throw new Error('VPS 上缺少 bash 或 curl，自动安装也失败了。可以 SSH 登录后手动安装（Debian / Ubuntu：apt install curl；Alpine：apk add bash curl）');
     if (chk.stdout.includes('RUNNING')) return { running: true, already: true };
     const free = Number((chk.stdout.match(/^\d+$/m) || [0])[0]);
     if (free && free < 1024) throw new Error(`磁盘只剩 ${free}MB，测试脚本需要下载临时系统，至少要 1GB 空闲`);
@@ -748,7 +765,7 @@ async function benchStart(server, kind, opts = {}) {
 // 读取后台测试的输出（从 offset 开始），返回去掉颜色码的文本、是否还在运行、报告链接
 async function benchPoll(server, kind, offset = 0) {
   return withSSH(server, async (ssh) => {
-    const r = await ssh.exec(`f=${BENCH_DIR}/${kind}.log; [ -f "$f" ] || { echo NOLOG; exit 0; }; s=$(wc -c < "$f"); echo "SIZE=$s"; ( [ -f ${BENCH_DIR}/${kind}.pid ] && kill -0 "$(cat ${BENCH_DIR}/${kind}.pid)" 2>/dev/null ) && echo RUN=1 || echo RUN=0; echo ---; tail -c +$(( ${Number(offset) || 0} + 1 )) "$f" | head -c 200000`);
+    const r = await ssh.exec(`f=${BENCH_DIR}/${kind}.log; [ -f "$f" ] || { echo NOLOG; exit 0; }; s=$(wc -c < "$f"); echo "SIZE=$s"; echo "START=$(stat -c %Y ${BENCH_DIR}/${kind}.pid 2>/dev/null)"; echo "END=$(stat -c %Y "$f")"; echo "NOW=$(date +%s)"; ( [ -f ${BENCH_DIR}/${kind}.pid ] && kill -0 "$(cat ${BENCH_DIR}/${kind}.pid)" 2>/dev/null ) && echo RUN=1 || echo RUN=0; echo ---; tail -c +$(( ${Number(offset) || 0} + 1 )) "$f" | head -c 200000`);
     if (r.stdout.startsWith('NOLOG')) return { none: true };
     const [head, ...rest] = r.stdout.split('\n---\n');
     const total = Number((head.match(/SIZE=(\d+)/) || [])[1] || 0);
@@ -758,10 +775,14 @@ async function benchPoll(server, kind, offset = 0) {
     const cut = Math.max(raw.lastIndexOf('\n'), raw.lastIndexOf('\r'));
     if (running || total > (Number(offset) || 0) + Buffer.byteLength(raw)) raw = cut >= 0 ? raw.slice(0, cut + 1) : '';
     const size = (Number(offset) || 0) + Buffer.byteLength(raw);
-    const text = raw.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '').replace(/\r(?!\n)/g, '\n');
+    // 保留单独的 \r（进度条原地刷新），界面那边按终端的方式处理
+    const text = raw.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '').replace(/\r\n/g, '\n');
     const all = (await ssh.exec(`cat ${BENCH_DIR}/${kind}.log 2>/dev/null | tr -d '\\033'`)).stdout;
     const urls = [...new Set(all.match(BENCH_URL) || [])];
-    return { size, running, text, url: urls[urls.length - 1] || '' };
+    const num = (k) => Number((head.match(new RegExp(k + '=(\\d+)')) || [])[1] || 0);
+    // 用时：按 VPS 的时钟算（开始 = pid 文件时间，结束 = 日志最后写入时间）
+    const elapsed = num('START') ? (running ? num('NOW') : num('END')) - num('START') : 0;
+    return { size, running, text, url: urls[urls.length - 1] || '', elapsed: Math.max(0, elapsed) };
   });
 }
 

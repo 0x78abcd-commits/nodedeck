@@ -603,6 +603,17 @@ function registerIpc() {
   handle('tools:ports', (host, ports) => tools.portCheck(host, ports));
   handle('tools:dns', (name, type, server) => tools.dnsLookup(name, type, server));
   handle('tools:trace', (host) => tools.traceroute(host, taskLogger('trace')));
+  // Reality 目标质量：VPS 上检测（四项 + 握手延迟 + 目标 IP）和这台电脑（国内）能不能连上，一起返回
+  handle('server:realityQuality', async (id) => {
+    const s = getServer(id);
+    const rp = s.protocols?.vlessReality || {};
+    const domain = rp.sni || s.realityState?.current;
+    const [remote, local] = await Promise.all([
+      deploy.remoteTlsCheck(s, domain).catch((e) => ({ ok: false, error: e.message, where: 'vps', at: Date.now() })),
+      tools.realityCheck(domain).catch((e) => ({ ok: false, error: e.message, where: 'local', at: Date.now() })),
+    ]);
+    return { domain, source: rp.sniSource || '', auto: !!rp.sniAuto, vpsHost: s.host, remote, local, patrol: s.realityState || null };
+  });
   handle('tools:reality', async (domain, serverId) => {
     const local = await tools.realityCheck(domain);
     let remote = null;

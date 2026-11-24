@@ -309,3 +309,43 @@ label.f.focus { border: 1px solid var(--accent); border-radius: 8px; padding: 6p
 .checktab td:first-child, .checktab th:first-child { padding-left: 0; width: 86px; }
 .checktab tbody tr:hover td { background: none; }
 .card .upd-progress { margin-bottom: 12px; }
+
+/* 社区测试运行窗口 */
+pre.term { background: #0e1214; color: #d7dee2; border-radius: 10px; padding: 12px 14px; height: 52vh; overflow: auto; font: 12px/1.5 ui-monospace, 'Cascadia Mono', Consolas, monospace; white-space: pre-wrap; word-break: break-all; margin: 0; }
+.bench-report { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 10px; background: var(--ok-soft, rgba(30,160,90,.1)); border: 1px solid color-mix(in srgb, var(--ok) 35%, transparent); margin-bottom: 10px; }
+
+/* Reality 目标质量 */
+.q-head { display: flex; align-items: center; gap: 16px; justify-content: space-between; margin-bottom: 12px; }
+.q-domain { font-size: 18px; font-weight: 600; }
+.q-grade { font-size: 20px; font-weight: 700; padding: 6px 16px; border-radius: 10px; }
+.q-grade.ok { color: var(--ok); background: var(--ok-soft); }
+.q-grade.warn { color: var(--warn); background: var(--warn-soft); }
+.q-grade.bad { color: var(--danger); background: var(--danger-soft); }
+.q-list { border: 1px solid var(--line); border-radius: 10px; }
+.q-row { display: grid; grid-template-columns: 14px 120px minmax(160px, 1fr) 1.6fr; gap: 12px; align-items: start; padding: 11px 14px; border-top: 1px solid var(--line); }
+.q-row:first-child { border-top: 0; }
+.q-name { font-weight: 600; }
+.q-why { font-size: 12px; line-height: 1.55; }
+.q-dot { width: 9px; height: 9px; border-radius: 50%; margin-top: 6px; background: var(--muted); }
+.q-dot.ok { background: var(--ok); } .q-dot.warn { background: var(--warn); } .q-dot.bad { background: var(--danger); }
+.q-more { margin-top: 12px; font-size: 13px; line-height: 1.65; }
+.q-more summary { cursor: pointer; color: var(--accent); }
+.q-more p { margin: 6px 0; color: var(--muted); }
+
+/* 服务器列表 */
+.srv-name { font-weight: 600; font-size: 14px; }
+.chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+.chip { font-size: 11px; line-height: 18px; padding: 0 7px; border-radius: 9px; background: color-mix(in srgb, var(--muted) 12%, transparent); color: var(--muted); white-space: nowrap; }
+.st-cell { min-width: 210px; }
+.st-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
+.meters { display: grid; gap: 4px; max-width: 250px; }
+.meter { display: grid; grid-template-columns: 30px 1fr 86px; align-items: center; gap: 8px; font-size: 12px; }
+.m-l { color: var(--muted); }
+.m-bar { height: 6px; border-radius: 3px; background: color-mix(in srgb, var(--muted) 18%, transparent); overflow: hidden; }
+.m-bar > i { display: block; height: 100%; border-radius: 3px; background: var(--ok); }
+.m-bar > i.warn { background: var(--warn); } .m-bar > i.bad { background: var(--danger); }
+.m-v { font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+.m-foot { font-size: 11px; margin-top: 2px; }
+.srv-actions { display: grid; grid-template-columns: repeat(2, auto); gap: 6px; justify-content: start; }
+.srv-actions button { min-width: 64px; }
+.menu-sep { height: 1px; background: var(--line); margin: 4px 0; }

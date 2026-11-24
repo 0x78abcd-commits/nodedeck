@@ -285,24 +285,28 @@ async function viewServers(v) {
     const lamp = !s.deployedAt ? 'idle' : st && st.singbox && st.agent ? 'ok' : 'bad';
     tb.append(h('tr', { class: 'lamp-' + lamp },
       h('td', { style: { width: '28px' } }, cb),
-      h('td', {}, h('b', {}, s.name), h('div', { class: 'muted mono', style: { wordBreak: 'normal', whiteSpace: 'nowrap' } }, s.host), hwLine(s), realityTag, s.role === 'relay' ? h('span', { class: 'tag blue' }, '中转机') : null, vpsExpireTag(s), core_cf(s) && s.deployedAt ? h('span', { class: 'tag ' + (s.lastStatus?.cf ? 'blue' : 'warn'), title: s.lastStatus?.cf ? '' : '隧道服务没在运行：检查令牌是否正确、VPS 能否连上 Cloudflare' }, s.lastStatus?.cf ? 'CF 隧道' : 'CF 隧道未连通') : null),
-      h('td', {}, status, agentOutdated(s) ? h('span', { class: 'tag warn', title: '点「同步」自动升级' }, 'agent 待升级') : null, st?.version ? h('div', { class: 'muted' }, 'sing-box ' + st.version) : null, st?.mem ? h('div', { class: 'muted' }, `内存 ${st.mem} · 负载 ${st.load}`) : null),
+      h('td', {}, h('div', { class: 'srv-name' }, s.name), h('div', { class: 'muted mono', style: { wordBreak: 'normal', whiteSpace: 'nowrap', fontSize: '12px' } }, s.host), specChips(s), realityTag, s.role === 'relay' ? h('span', { class: 'tag blue' }, '中转机') : null, vpsExpireTag(s), core_cf(s) && s.deployedAt ? h('span', { class: 'tag ' + (s.lastStatus?.cf ? 'blue' : 'warn'), title: s.lastStatus?.cf ? '' : '隧道服务没在运行：检查令牌是否正确、VPS 能否连上 Cloudflare' }, s.lastStatus?.cf ? 'CF 隧道' : 'CF 隧道未连通') : null),
+      h('td', { class: 'st-cell' }, h('div', { class: 'st-top' }, status, st?.version ? h('span', { class: 'muted', style: { fontSize: '12px' } }, 'sing-box ' + st.version) : null, agentOutdated(s) ? h('span', { class: 'tag warn', title: '点「同步」自动升级' }, 'agent 待升级') : null), s.deployedAt ? serverMeters(s) : null),
       h('td', {}, protos.length ? protos : h('span', { class: 'muted' }, '无'), fw ? h('span', { class: 'tag blue' }, `转发 ${fw}`) : null),
       h('td', {}, exit),
-      h('td', {}, h('div', { class: 'actions' },
-        h('button', { class: 'small primary', onclick: () => deployServer(s) }, s.deployedAt ? '重新部署' : '部署'),
-        s.deployedAt ? h('button', { class: 'small', onclick: (e) => busy(e.currentTarget, async () => { await api.call('server:sync', s.id); toast('已同步', 'ok'); dirty = false; renderBanner(); render(); }) }, '同步') : null,
+      h('td', {}, h('div', { class: 'srv-actions' },
+        s.deployedAt
+          ? h('button', { class: 'small primary', title: '把当前配置推送到服务器（改了设置后点）', onclick: (e) => busy(e.currentTarget, async () => { await api.call('server:sync', s.id); toast('已同步', 'ok'); dirty = false; renderBanner(); render(); }) }, '同步')
+          : h('button', { class: 'small primary', onclick: () => deployServer(s) }, '部署'),
         h('button', { class: 'small', title: '一步步检查 SSH、服务、端口、是否被墙、节点真连', onclick: () => diagnoseServer(s) }, '体检'),
         h('button', { class: 'small', onclick: () => editServer(s) }, '编辑'),
-        h('button', { class: 'small', onclick: (e) => menu(e.currentTarget, [
+        h('button', { class: 'small icon-more', title: '更多操作', onclick: (e) => menu(e.currentTarget, [
           s.deployedAt && { label: '监控面板', onClick: () => showMonitor(s) },
           s.deployedAt && { label: '网络优化（线路 / 测速 / BBR）', onClick: () => showNetLab(s) },
+          s.deployedAt && s.protocols?.vlessReality?.enabled && { label: 'Reality 目标质量', onClick: () => realityQuality(s) },
+          s.deployedAt && s.protocols?.vlessReality?.enabled && { label: '重新优选 Reality 目标', onClick: () => repickReality(s) },
+          s.deployedAt && { sep: true },
           s.deployedAt && { label: '刷新状态', onClick: async () => { await api.call('server:status', s.id); toast('已刷新', 'ok'); render(); } },
           s.deployedAt && { label: '查看日志', onClick: () => showLogs(s) },
           s.deployedAt && { label: '升级 sing-box 内核', onClick: async () => { toast('正在检查内核更新…'); const m = await api.call('server:updateSingbox', s.id); toast(m, 'ok'); render(); } },
+          s.deployedAt && { label: '重新部署', onClick: () => deployServer(s) },
           { label: '一键换新（被墙时用）', onClick: () => rotateServer(s) },
-          s.deployedAt && s.protocols?.vlessReality?.enabled && { label: '重新优选 Reality 目标', onClick: () => repickReality(s) },
-          s.deployedAt && s.protocols?.vlessReality?.enabled && { label: '检查 Reality 目标', onClick: () => checkRealityNow(s) },
+          { sep: true },
           { label: '删除', danger: true, onClick: () => removeServer(s) },
         ]) }, '更多 ▾')))));
   }
@@ -338,13 +342,51 @@ async function repickReality(s) {
   render();
 }
 
-async function checkRealityNow(s) {
-  toast('正在检查 Reality 目标…');
-  try {
-    const r = await api.call('server:realityCheck', s.id);
-    if (r.fails === 0) toast(`Reality 目标 ${r.current} 正常`, 'ok');
-    else toast(`Reality 目标 ${r.current} 检查失败（第 ${r.fails} 次）：${r.lastErr}`, 'warn');
-  } catch (e) { toast(e.message, 'err'); }
+async function checkRealityNow(s) { return realityQuality(s); }
+
+// Reality 目标质量：把「能不能用」和「好不好」分开讲清楚
+async function realityQuality(s) {
+  const body = h('div', {}, h('p', { class: 'muted' }, h('span', { class: 'spin' }), ' 正在 VPS 上和这台电脑上检测目标网站…（约 10 秒）'));
+  modal({ title: `Reality 目标质量 · ${s.name}`, wide: true, body, buttons: [
+    { label: '重新优选目标', close: true, onClick: () => repickReality(s) },
+    { label: '关闭', class: 'primary' },
+  ] });
+  let q;
+  try { q = await api.call('server:realityQuality', s.id); } catch (e) { body.innerHTML = ''; body.append(h('p', {}, h('span', { class: 'tag bad' }, '检测失败'), ' ', e.message)); return; }
+  const R = q.remote || {}; const L = q.local || {};
+  const ip4 = (x) => /^\d+\.\d+\.\d+\.\d+$/.test(x || '') ? x.split('.') : null;
+  const a = ip4(q.vpsHost); const b = ip4(R.ip);
+  const near = a && b ? (a.slice(0, 3).join('.') === b.slice(0, 3).join('.') ? 24 : a.slice(0, 2).join('.') === b.slice(0, 2).join('.') ? 16 : 0) : null;
+  const basicOk = !!R.ok; const cnOk = !!L.ok;
+  const ms = R.ms || 0;
+  const rows = [];
+  const row = (lvl, name, value, why) => rows.push(h('div', { class: 'q-row' }, h('span', { class: 'q-dot ' + lvl }), h('div', { class: 'q-name' }, name), h('div', { class: 'q-val' }, value), h('div', { class: 'q-why muted' }, why)));
+  row(basicOk ? 'ok' : 'bad', '基本条件', basicOk ? 'TLS 1.3 · HTTP/2 · X25519 · 证书有效' : (R.error || '不通过'),
+    basicOk ? 'Reality 要求的四项都满足（在 VPS 上测的）' : '不满足就完全不能用，客户端连不上');
+  row(cnOk ? 'ok' : 'bad', '国内能连上', cnOk ? `能（这台电脑 ${L.ms} ms）` : `连不上：${L.error || ''}`,
+    cnOk ? '目标网站在国内没被屏蔽，客户端不会因为这个域名被掐断' : '这个域名在国内被屏蔽或干扰，客户端一连就会被掐断，必须换（如果这台电脑开着全局代理，这项结果不准）');
+  row(!basicOk ? 'idle' : ms <= 20 ? 'ok' : ms <= 80 ? 'ok' : ms <= 200 ? 'warn' : 'bad', 'VPS 到目标', basicOk ? `握手 ${ms} ms` : '—',
+    'Reality 在握手时要去连一次目标网站。越近越好：几毫秒说明就在隔壁；上百毫秒会让每次新连接都慢一点，延迟和你的机房对不上也更容易被看出来');
+  row(near == null ? 'idle' : near ? 'ok' : 'warn', '和 VPS 的网络位置', near == null ? '—' : near === 24 ? `同网段（${R.ip}）` : near === 16 ? `同一片网络（${R.ip}）` : `不同网络（${R.ip}）`,
+    near == null ? (R.ip ? '服务器地址填的是域名，没法比较' : 'VPS 上的 agent 是旧版，没有返回目标 IP，点「同步」升级后再看') : near === 24 ? '目标网站和你的 VPS 在同一个机房网段，外面看起来就像在访问隔壁网站，最自然' : near === 16 ? '离得比较近，比较自然' : '域名和 IP 的归属对不上（比如用微软的域名，IP 却是别家机房的），是可以被识别的特征之一，不过很多人这样用也没问题');
+  const p = q.patrol;
+  if (p && (p.lastCheck || p.fails)) row(p.fails ? 'warn' : 'ok', '巡检记录', p.fails ? `最近连续失败 ${p.fails} 次` : `最近一次正常${p.lastCheck ? '（' + fmtDate(p.lastCheck * 1000) + '）' : ''}`, 'VPS 每 6 小时检查一次目标网站，连续失败会自动换（设置里可改）');
+  let grade; let gradeCls; let advice;
+  if (!basicOk || !cnOk) { grade = '不能用'; gradeCls = 'bad'; advice = '点下面的「重新优选目标」换一个。'; }
+  else if (near === 24 && ms <= 30) { grade = '很好'; gradeCls = 'ok'; advice = '同网段邻居、握手很快，是最理想的情况，不用换。'; }
+  else if (ms <= 80) { grade = '良好'; gradeCls = 'ok'; advice = near === 0 ? '能用、速度也可以。想更隐蔽可以试试「重新优选」，看能不能找到同网段的邻居网站。' : '能用，不用换。'; }
+  else { grade = '可以用'; gradeCls = 'warn'; advice = 'VPS 到目标比较远，新连接会慢一点。可以试试「重新优选」。'; }
+  const src = { neighbor: '同网段邻居（自动挑选）', fallback: '主流大站（自动挑选）' }[q.source] || (q.auto ? '自动挑选' : '手动指定');
+  body.innerHTML = '';
+  body.append(
+    h('div', { class: 'q-head' }, h('div', {}, h('div', { class: 'q-domain mono' }, q.domain), h('div', { class: 'muted' }, src)), h('div', { class: 'q-grade ' + gradeCls }, grade)),
+    h('div', { class: 'q-list' }, rows),
+    h('p', { style: { margin: '12px 0 0' } }, h('b', {}, '建议：'), advice),
+    h('details', { class: 'q-more' }, h('summary', {}, '邻居网站一定比大厂域名好吗？'),
+      h('p', {}, '不一定，各有长处。目标网站只在握手时用到，连上以后的速度和它无关。'),
+      h('p', {}, '邻居网站的好处是「自然」：域名和你的 VPS 在同一个机房，握手只要几毫秒，外面看起来就像在访问隔壁的网站。缺点是小网站可能哪天下线、证书过期，不过巡检会自动发现并更换。'),
+      h('p', {}, '大厂域名（微软、苹果等）的好处是稳定、永远在线。缺点是域名和 IP 的归属对不上，用的人也多，是能被识别的特征之一；VPS 到它们通常也更远。'),
+      h('p', { style: { marginBottom: 0 } }, '所以判断标准是：先看「基本条件」和「国内能连上」两项必须通过，再看延迟越低、离 VPS 越近越好。两种都能用，邻居更隐蔽，大厂更省心。')));
 }
 
 async function editServer(orig, opts = {}) {
@@ -691,6 +733,35 @@ function diagnoseServer(s) {
 }
 
 // 机器配置一行：1 核 · 1 GB · swap 1 GB · 磁盘剩 6.2 GB（部署 / 同步时读取）
+// 服务器列表：配置做成小标签（核数 / 内存 / swap）
+function specChips(s) {
+  const hw = s.hw;
+  if (!hw?.memMB) return null;
+  const gb = (mb) => (mb >= 1024 ? (mb / 1024).toFixed(mb >= 10240 ? 0 : 1).replace(/\.0$/, '') + ' GB' : mb + ' MB');
+  return h('div', { class: 'chips' }, h('span', { class: 'chip' }, `${hw.cpus || '?'} 核`), h('span', { class: 'chip' }, gb(hw.memMB)), hw.swapMB ? h('span', { class: 'chip', title: '虚拟内存' }, 'swap ' + gb(hw.swapMB)) : null,
+    !s.deployedAt && hw.diskFreeMB ? h('span', { class: 'chip' }, '磁盘剩 ' + gb(hw.diskFreeMB)) : null);
+}
+
+// 服务器列表：CPU / 内存 / 磁盘做成小仪表，和监控面板一样一眼能看出松紧
+function serverMeters(s) {
+  const st = s.lastStatus;
+  if (!st) return h('div', { class: 'muted', style: { fontSize: '12px' } }, '还没有状态，点「同步」或「刷新状态」');
+  const gb = (mb) => (mb >= 1024 ? (mb / 1024).toFixed(1).replace(/\.0$/, '') + 'G' : Math.round(mb) + 'M');
+  let memU = st.memUsed; let memT = st.memTotal;
+  if (!memT && st.mem) { const m = String(st.mem).match(/(\d+)\/(\d+)/); if (m) { memU = +m[1]; memT = +m[2]; } } // 旧版状态只有文字
+  const cores = st.cpus || s.hw?.cpus || 1;
+  const load1 = parseFloat(String(st.load || '').split(' ')[0]) || 0;
+  const cpu = st.cpu != null ? st.cpu : Math.min(100, Math.round((load1 / cores) * 100));
+  const lvl = (p, w, d) => (p >= d ? 'bad' : p >= w ? 'warn' : 'ok');
+  const meter = (label, pct, text, title) => h('div', { class: 'meter', title: title || '' }, h('span', { class: 'm-l' }, label), h('div', { class: 'm-bar' }, h('i', { class: lvl(pct, 70, 90), style: { width: Math.max(2, Math.min(100, pct)) + '%' } })), h('span', { class: 'm-v' }, text));
+  const out = [meter('CPU', cpu, `${cpu}%`, `负载 ${st.load || '—'}（${cores} 核）`)];
+  if (memT) { const p = Math.round((memU / memT) * 100); out.push(meter('内存', p, `${gb(memU)} / ${gb(memT)}`, `已用 ${p}%（不含可回收的缓存）`)); }
+  if (st.diskTotal) { const p = Math.round((st.diskUsed / st.diskTotal) * 100); out.push(meter('磁盘', p, `${gb(st.diskUsed)} / ${gb(st.diskTotal)}`, `已用 ${p}%`)); }
+  const up = st.uptimeSec ? (st.uptimeSec >= 86400 ? `${Math.floor(st.uptimeSec / 86400)} 天` : `${Math.floor(st.uptimeSec / 3600)} 小时`) : '';
+  return h('div', { class: 'meters' }, out, h('div', { class: 'm-foot muted' }, `负载 ${(st.load || '—').split(' ')[0]}`, up ? ` · 已运行 ${up}` : '', st.at ? ` · ${fmtAgo(st.at)}更新` : ''));
+}
+function fmtAgo(t) { const m = Math.round((Date.now() - t) / 60000); return m < 1 ? '刚刚' : m < 60 ? `${m} 分钟前` : m < 1440 ? `${Math.round(m / 60)} 小时前` : `${Math.round(m / 1440)} 天前`; }
+
 function hwLine(s) {
   const hw = s.hw;
   if (!hw?.memMB) return null;
@@ -983,43 +1054,28 @@ function showNetLab(srv) {
   // 6. 社区测试
   function bench() {
     const reports = S1().benchReports || [];
+    const NAMES = { nodequality: 'NodeQuality', tcpquality: 'TcpQuality' };
     const mk = (kind, title, desc, optsEl, getOpts) => {
-      const pre = h('pre', { class: 'log hidden', style: { maxHeight: '260px', marginTop: '10px' } });
-      const st = h('span', { class: 'muted' });
-      let offset = 0;
+      const st = h('span', { class: 'muted' }, '');
       const start = h('button', { class: 'primary' }, '开始测试');
-      const stop = h('button', { class: 'hidden' }, '停止');
-      const tick = async () => {
-        try {
-          const r = await api.call('bench:poll', id, kind, offset);
-          if (r.none) return false;
-          if (r.text) { pre.classList.remove('hidden'); pre.textContent += r.text; pre.scrollTop = pre.scrollHeight; }
-          offset = r.size;
-          st.textContent = r.running ? '运行中…（可以关掉窗口，VPS 上会继续跑）' : r.url ? '已完成' : '已结束';
-          stop.classList.toggle('hidden', !r.running); start.disabled = r.running;
-          if (r.url && !reports.some((x) => x.url === r.url)) { reports.unshift({ kind, url: r.url, at: Date.now() }); await reload(); draw(); }
-          return r.running;
-        } catch (e) { st.textContent = e.message; return false; }
-      };
-      const follow = () => {
-        if (polls[kind]) clearTimeout(polls[kind].t);
-        const me = {}; polls[kind] = me;
-        const step = async () => {
-          if (polls[kind] !== me) return;
-          const running = await tick();
-          if (polls[kind] !== me) return;
-          if (running) me.t = setTimeout(step, 3000); else delete polls[kind];
-        };
-        me.t = setTimeout(step, 3000);
-      };
+      const view = h('button', { class: 'hidden' }, '查看进度');
+      const open = () => benchModal(srv, kind, NAMES[kind], () => { if (pane.isConnected && netTab === 'bench') draw(); });
       start.onclick = (e) => busy(e.currentTarget, async () => {
-        await api.call('bench:start', id, kind, getOpts());
-        pre.textContent = ''; offset = 0; st.textContent = '已启动…';
-        follow();
+        try {
+          st.textContent = '正在 VPS 上启动（缺 curl 会先自动安装）…';
+          const r = await api.call('bench:start', id, kind, getOpts());
+          st.textContent = r.already ? '已经在运行' : '已启动';
+          open();
+        } catch (err) { st.textContent = ''; toast('启动失败：' + err.message, 'err'); }
       });
-      stop.onclick = (e) => busy(e.currentTarget, async () => { await api.call('bench:stop', id, kind); toast('已发送停止信号', 'ok'); });
-      tick().then((running) => { if (running && pre.isConnected) follow(); });
-      return h('div', { class: 'card' }, h('h3', {}, title), note(desc), optsEl, h('div', { class: 'toolbar', style: { marginTop: '10px', marginBottom: 0 } }, start, stop, st), pre);
+      view.onclick = open;
+      // 打开页签时看一眼是不是正在跑（关掉窗口后 VPS 上会继续跑）
+      api.call('bench:poll', id, kind, 1e12).then((r) => {
+        if (r.none) return;
+        if (r.running) { st.textContent = `运行中，已 ${fmtDur(r.elapsed)}`; view.classList.remove('hidden'); view.classList.add('primary'); start.classList.add('hidden'); }
+        else { st.textContent = r.url ? '上次已完成' : '上次已结束'; view.textContent = '查看上次输出'; view.classList.remove('hidden'); }
+      }).catch(() => {});
+      return h('div', { class: 'card' }, h('h3', {}, title), note(desc), optsEl, h('div', { class: 'toolbar', style: { marginTop: '12px', marginBottom: 0 } }, start, view, st));
     };
     const sel = (opts, v) => { const e = h('select', { class: 'auto' }, opts.map(([k, l]) => h('option', { value: k }, l))); e.value = v; return e; };
     const hq = sel([['f', '快速'], ['y', '标准'], ['n', '跳过']], 'f'); hq.style.width = '96px';
@@ -1037,6 +1093,84 @@ function showNetLab(srv) {
 
   draw();
   modal({ title: `网络优化 · ${srv.name}`, wide: true, body, onClose: () => { off(); stopPolls(); }, buttons: [{ label: '关闭' }] });
+}
+
+function fmtDur(sec) {
+  sec = Math.max(0, Math.round(sec || 0));
+  return sec >= 3600 ? `${Math.floor(sec / 3600)} 小时 ${Math.floor((sec % 3600) / 60)} 分` : sec >= 60 ? `${Math.floor(sec / 60)} 分 ${sec % 60} 秒` : `${sec} 秒`;
+}
+
+// 简单的终端：\r 回到行首覆盖（进度条原地刷新），\n 换行
+function termFeed(t, chunk) {
+  for (const part of String(chunk).split(/(\n|\r)/)) {
+    if (part === '\n') { t.lines.push(''); t.cr = false; } else if (part === '\r') t.cr = true;
+    else if (part) { if (t.cr) { t.lines[t.lines.length - 1] = ''; t.cr = false; } t.lines[t.lines.length - 1] += part; }
+  }
+  if (t.lines.length > 4000) t.lines.splice(0, t.lines.length - 4000);
+}
+
+// 社区测试的运行窗口：实时输出、用时、停止、完成后打开报告。关掉窗口 VPS 上会继续跑
+function benchModal(srv, kind, name, onClosed) {
+  const id = srv.id;
+  const term = { lines: [''], cr: false };
+  let offset = 0; let alive = true; let timer = null; let elapsed = 0; let lastTick = Date.now(); let running = true;
+  const pill = h('span', { class: 'tag' }, '连接中…');
+  const clock = h('span', { class: 'muted' }, '');
+  const pre = h('pre', { class: 'term' }, '');
+  const reportBox = h('div', { class: 'bench-report hidden' });
+  const stopBtn = h('button', { class: 'danger' }, '停止测试');
+  const hint = h('div', { class: 'muted', style: { fontSize: '12px' } }, '关掉这个窗口不影响测试，VPS 上会继续跑，回到「社区测试」可以再打开');
+  const body = h('div', {}, h('div', { class: 'toolbar', style: { marginBottom: '10px' } }, pill, clock, h('div', { class: 'spacer' }), hint), reportBox, pre);
+  const showReport = (url) => {
+    reportBox.innerHTML = '';
+    reportBox.classList.remove('hidden');
+    reportBox.append(h('div', { style: { flex: 1, minWidth: 0 } }, h('b', {}, '测试完成，报告已生成'), h('div', { class: 'mono', style: { fontSize: '12px', overflow: 'hidden', textOverflow: 'ellipsis' } }, url)),
+      h('button', { class: 'small primary', onclick: () => api.call('open:external', url) }, '打开报告'), h('button', { class: 'small', onclick: () => copy(url) }, '复制链接'));
+  };
+  const setState = (r) => {
+    running = r.running;
+    pill.className = 'tag ' + (r.running ? 'blue' : r.url ? 'ok' : 'warn');
+    pill.textContent = r.running ? '运行中' : r.url ? '已完成' : '已结束';
+    stopBtn.classList.toggle('hidden', !r.running);
+    elapsed = r.elapsed || elapsed; lastTick = Date.now();
+    if (r.url) showReport(r.url);
+  };
+  const paintClock = () => { clock.textContent = (running ? '已用时 ' : '用时 ') + fmtDur(elapsed + (running ? (Date.now() - lastTick) / 1000 : 0)); };
+  const clockTimer = setInterval(paintClock, 1000);
+  const step = async () => {
+    if (!alive) return;
+    try {
+      const r = await api.call('bench:poll', id, kind, offset);
+      if (!alive) return;
+      if (r.none) { pill.textContent = '没有找到测试'; running = false; return; }
+      if (r.text) {
+        const atBottom = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 30;
+        termFeed(term, r.text);
+        pre.textContent = term.lines.join('\n');
+        if (atBottom) pre.scrollTop = pre.scrollHeight;
+      }
+      offset = r.size;
+      setState(r); paintClock();
+      if (r.running) timer = setTimeout(step, 2500);
+    } catch (e) {
+      if (!alive) return;
+      pill.className = 'tag bad'; pill.textContent = '读取失败';
+      hint.textContent = e.message + '（5 秒后重试）';
+      timer = setTimeout(step, 5000);
+    }
+  };
+  stopBtn.onclick = (e) => busy(e.currentTarget, async () => {
+    if (!(await confirmBox(`停止 ${name} 测试？已经跑的部分不会生成报告。`, '停止'))) return;
+    await api.call('bench:stop', id, kind);
+    toast('已停止', 'ok');
+    clearTimeout(timer); setTimeout(step, 1500);
+  });
+  modal({ title: `${name} · ${srv.name}`, wide: true, body, onClose: () => { alive = false; clearTimeout(timer); clearInterval(clockTimer); onClosed && onClosed(); },
+    buttons: [{ label: '停止测试', class: 'danger', close: false, el: stopBtn }, { label: '关闭' }] });
+  // 用自己的停止按钮替换 footer 里的占位
+  const footBtn = [...document.querySelectorAll('.modal footer button')].reverse().find((b) => b.textContent === '停止测试');
+  if (footBtn) footBtn.replaceWith(stopBtn);
+  step();
 }
 
 async function rotateServer(s) {

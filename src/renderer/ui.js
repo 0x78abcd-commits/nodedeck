@@ -88,7 +88,7 @@ function menu(anchor, items) {
   document.querySelectorAll('.menu-pop').forEach((m) => m.remove());
   const r = anchor.getBoundingClientRect();
   const pop = h('div', { class: 'menu-pop', style: { top: r.bottom + 4 + 'px', left: Math.max(8, r.right - 180) + 'px' } },
-    items.filter(Boolean).map((it) => h('div', { class: 'menu-item' + (it.danger ? ' danger' : ''), onclick: async () => {
+    items.filter(Boolean).filter((it, i, arr) => !it.sep || (i > 0 && i < arr.length - 1 && !arr[i - 1].sep)).map((it) => it.sep ? h('div', { class: 'menu-sep' }) : h('div', { class: 'menu-item' + (it.danger ? ' danger' : ''), onclick: async () => {
       pop.remove();
       try { await it.onClick(); } catch (e) { toast(e.message, 'err'); }
     } }, it.label)));
