@@ -98,6 +98,9 @@ a { color: var(--accent); text-underline-offset: 2px; }
 #nav a.active .ico { color: var(--accent); }
 .side-foot { padding: 12px 12px 4px; color: var(--faint); font-size: 12px; }
 .side-foot .upd { color: var(--warn); cursor: pointer; font-weight: 500; margin-top: 4px; }
+.upd-bar { height: 6px; border-radius: 3px; background: color-mix(in srgb, var(--muted) 22%, transparent); overflow: hidden; margin: 6px 0 4px; }
+.upd-bar > i { display: block; height: 100%; background: var(--accent, var(--ok)); border-radius: 3px; transition: width .3s ease; }
+.banner .upd-progress { max-width: 520px; }
 
 /* ---------- 主区域 ---------- */
 main { flex: 1; overflow: auto; position: relative; background: var(--bg); }
@@ -303,3 +306,4 @@ pre.log { background: var(--log-bg); border: 1px solid var(--line); border-radiu
 .checktab th, .checktab td { padding: 6px 10px; }
 .checktab td:first-child, .checktab th:first-child { padding-left: 0; width: 86px; }
 .checktab tbody tr:hover td { background: none; }
+.card .upd-progress { margin-bottom: 12px; }

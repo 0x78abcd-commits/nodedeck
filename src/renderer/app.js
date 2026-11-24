@@ -114,24 +114,47 @@ function renderFoot() {
   f.append(h('div', {}, `v${info.version || ''}${info.portable ? ' 便携版' : ''}`));
   const st = updateStatus.state;
   if (st === 'available') f.append(h('div', { class: 'upd', onclick: () => go('settings') }, `● 新版本 ${updateStatus.latest}`));
-  if (st === 'downloading') f.append(h('div', { class: 'upd' }, `下载更新 ${updateStatus.percent || 0}%`));
+  if (st === 'downloading') f.append(h('div', { class: 'upd' }, `下载更新 ${updateStatus.percent || 0}%`), h('div', { class: 'upd-bar' }, h('i', { style: { width: (updateStatus.percent || 0) + '%' } })));
   if (st === 'downloaded') f.append(h('div', { class: 'upd', onclick: () => api.call('update:install') }, '● 更新已就绪，点此重启'));
 }
 
 let updSnoozed = false;
+const fmtSize = (b) => (b >= 1048576 ? (b / 1048576).toFixed(1) + ' MB' : Math.round((b || 0) / 1024) + ' KB');
+// 下载进度：进度条 + 已下载 / 总大小 + 速度 + 剩余时间
+function updProgress(u) {
+  const pct = Math.max(0, Math.min(100, u.percent || 0));
+  const left = u.speed > 0 && u.total > u.transferred ? Math.ceil((u.total - u.transferred) / u.speed) : 0;
+  const parts = [`${pct}%`];
+  if (u.total) parts.push(`${fmtSize(u.transferred)} / ${fmtSize(u.total)}`);
+  if (u.speed) parts.push(`${fmtSize(u.speed)}/s`);
+  if (left) parts.push(left >= 60 ? `还剩约 ${Math.ceil(left / 60)} 分钟` : `还剩约 ${left} 秒`);
+  return h('div', { class: 'upd-progress' }, h('div', { class: 'upd-bar' }, h('i', { style: { width: pct + '%' } })), h('div', { class: 'muted', style: { fontSize: '12px' } }, u.total || pct ? parts.join(' · ') : '正在连接 GitHub …'));
+}
 function plainNotes(t) { return String(t || '').replace(/<li[^>]*>/gi, '• ').replace(/<\/(li|p|h\d|div)>|<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&').replace(/^#+\s*/gm, '').replace(/\*\*/g, '').replace(/\n{3,}/g, '\n\n').trim(); }
 
 function renderBanner() {
   const b = document.getElementById('banner');
   b.innerHTML = '';
   const u = updateStatus;
-  if ((u.state === 'available' || u.state === 'downloaded') && u.latest && u.latest !== S.settings.skipVersion && !updSnoozed) {
+  if (u.state === 'downloading' && !updSnoozed) {
+    b.classList.remove('hidden');
+    b.append(h('div', { style: { flex: 1 } }, h('b', {}, `正在下载新版本 ${u.latest || ''}`), updProgress(u)),
+      h('button', { class: 'small', onclick: () => { updSnoozed = true; renderBanner(); } }, '后台下载'));
+    return;
+  }
+  if (u.state === 'downloaded' && u.latest) {
+    // 下载好了总是提示（之前点过「稍后」也提示），装的时候不弹安装向导
+    b.classList.remove('hidden');
+    b.append(h('div', { style: { flex: 1 } }, h('b', {}, `新版本 ${u.latest} 已下载好`), h('div', { class: 'notes' }, '点「重启并更新」会在后台自动安装（不弹安装窗口），十几秒后自动重新打开。不想现在重启的话，下次关闭软件时也会自动装好')),
+      h('button', { class: 'small primary', onclick: () => api.call('update:install') }, '重启并更新'),
+      h('button', { class: 'small', onclick: () => { b.classList.add('hidden'); } }, '稍后'));
+    return;
+  }
+  if (u.state === 'available' && u.latest && u.latest !== S.settings.skipVersion && !updSnoozed) {
     b.classList.remove('hidden');
     const notes = plainNotes(u.notes);
-    b.append(h('div', { style: { flex: 1 } }, h('b', {}, u.state === 'downloaded' ? `新版本 ${u.latest} 已下载好` : `发现新版本 ${u.latest}`), notes ? h('div', { class: 'notes' }, notes) : null),
-      u.state === 'downloaded'
-        ? h('button', { class: 'small primary', onclick: () => api.call('update:install') }, '重启并更新')
-        : h('button', { class: 'small primary', onclick: () => { api.call('update:download'); updSnoozed = true; renderBanner(); } }, info.portable ? '下载新版' : '立即更新'),
+    b.append(h('div', { style: { flex: 1 } }, h('b', {}, `发现新版本 ${u.latest}`), notes ? h('div', { class: 'notes' }, notes) : null),
+      h('button', { class: 'small primary', onclick: () => { api.call('update:download'); } }, info.portable ? '下载新版' : '立即更新'),
       h('button', { class: 'small', onclick: async () => { await api.call('settings:set', { skipVersion: u.latest }); S.settings.skipVersion = u.latest; renderBanner(); toast('这一版不再提醒，有更新的版本时会再提示；也可以在「设置」里手动更新'); } }, '这一版不再提醒'),
       h('button', { class: 'small', onclick: () => { updSnoozed = true; renderBanner(); } }, '稍后'));
     return;
@@ -1580,9 +1603,10 @@ function updateCard() {
   const card = h('div', { class: 'card' }, h('h3', {}, '软件更新'));
   const text = {
     idle: '尚未检查', checking: '正在检查…', latest: `已是最新版本（${st.latest || info.version}）`, available: `发现新版本 ${st.latest}`,
-    downloading: `正在下载 ${st.percent || 0}%`, downloaded: `新版本 ${st.latest} 已下载`, error: '检查失败：' + (st.error || ''), dev: '开发模式不检查更新',
+    downloading: `正在下载新版本 ${st.latest || ''}`, downloaded: `新版本 ${st.latest} 已下载，重启时自动安装（不弹安装窗口）`, error: '检查失败：' + (st.error || ''), dev: '开发模式不检查更新',
   }[st.state || 'idle'];
   card.append(h('p', {}, `当前版本 v${info.version}${info.portable ? '（便携版）' : ''}`), h('p', { class: st.state === 'error' ? 'muted' : '' }, text));
+  if (st.state === 'downloading') card.append(updProgress(st));
   const acts = h('div', { class: 'actions' }, h('button', { onclick: (e) => busy(e.currentTarget, () => api.call('update:check')) }, '检查更新'));
   if (st.state === 'available') acts.append(h('button', { class: 'primary', onclick: () => api.call('update:download') }, info.portable ? '下载新版便携包' : '立即更新'));
   if (st.state === 'downloaded') acts.append(h('button', { class: 'primary', onclick: () => api.call('update:install') }, '重启并安装'));
@@ -1705,6 +1729,7 @@ const VIEWS = { dash: viewDash, servers: viewServers, nodes: viewNodes, users: v
     const prev = updateStatus.state;
     updateStatus = st; renderFoot();
     if (prev !== st.state) renderBanner();
+    else if (st.state === 'downloading') for (const el of document.querySelectorAll('.upd-progress')) el.replaceWith(updProgress(st)); // 进度原地刷新
     if (prev !== st.state && (page === 'settings' || page === 'dash')) render();
   });
   await reload();
