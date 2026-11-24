@@ -236,6 +236,16 @@ else echo "VIRT=$(systemd-detect-virt 2>/dev/null || echo unknown)"; fi
   return kv;
 }
 
+// 自签证书：没有或域名变了就重新生成。证书变了指纹也会变，分享链接和订阅随之更新
+async function ensureSelfCert(ssh, server, log) {
+  const sni = server.tlsSni || 'www.bing.com';
+  const r = await ssh.run(`
+if [ ! -f ${DIR}/cert.pem ] || [ "$(cat ${DIR}/cert.sni 2>/dev/null)" != ${shq(sni)} ]; then
+  ${AGENT_BIN} gencert -host ${shq(sni)} -dir ${DIR} && printf %s ${shq(sni)} > ${DIR}/cert.sni && echo NEWCERT
+fi`);
+  if (r.includes('NEWCERT') && server.deployedAt) log(`自签证书已按新域名 ${sni} 重新生成，证书指纹变了，用户需要刷新一次订阅`);
+}
+
 function rememberHw(server, info) {
   const n = (k) => Number(info[k]) || 0;
   server.hw = { cpus: n('CPUS'), memMB: Math.round(n('MEMKB') / 1024), swapMB: Math.round(n('SWAPKB') / 1024), diskFreeMB: Math.round(n('DISKFREEKB') / 1024), diskTotalMB: Math.round(n('DISKTOTALKB') / 1024), virt: info.VIRT || '', at: Date.now() };
@@ -356,11 +366,7 @@ async function deployServer(state, server, { resourcesDir, log }) {
     log(v.trim() + '（已校验 sha256）');
 
     log('生成自签证书 …');
-    const sni = server.tlsSni || 'www.bing.com';
-    await ssh.run(`
-if [ ! -f ${DIR}/cert.pem ] || [ "$(cat ${DIR}/cert.sni 2>/dev/null)" != ${shq(sni)} ]; then
-  ${AGENT_BIN} gencert -host ${shq(sni)} -dir ${DIR} && printf %s ${shq(sni)} > ${DIR}/cert.sni
-fi`);
+    await ensureSelfCert(ssh, server, log);
 
     await ssh.writeFile(`${DIR}/agent.json`, JSON.stringify(agentConfig(state, server), null, 2));
     await writeUnits(ssh, server);
@@ -437,6 +443,8 @@ async function pushConfig(ssh, state, server, log = () => {}) {
     } catch (_) { /* ignore */ }
   }
   await gateRealityTarget(ssh, server, log, false);
+  // 自签证书域名改过的话重新生成证书（以前只有部署时才生成，同步不会更新）
+  await ensureSelfCert(ssh, server, log);
   // 记下自签证书的指纹，分享链接里要带上（新版 v2rayNG 不再支持跳过证书验证）
   try {
     const pem = (await ssh.exec(`cat ${DIR}/cert.pem 2>/dev/null`)).stdout;

@@ -337,13 +337,36 @@ async function editServer(orig) {
   auth.onchange = syncAuth; syncAuth();
   const role = h('select', {}, h('option', { value: 'node' }, '节点机'), h('option', { value: 'relay' }, '中转机（只做转发）'));
   role.value = s.role || 'node';
-  const sni = I(s.tlsSni, { placeholder: 'www.bing.com' });
+  // 自签证书的 SNI：常用大站 / 自定义。客户端核对的是证书指纹，名字本身对抗封锁影响不大，所以不做「优选」，
+  // 只保证别选国内按 SNI 屏蔽的域名（会被直接掐断）
+  const SELF_SNI = [['www.bing.com', '必应（默认）'], ['www.microsoft.com', '微软'], ['www.apple.com', '苹果'], ['www.amazon.com', '亚马逊'], ['www.nvidia.com', '英伟达'], ['www.samsung.com', '三星']];
+  const curSni = s.tlsSni || 'www.bing.com';
+  const sniSel = h('select', {}, SELF_SNI.map(([d, n]) => h('option', { value: d }, `${n}  ${d}`)), h('option', { value: '__custom__' }, '自定义域名…'));
+  sniSel.value = SELF_SNI.some(([d]) => d === curSni) ? curSni : '__custom__';
+  const sniCustom = I(sniSel.value === '__custom__' ? curSni : '', { placeholder: '例如 www.example.com' });
+  const sniHint = h('div', { class: 'muted', style: { fontSize: '12px', marginTop: '5px' } });
+  const sniBox = h('div', {}, sniSel, h('div', { style: { marginTop: '6px' } }, sniCustom), sniHint);
+  const drawSni = () => {
+    sniCustom.classList.toggle('hidden', sniSel.value !== '__custom__');
+    const v = sniSel.value === '__custom__' ? sniCustom.value.trim() : sniSel.value;
+    sniHint.innerHTML = '';
+    const blocked = sniBlocked(v);
+    if (blocked) sniHint.append(h('span', { class: 'tag bad' }, '不能用'), ` ${v} 在国内按域名屏蔽，客户端连接会被直接掐断`);
+    else sniHint.append('只是证书上的名字，客户端靠证书指纹认服务器，换哪个对抗封锁差别不大，不需要优选。想更像正常网站，用下面的「正式证书」。',
+      s.deployedAt && v && v !== curSni ? h('div', { style: { color: 'var(--warn)', marginTop: '3px' } }, '改了以后同步时会重新生成证书，证书指纹会变，用户要刷新一次订阅') : null);
+  };
+  sniSel.onchange = drawSni; sniCustom.oninput = drawSni;
   const exit = h('select', {}, h('option', { value: '' }, '直连（VPS 自己的 IP）'), S.landings.map((l) => h('option', { value: l.id }, `落地：${l.name}`)));
   exit.value = s.exit?.type === 'landing' ? s.exit.landingId : '';
 
   const domain = I(s.domain, { placeholder: 'node1.example.com' });
   const acmeEmail = I(s.acmeEmail, { placeholder: 'you@example.com' });
   const acme = h('input', { type: 'checkbox', checked: !!s.acme });
+  const syncAcmeSni = () => {
+    sniSel.disabled = acme.checked; sniCustom.disabled = acme.checked;
+    if (acme.checked) { sniHint.innerHTML = ''; sniHint.append('已开启正式证书：SNI 就是下面填的域名，这里不起作用'); } else drawSni();
+  };
+  acme.addEventListener('change', syncAcmeSni); syncAcmeSni();
   const host6 = I(s.host6, { placeholder: '2001:db8::1' });
   const ipMode = h('select', {}, h('option', { value: 'v4' }, '只出 IPv4 线路'), h('option', { value: 'dual' }, 'IPv4 + IPv6 线路'), h('option', { value: 'v6only' }, '只出 IPv6 线路（没填 IPv6 时自动用 IPv4）'));
   ipMode.value = s.ipMode || 'v4';
@@ -471,7 +494,7 @@ async function editServer(orig) {
     h('div', { class: 'row' }, field('SSH 端口', port), field('用户名', user), field('认证方式', auth)),
     pwdBox, keyBox,
     h('div', { class: 'row' }, field('角色', role), field('出口', exit), field('VPS 到期日（可选）', vpsExp, '到期前 7 天和 1 天会 Telegram 提醒续费')),
-    field('自签证书域名（Trojan/Hy2/TUIC/AnyTLS 的 SNI）', sni),
+    field('自签证书域名（Trojan / Hy2 / TUIC / AnyTLS 的 SNI）', sniBox),
     h('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', margin: '14px 0 8px' } }, h('h4', { style: { margin: 0 } }, '协议'), h('div', { class: 'spacer' }), tpl), grid,
     h('h4', {}, '正式证书（可选）'),
     h('div', { class: 'row' }, field('域名', domain, '要先把这个域名的 A 记录指向服务器 IP（Cloudflare 请关掉小黄云）'), field('邮箱（可选）', acmeEmail)),
@@ -494,7 +517,13 @@ async function editServer(orig) {
     s.sshPort = Number(port.value) || 22;
     s.username = user.value.trim() || 'root';
     s.authType = auth.value; s.password = pwd.value; s.privateKey = key.value; s.passphrase = pass.value;
-    s.role = role.value; s.tlsSni = sni.value.trim() || 'www.bing.com';
+    s.role = role.value;
+    {
+      const v = (sniSel.value === '__custom__' ? sniCustom.value.trim().replace(/^https?:\/\//, '').replace(/\/.*$/, '') : sniSel.value) || 'www.bing.com';
+      if (!/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(v)) throw new Error('自签证书域名格式不对：' + v);
+      if (sniBlocked(v)) throw new Error(`${v} 在国内按域名屏蔽，不能做 SNI，换一个`);
+      s.tlsSni = v;
+    }
     s.exit = exit.value ? { type: 'landing', landingId: exit.value } : { type: 'direct' };
     s.domain = domain.value.trim(); s.acmeEmail = acmeEmail.value.trim(); s.acme = acme.checked && !!s.domain;
     if (acme.checked && !s.domain) throw new Error('开启正式证书需要先填域名');
@@ -512,6 +541,7 @@ async function editServer(orig) {
           const nv = m === '__custom__' ? e.rsni.value.trim().replace(/^https?:\/\//, '').replace(/\/.*$/, '') : m;
           if (!nv) throw new Error('请填写 Reality 目标域名，或选「自动优选」');
           if (!/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(nv)) throw new Error('Reality 目标域名格式不对：' + nv);
+          if (sniBlocked(nv)) throw new Error(`${nv} 在国内按域名屏蔽，不能做 Reality 目标，换一个`);
           pr.sni = nv; pr.sniAuto = false; delete pr.sniPickedAt; delete pr.sniSource;
           if (e.rcheck && e.rcheck.domain === nv) pr.sniCheck = e.rcheck;
         }
@@ -637,6 +667,13 @@ function hwLine(s) {
   const small = hw.memMB <= 1536;
   return h('div', { class: 'muted', style: { fontSize: '12px' }, title: small ? '小内存机器：NodeDeck 已限制内存上限。空闲约占 50MB，每个正在传数据的连接约 0.5–0.8MB' : '' },
     `${hw.cpus || '?'} 核 · ${gb(hw.memMB)}${hw.swapMB ? ` + swap ${gb(hw.swapMB)}` : ''} · 磁盘剩 ${gb(hw.diskFreeMB)}`);
+}
+
+// 国内按 SNI 屏蔽的常见域名（TLS / QUIC 握手里带这些名字会被直接重置）
+const SNI_BLOCKED = ['google.com', 'googleapis.com', 'gstatic.com', 'youtube.com', 'ytimg.com', 'facebook.com', 'fbcdn.net', 'instagram.com', 'whatsapp.com', 'twitter.com', 'x.com', 'twimg.com', 'telegram.org', 't.me', 'wikipedia.org', 'netflix.com', 'reddit.com', 'discord.com', 'pinterest.com', 'dropbox.com', 'openai.com', 'chatgpt.com', 'blogspot.com', 'nytimes.com'];
+function sniBlocked(d) {
+  d = String(d || '').toLowerCase();
+  return SNI_BLOCKED.some((b) => d === b || d.endsWith('.' + b));
 }
 
 function core_cf(s) { const t = s.cfTunnel; return t?.enabled && t.token && t.hostname && s.protocols?.vmess?.enabled; }
