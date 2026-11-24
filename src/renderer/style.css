@@ -222,6 +222,8 @@ pre.log { background: var(--log-bg); border: 1px solid var(--line); border-radiu
 
 .proto-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .proto { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px 4px; background: var(--panel); }
+.proto.focus, label.f.focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+label.f.focus { border: 1px solid var(--accent); border-radius: 8px; padding: 6px 8px; }
 .proto:has(.head input:not(:checked)) { background: var(--panel2); }
 .proto:has(.head input:not(:checked)) > :not(.head) { opacity: .55; }
 .proto .head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }

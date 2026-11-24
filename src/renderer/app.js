@@ -347,7 +347,7 @@ async function checkRealityNow(s) {
   } catch (e) { toast(e.message, 'err'); }
 }
 
-async function editServer(orig) {
+async function editServer(orig, opts = {}) {
   const s = orig ? JSON.parse(JSON.stringify(orig)) : await api.call('new:server', {});
   const I = (val, attrs = {}) => h('input', { value: val ?? '', ...attrs });
   const name = I(s.name), host = I(s.host, { placeholder: 'VPS 公网 IP 或域名' }), port = I(s.sshPort, { type: 'number' }), user = I(s.username);
@@ -489,7 +489,7 @@ async function editServer(orig) {
     }
     if (k === 'shadowsocks') extra.push(h('p', { class: 'muted', style: { fontSize: '12px', margin: 0 } }, '2022-blake3-aes-128-gcm，多用户。适合给中转、落地或老客户端用。'));
     protoEls[k] = els;
-    grid.append(h('div', { class: 'proto' }, h('div', { class: 'head' }, h('label', {}, en, ' ', h('b', {}, label)), h('span', { class: 'muted' }, netw.toUpperCase())), field('端口', pt), h('label', { class: 'muted', style: { fontSize: '12px', display: 'block', margin: '-4px 0 8px' }, title: '勾上后，部署后端口不通或一键换新时都不会自动换这个端口' }, fixed, ' 固定端口（不自动更换）'), extra));
+    grid.append(h('div', { class: 'proto', 'data-proto': k }, h('div', { class: 'head' }, h('label', {}, en, ' ', h('b', {}, label)), h('span', { class: 'muted' }, netw.toUpperCase())), field('端口', pt), h('label', { class: 'muted', style: { fontSize: '12px', display: 'block', margin: '-4px 0 8px' }, title: '勾上后，部署后端口不通或一键换新时都不会自动换这个端口' }, fixed, ' 固定端口（不自动更换）'), extra));
   }
 
   // 一键套用协议模板
@@ -532,7 +532,7 @@ async function editServer(orig) {
     h('label', { class: 'f' }, warpOn, ' 指定网站走 Cloudflare WARP（解决 ChatGPT / Netflix 等拒绝机房 IP、Google 验证码）', h('span', { class: 'tag warn', style: { marginLeft: '6px', display: 'inline-block' } }, '实验性')),
     warpBox,
     h('h4', {}, 'Cloudflare 隧道'),
-    h('label', { class: 'f' }, cfOn, ' 通过 Cloudflare Tunnel 接入 VMess-WS（IP 被墙或不想暴露端口时用）'),
+    h('label', { class: 'f', 'data-proto': 'cf' }, cfOn, ' 通过 Cloudflare Tunnel 接入 VMess-WS（IP 被墙或不想暴露端口时用）'),
     cfBox);
 
   const collect = () => {
@@ -618,6 +618,13 @@ async function editServer(orig) {
       await render();
     } },
   ] });
+  // 从节点页点「编辑」进来：滚到那个协议并高亮
+  if (opts.focus) {
+    requestAnimationFrame(() => {
+      const el = document.querySelector(`.modal [data-proto="${opts.focus}"]`);
+      if (el) { el.scrollIntoView({ block: 'center' }); el.classList.add('focus'); }
+    });
+  }
 }
 
 const DEPLOY_STAGES = [['ssh', '连接 SSH'], ['agent', '上传 agent'], ['kernel', '安装内核'], ['reality', 'Reality 目标 / 端口'], ['firewall', '防火墙'], ['config', '上传配置'], ['start', '启动服务'], ['ports', '测端口'], ['done', '完成']];
@@ -1078,13 +1085,57 @@ async function viewNodes(v) {
         h('td', {}, h('div', { class: 'actions' },
           h('button', { class: 'small', onclick: () => copy(e.link) }, '复制'),
           h('button', { class: 'small', onclick: () => showQr(e.label, e.link) }, '二维码'),
-          h('button', { class: 'small primary', onclick: (ev) => busy(ev.currentTarget, () => testEntry(e, res)) }, '测试')))));
+          h('button', { class: 'small primary', onclick: (ev) => busy(ev.currentTarget, () => testEntry(e, res)) }, '测试'),
+          h('button', { class: 'small', onclick: () => editEntry(e) }, '编辑'),
+          h('button', { class: 'small danger', onclick: (ev) => removeEntry(e, ev.currentTarget) }, '删除')))));
     }
     v.append(h('div', { class: 'card' },
       h('div', { class: 'toolbar' }, h('h3', { style: { margin: 0 } }, g.server.name), h('span', { class: 'muted mono' }, g.server.host), g.server.deployedAt ? null : h('span', { class: 'tag warn' }, '未部署'), h('div', { class: 'spacer' }),
         h('button', { class: 'small', onclick: () => copy(g.entries.map((e) => e.link).join('\n')) }, '复制全部')),
       g.entries.length ? h('table', {}, h('thead', {}, h('tr', {}, ['协议', '入口', '测试结果', '操作'].map((t) => h('th', {}, t)))), tb) : h('div', { class: 'muted' }, '没有启用的协议')));
   }
+}
+
+// 节点页的「编辑」：普通入口打开服务器编辑并定位到这个协议；经中转的入口去「中转 / 隧道」改
+function editEntry(e) {
+  if (e.via) { go('forwards'); toast('经中转的入口在「中转 / 隧道」里修改'); return; }
+  const s = S.servers.find((x) => x.id === e.serverId);
+  if (!s) return;
+  editServer(s, { focus: e.cf ? 'cf' : e.protocol });
+}
+
+// 节点页的「删除」：普通入口 = 在这台服务器上停用这个协议；经中转 = 删除那条转发；CF 优选入口 = 去掉这个优选地址。已部署的马上同步
+async function removeEntry(e, btn) {
+  const s = S.servers.find((x) => x.id === e.serverId);
+  if (!s) return;
+  const pname = PROTO_LABEL[e.protocol];
+  let msg; let apply; let syncId = s.deployedAt ? s.id : null;
+  if (e.via) {
+    const f = (S.forwards || []).find((x) => x.relayServerId === e.via && Number(x.listenPort) === Number(e.port) && x.target?.serverId === s.id);
+    if (!f) { toast('没找到这条转发，去「中转 / 隧道」里看看', 'err'); return; }
+    const relay = S.servers.find((x) => x.id === e.via);
+    msg = `删除经「${relay?.name || '中转'}」转发的 ${pname} 入口（${e.host}:${e.port}）？\n\n只删这条转发，${s.name} 上的 ${pname} 本身不受影响。`;
+    apply = () => api.call('col:remove', 'forwards', f.id);
+    syncId = relay?.deployedAt ? relay.id : null;
+  } else if (e.cf) {
+    const t = s.cfTunnel || {};
+    const isMain = e.host === t.hostname;
+    msg = isMain ? `关闭 ${s.name} 的 Cloudflare 隧道？\n\n隧道入口和所有优选地址入口都会去掉。` : `去掉 Cloudflare 优选地址 ${e.host}？`;
+    apply = () => api.call('col:upsert', 'servers', { id: s.id, cfTunnel: isMain ? { ...t, enabled: false } : { ...t, cdnHosts: (t.cdnHosts || []).filter((x) => x !== e.host) } });
+  } else {
+    const left = Object.entries(s.protocols || {}).filter(([k, p]) => p?.enabled && k !== e.protocol).length;
+    msg = `在 ${s.name} 上停用 ${pname}（端口 ${e.port}）？\n\n用户刷新订阅后就没有这个节点了。设置（端口、密码等）会保留，以后在「编辑」里重新勾选就能恢复。${left ? '' : '\n\n⚠ 这是这台服务器上最后一个协议，停用后这台就没有可用节点了。'}`;
+    apply = () => api.call('col:upsert', 'servers', { id: s.id, protocols: { ...s.protocols, [e.protocol]: { ...s.protocols[e.protocol], enabled: false } } });
+  }
+  if (!(await confirmBox(msg, '删除'))) return;
+  await busy(btn, async () => {
+    await apply();
+    if (syncId) {
+      toast('已删除，正在同步到服务器…');
+      try { await api.call('server:sync', syncId); toast('已删除并同步，用户刷新订阅即可', 'ok'); } catch (err) { markDirty(); toast('已删除，但同步失败：' + err.message + '\n稍后点「同步全部」', 'err'); }
+    } else toast('已删除', 'ok');
+    await render();
+  }).catch((err) => toast('删除失败：' + err.message, 'err'));
 }
 
 async function testEntry(e, cell) {
