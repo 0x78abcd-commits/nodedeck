@@ -374,3 +374,30 @@ pre.term { background: #0e1214; color: #d7dee2; border-radius: 10px; padding: 12
 .cl-danger { color: var(--danger); font-size: 12px; margin-top: 3px; }
 .cl-bk { align-items: center; cursor: default; }
 .cl-bakrow { margin-top: 6px; padding: 10px 12px; border: 1px dashed var(--line); border-radius: 10px; }
+
+/* 测试结果：两行 */
+.tr-box { display: grid; gap: 4px; min-width: 180px; max-width: 360px; }
+.tr-l1 { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.tr-l1 .tag { flex: none; margin: 0; }
+.tr-err { font-size: 12px; color: var(--danger); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.tr-l2 { font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tr-l2:empty { display: none; }
+
+td.nowrap, .nowrap { white-space: nowrap; }
+.actions.nowrap { flex-wrap: nowrap; }
+.tr-fold { cursor: pointer; }
+.tr-open .tr-err { display: none; }
+.tr-open .tr-l2 { white-space: pre-wrap; overflow: visible; word-break: break-all; }
+.pl-row { grid-template-columns: 8px minmax(max-content, 1fr) auto; }
+.pl-name, .pl-port { white-space: nowrap; }
+.proto-list { max-width: none; width: max-content; min-width: 180px; }
+.m-foot { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.proto-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+.pchip { font-size: 11px; line-height: 18px; padding: 0 6px; border-radius: 5px; background: color-mix(in srgb, var(--muted) 12%, transparent); color: var(--muted); white-space: nowrap; }
+@media (max-width: 1180px) { .tr-box { max-width: 250px; } .actions.nowrap button.small { padding-left: 8px; padding-right: 8px; } }
+/* 页面标题栏：说明文字可以缩，右边的按钮不换行 */
+.toolbar > div:first-child:has(> h1) { flex: 1 1 260px; min-width: 0; }
+.toolbar:has(> div > h1) { flex-wrap: nowrap; align-items: flex-start; }
+.toolbar:has(> div > h1) > button { flex: none; margin-top: 10px; }
+.toolbar:has(> div > h1) > .spacer { flex: 0 0 8px; }

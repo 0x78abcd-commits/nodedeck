@@ -227,7 +227,7 @@ async function viewDash(v) {
       box.append(h('div', { class: 'line-row ' + cls },
         h('div', { class: 'strip' }),
         h('div', { class: 'name' }, h('b', {}, s.name), h('span', { class: 'mono muted' }, s.host)),
-        h('div', {}, label, h('span', { class: 'cap' }, protos.join(' · ') || '没有开启协议')),
+        h('div', {}, label, protos.length ? h('div', { class: 'proto-chips', title: protos.join('、') }, PROTOS.filter(([k]) => s.protocols?.[k]?.enabled).map(([k]) => h('span', { class: 'pchip' }, { vlessReality: 'Reality', trojan: 'Trojan', vmess: 'VMess', hysteria2: 'Hy2', tuic: 'TUIC', anytls: 'AnyTLS', shadowsocks: 'SS' }[k] || k))) : h('span', { class: 'cap' }, '没有开启协议')),
         h('div', { class: 'hide-narrow' }, h('div', { class: 'num' }, today ? fmtBytes((today.up || 0) + (today.down || 0)) : '—'), h('div', { class: 'cap' }, '今日流量')),
         h('div', { class: 'hide-narrow' }, s.vpsExpireAt ? [h('div', { class: 'num' }, `${Math.max(0, Math.ceil((s.vpsExpireAt - Date.now()) / 86400000))} 天`), h('div', { class: 'cap' }, 'VPS 剩余')] : [h('div', { class: 'num muted' }, '—'), h('div', { class: 'cap' }, 'VPS 到期未填')]),
         h('div', { class: 'actions' },
@@ -1339,10 +1339,10 @@ async function viewNodes(v) {
     for (const e of g.entries) {
       const res = h('td', { class: 'muted' }, '—');
       tb.append(h('tr', {},
-        h('td', {}, h('b', {}, PROTO_LABEL[e.protocol]), e.via ? h('span', { class: 'tag blue' }, '经 ' + serverName(e.via)) : null),
-        h('td', { class: 'mono' }, `${e.host}:${e.port}`),
+        h('td', { class: 'nowrap' }, h('b', {}, PROTO_LABEL[e.protocol]), e.via ? h('div', {}, h('span', { class: 'tag blue' }, '经 ' + serverName(e.via))) : null),
+        h('td', { class: 'mono nowrap', style: { fontSize: '12.5px' } }, `${e.host}:${e.port}`),
         res,
-        h('td', {}, h('div', { class: 'actions' },
+        h('td', { class: 'nowrap' }, h('div', { class: 'actions nowrap' },
           h('button', { class: 'small', onclick: () => copy(e.link) }, '复制'),
           h('button', { class: 'small', onclick: () => showQr(e.label, e.link) }, '二维码'),
           h('button', { class: 'small primary', onclick: (ev) => busy(ev.currentTarget, () => testEntry(e, res)) }, '测试'),
@@ -1398,13 +1398,38 @@ async function removeEntry(e, btn) {
   }).catch((err) => toast('删除失败：' + err.message, 'err'));
 }
 
+// 节点 / 落地的测试结果：固定两行。第一行：延迟（或「不通」）+ IP 类型；第二行：出口 IP · 地区 · 运营商（太长省略，鼠标停留看全文）
+function testResultView(cell, r) {
+  cell.innerHTML = '';
+  cell.classList.remove('muted');
+  const box = h('div', { class: 'tr-box' });
+  if (!r.ok) {
+    const lines = String(r.error || '不通').split('\n').map((x) => x.trim()).filter(Boolean);
+    const hint = lines.find((x) => x.startsWith('可能原因')) || '';
+    const main = lines.filter((x) => x !== hint);
+    const short = hint ? hint.replace(/^可能原因：/, '') : (main.length > 1 ? main[0] : '');
+    const l2 = h('div', { class: 'tr-l2 muted' }, short);
+    box.append(h('div', { class: 'tr-l1' }, h('span', { class: 'tag bad' }, '不通'), h('span', { class: 'tr-err' }, main[main.length - 1] || main[0] || '')), l2);
+    box.title = '点击展开 / 收起完整报错';
+    box.classList.add('tr-fold');
+    box.onclick = () => { const open = box.classList.toggle('tr-open'); l2.textContent = open ? lines.join('\n') : short; };
+  } else {
+    const ip = r.ip;
+    const lat = Number(r.latency) || 0;
+    box.append(h('div', { class: 'tr-l1' }, h('span', { class: 'tag ' + (lat > 1500 ? 'warn' : 'ok') }, `${lat} ms`),
+      ip ? h('span', { class: 'tag ' + (ip.hosting ? 'warn' : 'ok') }, ip.hosting ? '机房 IP' : '住宅 / 非机房') : null));
+    if (ip) {
+      const where = [ip.country, ip.city].filter(Boolean).join(' ');
+      const full = [ip.query, where, ip.isp].filter(Boolean).join(' · ');
+      box.append(h('div', { class: 'tr-l2', title: full }, h('span', { class: 'mono' }, ip.query), where ? ` · ${where}` : '', ip.isp ? h('span', { class: 'muted' }, ` · ${ip.isp}`) : null));
+    }
+  }
+  cell.append(box);
+}
+
 async function testEntry(e, cell) {
   cell.textContent = '测试中…';
-  const r = await api.call('node:test', e, 'owner');
-  cell.innerHTML = '';
-  if (!r.ok) { cell.append(h('span', { class: 'tag bad' }, '不通'), h('div', { class: 'muted', style: { maxWidth: '360px', whiteSpace: 'pre-wrap' } }, r.error)); return; }
-  cell.append(h('span', { class: 'tag ok' }, `${r.latency} ms`));
-  if (r.ip) cell.append(h('div', {}, h('span', { class: 'mono' }, r.ip.query), ` ${r.ip.country || ''} ${r.ip.city || ''} · ${r.ip.isp || ''}`, ' ', h('span', { class: 'tag ' + (r.ip.hosting ? 'warn' : 'ok') }, r.ip.hosting ? '机房IP' : '住宅/非机房')));
+  testResultView(cell, await api.call('node:test', e, 'owner'));
 }
 
 async function showQr(title, text) {
@@ -1633,16 +1658,13 @@ async function viewLandings(v) {
     const res = h('td', { class: 'muted' }, '—');
     const usedBy = S.servers.filter((s) => s.exit?.type === 'landing' && s.exit.landingId === l.id);
     tb.append(h('tr', {},
-      h('td', {}, h('b', {}, l.name), l.group ? h('span', { class: 'tag' }, l.group) : null),
+      h('td', {}, h('b', {}, l.name), l.group ? h('span', { class: 'tag', style: { marginLeft: '6px' } }, l.group) : null),
       h('td', {}, h('span', { class: 'tag' }, LANDING_TYPE[l.type] || l.type), h('div', { class: 'mono muted' }, landingAddr(l))),
       h('td', {}, usedBy.map((s) => h('span', { class: 'tag' }, s.name))), res,
       h('td', {}, h('div', { class: 'actions' },
         h('button', { class: 'small primary', onclick: (e) => busy(e.currentTarget, async () => {
           res.textContent = '测试中…';
-          const r = await api.call('landing:test', l.id);
-          res.innerHTML = '';
-          if (!r.ok) res.append(h('span', { class: 'tag bad' }, '不通'), h('div', { class: 'muted' }, String(r.error).split('\n')[0]));
-          else res.append(h('span', { class: 'tag ok' }, r.latency + ' ms'), r.ip ? h('div', {}, `${r.ip.query} ${r.ip.country || ''} ${r.ip.isp || ''} `, h('span', { class: 'tag ' + (r.ip.hosting ? 'warn' : 'ok') }, r.ip.hosting ? '机房IP' : '住宅/非机房')) : null);
+          testResultView(res, await api.call('landing:test', l.id));
         }) }, '测试'),
         h('button', { class: 'small', onclick: () => editLanding(l) }, '编辑'),
         h('button', { class: 'small danger', onclick: async () => { if (await confirmBox(`删除落地「${l.name}」？使用它的服务器会改为直连。`)) { const used = usedBy.filter((x) => x.deployedAt).length; await api.call('col:remove', 'landings', l.id); markDirty(); render(); if (used) toast('使用它的服务器已改为直连，记得同步'); } } }, '删除')))));
@@ -1963,7 +1985,7 @@ async function viewSettings(v) {
   };
   const sel = (opts, val) => { const e = h('select', {}, opts.map(([k, l]) => h('option', { value: k }, l))); e.value = val; return e; };
   const rpMode = sel([['auto', '自动换新目标并通知'], ['notify', '只通知'], ['off', '不检查']], st.realityPatrol || 'auto');
-  const bwMode = sel([['off', '关闭（需要时在「工具箱 → 被墙检测」或服务器「体检」里手动查）'], ['notify', '只提醒'], ['auto', '自动一键换新（6 小时内最多一次）并提醒']], st.blockWatch || 'off');
+  const bwMode = sel([['off', '关闭'], ['notify', '只提醒'], ['auto', '自动一键换新（6 小时内最多一次）并提醒']], st.blockWatch || 'off');
   const al = st.alerts || {};
   const alOn = h('input', { type: 'checkbox', checked: al.enabled !== false });
   const tuneOn = h('input', { type: 'checkbox', checked: st.smallBoxTuning !== false });
@@ -1977,7 +1999,7 @@ async function viewSettings(v) {
   const lookCard = h('div', { class: 'card' }, h('h3', {}, '外观'), field('主题', theme, '深色适合长时间看监控；跟随系统会随 Windows 的深浅色自动切换'));
   const guardCard = h('div', { class: 'card' }, h('h3', {}, '巡检与告警'),
     field('Reality 目标巡检（VPS 每 6 小时检查一次）', rpMode, '目标网站下线、证书过期或不再支持 TLS 1.3 / HTTP2 时节点会连不上。自动模式下连续 3 次失败会换成同网段邻居或最快的大站，并改好本机订阅'),
-    field('被墙巡检（打开后软件开着时每 30 分钟查一次，默认关）', bwMode, '本机连不通、海外能通，连续两次才判定被墙；电脑网络断了不会误报'),
+    field('被墙巡检（打开后软件开着时每 30 分钟查一次，默认关）', bwMode, '本机连不通、海外能通，连续两次才判定被墙；电脑网络断了不会误报。关闭时可以在「工具箱 → 被墙检测」或服务器「体检」里手动查'),
     h('label', { class: 'f' }, alOn, ' Telegram 运维告警：sing-box 挂了（会先自动重启）、磁盘快满、CPU 持续过高、三网延迟变差'),
     h('div', { class: 'row' }, field('磁盘用到 %', alDisk), field('CPU 连续 15 分钟高于 %', alCpu), field('三网延迟高于 ms', alLat)),
     h('label', { class: 'f' }, probeOn, ' 后台记录三网延迟和丢包：VPS 每 5 分钟往国内三网各发 10 个 ping（每台每月几十 MB 流量）。打开后监控面板的延迟曲线、「网络优化」的晚高峰对比和延迟告警才有数据。默认关，平时在「网络优化 → 质量」里手动测'),
