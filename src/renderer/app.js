@@ -1192,6 +1192,7 @@ async function cleanOthers(s) {
   const logBox = h('pre', { class: 'log hidden', style: { maxHeight: '220px', marginTop: '10px' } });
   const off = api.on('task-log', (m) => { if (m.task !== 'clean:' + s.id) return; logBox.classList.remove('hidden'); logBox.textContent += m.line + '\n'; logBox.scrollTop = logBox.scrollHeight; });
   const goBtn = h('button', { class: 'danger', disabled: true }, '删除选中的');
+  const bakCb = h('input', { type: 'checkbox' }); // 默认不备份，彻底删干净
   const ourPorts = new Set(Object.entries(s.protocols || {}).filter(([, p]) => p?.enabled).map(([, p]) => Number(p.port)));
   let picks = [];
   let update = () => {};
@@ -1216,18 +1217,21 @@ async function cleanOthers(s) {
     const apps = r.apps.map((a) => item({ kind: 'app', id: a.id }, !a.stopOnly, h('span', {}, h('b', {}, a.name), ' ', h('span', { class: 'tag ' + (a.running ? 'warn' : '') }, a.running ? '运行中' : '没在运行'), a.stopOnly ? h('span', { class: 'tag blue' }, '只停用') : null, conflict(a.ports).length ? h('span', { class: 'tag bad' }, '占用了节点端口') : null),
       [a.units.length ? '服务 ' + a.units.map((u) => u.name).join('、') : '', a.paths.length ? '目录 ' + a.paths.map((x) => `${x.path}${x.mb > 1 ? `（${x.mb}MB）` : ''}`).join('、') : ''].filter(Boolean).join(' · '),
       h('div', {}, a.ports.length ? h('span', { class: 'muted', style: { fontSize: '12px' } }, '端口 ', portTags(a.ports)) : null, a.note ? h('div', { class: 'muted', style: { fontSize: '12px' } }, a.note) : null)));
-    const docks = r.containers.map((c) => item({ kind: 'docker', id: c.id, name: c.name }, false, h('span', {}, h('b', {}, c.name), ' ', h('span', { class: 'tag ' + (c.running ? 'warn' : '') }, c.running ? '运行中' : '已停止')), `镜像 ${c.image}${c.ports ? ' · ' + c.ports : ''}`));
+    const docks = r.containers.map((c) => item({ kind: 'docker', id: c.id, name: c.name, image: c.image }, false, h('span', {}, h('b', {}, c.name), ' ', h('span', { class: 'tag ' + (c.running ? 'warn' : '') }, c.running ? '运行中' : '已停止')), `镜像 ${c.image}${c.ports ? ' · ' + c.ports : ''}`));
+    const olds = (r.backups || []).length ? [item({ kind: 'backups' }, true, h('b', {}, `以前清理时留下的备份（${r.backups.length} 个，共 ${Math.max(1, Math.round(r.backups.reduce((a, b) => a + b.kb, 0) / 1024))}MB）`), r.backups.map((b) => b.path).join('、'))] : [];
     const others = r.others.map((o) => o.unit
       ? item({ kind: 'other', unit: o.unit }, false, h('span', {}, h('b', {}, o.unit), ' ', conflict(o.ports).length ? h('span', { class: 'tag bad' }, '占用了节点端口') : null), `${o.exe || o.cmd}`, h('div', {}, h('span', { class: 'muted', style: { fontSize: '12px' } }, '端口 ', portTags(o.ports)), h('div', { class: 'muted', style: { fontSize: '12px' } }, '只停止这个服务、取消开机自启，不删除程序文件')))
       : h('div', { class: 'cl-item' }, h('span', { style: { width: '16px' } }), h('div', {}, h('b', {}, o.name), ' ', h('span', { class: 'muted', style: { fontSize: '12px' } }, o.cmd || o.exe), h('div', {}, portTags(o.ports), h('span', { class: 'muted', style: { fontSize: '12px' } }, ' 不是系统服务，NodeDeck 不处理，可以 SSH 登录后自己看')))));
-    if (!apps.length && !docks.length && !others.length) {
+    if (!apps.length && !docks.length && !others.length && !olds.length) {
       body.append(h('div', { class: 'cl-empty' }, h('b', {}, '很干净'), h('p', { class: 'muted' }, '没有发现其他面板、代理程序、Docker 容器，也没有别的程序占用公网端口。')));
     } else {
       body.append(
-        h('div', { class: 'cl-warn' }, '删除后不能恢复。被删程序的配置会先打包备份到 VPS 的 /root 目录；保险起见，可以先在服务商后台给 VPS 做个快照。SSH、系统服务和 NodeDeck 自己的东西不会动。'),
+        h('div', { class: 'cl-warn' }, '删除是彻底删除，不能恢复。不放心的话可以先在服务商后台给 VPS 做个快照。SSH、系统服务和 NodeDeck 自己的东西不会动。'),
         section('面板 / 代理程序', '认识的常见程序：停止服务、取消开机自启、删除它的服务文件和目录。', apps),
-        section('Docker 容器', '默认不勾。勾上的容器会被强制删除（镜像和数据卷保留）。', docks),
-        section('其他占用公网端口的程序', '不认识的程序默认不勾，只停用不删除。', others));
+        section('Docker 容器', '默认不勾。勾上的容器连同它的匿名数据卷和镜像一起删除（镜像还被别的容器用着时保留）。', docks),
+        section('其他占用公网端口的程序', '不认识的程序默认不勾，只停用不删除。', others),
+        section('旧备份', '', olds),
+        apps.some((a) => !a.stopOnly) ? h('label', { class: 'f', style: { marginTop: '4px' } }, bakCb, ' 删除前把这些程序的配置打包备份到 VPS 的 /root（默认不备份，彻底删干净）') : null);
     }
     body.append(logBox);
     update();
@@ -1235,10 +1239,10 @@ async function cleanOthers(s) {
   goBtn.onclick = () => busy(goBtn, async () => {
     const sel = picks.filter((p) => p.cb.checked).map((p) => p.it);
     if (!sel.length) return;
-    if (!(await confirmBox(`确定处理选中的 ${sel.length} 项？\n\n删除后不能恢复（配置会备份到 VPS 的 /root）。`, '删除'))) return;
+    if (!(await confirmBox(`确定处理选中的 ${sel.length} 项？\n\n${bakCb.checked ? '配置会先备份到 VPS 的 /root。' : '会彻底删除，不留备份，不能恢复。'}`, '删除'))) return;
     logBox.textContent = '';
     try {
-      const r = await api.call('server:cleanOthers', s.id, sel);
+      const r = await api.call('server:cleanOthers', s.id, sel, { backup: bakCb.checked });
       toast(r.backup ? `清理完成，配置备份在 ${r.backup}` : '清理完成', 'ok');
     } catch (e) { toast('清理出错：' + e.message, 'err'); }
     const keepLog = logBox.textContent;

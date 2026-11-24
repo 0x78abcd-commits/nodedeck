@@ -612,7 +612,7 @@ function registerIpc() {
   handle('tools:trace', (host) => tools.traceroute(host, taskLogger('trace')));
   // 清理其他面板 / 代理程序
   handle('server:scanOthers', (id) => deploy.scanOthers(getServer(id)));
-  handle('server:cleanOthers', (id, items) => deploy.cleanOthers(getServer(id), items || [], taskLogger('clean:' + id)));
+  handle('server:cleanOthers', (id, items, opts) => deploy.cleanOthers(getServer(id), items || [], taskLogger('clean:' + id), opts || {}));
   // Reality 目标质量：VPS 上检测（四项 + 握手延迟 + 目标 IP）和这台电脑（国内）能不能连上，一起返回
   handle('server:realityQuality', async (id) => {
     const s = getServer(id);

@@ -833,6 +833,7 @@ async function scanOthers(server) {
     }
     lines.push(`echo "---LISTEN"; (ss -tulnpH 2>/dev/null || netstat -tulnp 2>/dev/null | tail -n +3)`);
     lines.push(`echo "---PIDS"; for p in $( (ss -tulnpH 2>/dev/null || netstat -tulnp 2>/dev/null) | grep -o 'pid=[0-9]*\\|[0-9]*/' | tr -dc '0-9\\n' | sort -u); do [ -d /proc/$p ] || continue; echo "I|$p|$(readlink /proc/$p/exe 2>/dev/null)|$(grep -o '[^/]*\\.service' /proc/$p/cgroup 2>/dev/null | head -1)|$(tr '\\0' ' ' < /proc/$p/cmdline 2>/dev/null | cut -c1-120)"; done`);
+    lines.push(`for f in /root/nodedeck-cleanup-*.tar.gz; do [ -f "$f" ] && echo "B|$f|$(du -k "$f" | cut -f1)"; done`);
     lines.push(`echo "---DOCKER"; command -v docker >/dev/null && docker ps -a --format '{{.ID}}|{{.Names}}|{{.Image}}|{{.Status}}|{{.Ports}}' 2>/dev/null`);
     lines.push('true');
     const out = (await ssh.exec(lines.join('\n'), { timeout: 60000 })).stdout;
@@ -890,12 +891,14 @@ async function scanOthers(server) {
       if (!o.ports.includes(pp)) o.ports.push(pp);
       others.set(key, o);
     }
-    return { apps, containers, others: [...others.values()], at: Date.now() };
+    // 以前清理时留下的备份
+    const backups = out.split('\n').map((l) => l.split('|')).filter((f) => f[0] === 'B' && /^\/root\/nodedeck-cleanup-\d+\.tar\.gz$/.test(f[1])).map((f) => ({ path: f[1], kb: Number(f[2]) || 0 }));
+    return { apps, containers, others: [...others.values()], backups, at: Date.now() };
   });
 }
 
 // 删除选中的：items = [{ kind:'app', id } | { kind:'docker', id } | { kind:'other', unit }]
-async function cleanOthers(server, items, log = () => {}) {
+async function cleanOthers(server, items, log = () => {}, { backup: doBackup = false } = {}) {
   return withSSH(server, async (ssh) => {
     const ts = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 12);
     const backup = `/root/nodedeck-cleanup-${ts}.tar.gz`;
@@ -915,15 +918,18 @@ async function cleanOthers(server, items, log = () => {}) {
         keep.push(...(a.keep || []));
         rmPaths.push(...a.paths);
         cronPats.push(...a.paths);
+      } else if (it.kind === 'backups') {
+        sh.push('echo "▶ 删除以前清理时留下的备份"; for f in /root/nodedeck-cleanup-*.tar.gz; do [ -f "$f" ] && rm -f "$f" && echo "  删除 $f"; done');
       } else if (it.kind === 'docker' && /^[0-9a-f]{6,64}$/.test(it.id)) {
-        sh.push(`echo "▶ 删除 Docker 容器 ${String(it.name || it.id).replace(/[^\w.-]/g, '')}"; docker rm -f ${it.id} >/dev/null 2>&1 && echo "  已删除" || echo "  删除失败"`);
+        const img = /^[\w./:@-]+$/.test(it.image || '') ? it.image : '';
+        sh.push(`echo "▶ 删除 Docker 容器 ${String(it.name || it.id).replace(/[^\w.-]/g, '')}"; docker rm -f -v ${it.id} >/dev/null 2>&1 && echo "  已删除容器和它的匿名数据卷" || echo "  删除失败"${img ? `; docker image rm ${shq(img)} >/dev/null 2>&1 && echo "  已删除镜像 ${img}"` : ''}`);
       } else if (it.kind === 'other' && /^[\w@.:-]+$/.test(it.unit || '') && !/nodedeck|ssh|systemd|docker|containerd/.test(it.unit)) {
         sh.push(`echo "▶ 停用服务 ${it.unit}"; for f in $(unit_files ${shq(it.unit)}); do stop_unit ${shq(it.unit)} "$f"; case "$f" in /etc/systemd/system/*) rm_unit "$f";; esac; done`);
       }
     }
-    // 配置先备份（只打包配置目录，不含程序本身）
+    // 选了备份才打包配置目录（不含程序本身）；默认彻底删除，不留备份
     const keepQ = [...new Set(keep)].map(shq).join(' ');
-    if (keep.length) sh.push(`ex=""; for p in ${keepQ}; do [ -e "$p" ] && ex="$ex $p"; done; if [ -n "$ex" ]; then tar czf ${backup} $ex 2>/dev/null && chmod 600 ${backup} && echo "配置已备份到 ${backup}"; fi`);
+    if (doBackup && keep.length) sh.push(`ex=""; for p in ${keepQ}; do [ -e "$p" ] && ex="$ex $p"; done; if [ -n "$ex" ]; then tar czf ${backup} $ex 2>/dev/null && chmod 600 ${backup} && echo "配置已备份到 ${backup}"; fi`);
     // 删除目录 / 文件（只删上面清单里的路径，绝不碰 NodeDeck 自己的）
     for (const p of [...new Set(rmPaths)]) {
       if (!/^\/(usr|etc|opt|var|root|www)\/[\w./@-]+$/.test(p) || /nodedeck/.test(p)) continue;
@@ -935,7 +941,7 @@ async function cleanOthers(server, items, log = () => {}) {
     let buf = '';
     const r = await ssh.exec(sh.join('\n'), { timeout: 600000, onData: (t) => { buf += t; let i; while ((i = buf.indexOf('\n')) >= 0) { const line = buf.slice(0, i); buf = buf.slice(i + 1); if (line.trim()) log(line); } } });
     if (buf.trim()) log(buf.trim());
-    return { backup: keep.length && r.stdout.includes(backup) ? backup : '', output: r.stdout };
+    return { backup: doBackup && keep.length && r.stdout.includes(backup) ? backup : '', output: r.stdout };
   }, { log });
 }
 
