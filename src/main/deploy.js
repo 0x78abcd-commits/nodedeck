@@ -6,7 +6,6 @@ const crypto = require('crypto');
 const core = require('./core');
 const tools = require('./tools');
 const { withSSH, shq } = require('./ssh');
-const QRCode = require('qrcode');
 
 const DIR = core.REMOTE_DIR;
 const SB_BIN = '/usr/local/bin/nodedeck-sing-box';
@@ -503,7 +502,7 @@ async function pushConfig(ssh, state, server, log = () => {}) {
   await ssh.writeFile(`${DIR}/config.full.json`, JSON.stringify(full, null, 2));
   await ssh.writeFile(`${DIR}/users.json`, JSON.stringify(core.buildAgentUsers(state, server)));
   const subs = core.buildAgentSubs(state, server);
-  for (const sub of Object.values(subs)) if (sub.url) sub.qr = await QRCode.toDataURL(sub.url, { margin: 1, width: 240 });
+  for (const sub of Object.values(subs)) if (sub.url) sub.qr = await tools.qr(sub.url);
   await ssh.writeFile(`${DIR}/subs.json`, JSON.stringify(subs));
   // 校验
   const r = await ssh.exec(`${SB_BIN} check -c ${DIR}/config.full.json`);

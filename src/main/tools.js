@@ -151,12 +151,17 @@ async function socksToQr(text) {
       const auth = p.user ? Buffer.from(`${p.user}:${p.pass}`).toString('base64') + '@' : '';
       const link = `socks://${auth}${h}:${p.port}#${encodeURIComponent(p.name)}`;
       const plain = `socks5://${p.user ? `${encodeURIComponent(p.user)}:${encodeURIComponent(p.pass)}@` : ''}${h}:${p.port}`;
-      out.push({ ok: true, ...p, link, plain, qr: await QRCode.toDataURL(link, { margin: 1, width: 220 }) });
+      out.push({ ok: true, ...p, link, plain, qr: await qr(link) });
     } catch (e) { out.push({ ok: false, input: l, error: e.message }); }
   }
   return out;
 }
 
-function qr(text) { return QRCode.toDataURL(text, { margin: 1, width: 260 }); }
+// 二维码：矢量 SVG（任何缩放下边缘都清晰）、标准的 4 格白边、低纠错（点更大更好扫，屏幕上扫不会有污损）。
+// 以前是 1 格白边的位图，被系统缩放模糊后，链接长的（如 VLESS-Reality）手机常常扫不出来
+async function qr(text) {
+  const svg = await QRCode.toString(String(text), { type: 'svg', margin: 4, errorCorrectionLevel: 'L', color: { dark: '#000000', light: '#ffffff' } });
+  return 'data:image/svg+xml;base64,' + Buffer.from(svg).toString('base64');
+}
 
 module.exports = { ipInfo, portCheck, tcpPing, dnsLookup, traceroute, realityCheck, parseSocks, socksToQr, qr };

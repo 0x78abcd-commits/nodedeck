@@ -1409,7 +1409,7 @@ async function testEntry(e, cell) {
 
 async function showQr(title, text) {
   const src = await api.call('qr', text);
-  modal({ title, body: h('div', { style: { textAlign: 'center' } }, h('img', { class: 'qr', src, style: { width: '260px', height: '260px' } }), h('p', { class: 'mono' }, text), h('p', { class: 'muted', style: { fontSize: '12px' } }, '手机请用较新版 v2rayNG（2.0 以上）/ NekoBox / Clash Meta / Hiddify；Hysteria2、TUIC 太旧的客户端会导入失败或被过滤')), buttons: [{ label: '复制', onClick: () => copy(text) }, { label: '关闭' }] });
+  modal({ title, body: h('div', { style: { textAlign: 'center' } }, h('img', { class: 'qr qr-big', src }), h('p', { class: 'mono', style: { wordBreak: 'break-all', fontSize: '12px' } }, text), h('p', { class: 'muted', style: { fontSize: '12px' } }, '扫不出来时：点「复制」，在手机 v2rayNG 右上角「+」里选「从剪贴板导入」。请用较新版 v2rayNG/ NekoBox / Clash Meta / Hiddify；Hysteria2、TUIC 太旧的客户端会导入失败或被过滤')), buttons: [{ label: '复制', onClick: () => copy(text) }, { label: '关闭' }] });
 }
 
 // ---------- 用户 ----------
