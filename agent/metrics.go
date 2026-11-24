@@ -25,6 +25,11 @@ type Sample struct {
 	Tx   float64            `json:"tx"`   // 字节/秒
 	Load float64            `json:"load"` // 1 分钟负载
 	Lat  map[string]float64 `json:"lat,omitempty"`
+	// 0.7.0 起：三网丢包率（%）和抖动（ms）、TCP 重传率（%）、TCP 连接数
+	Loss map[string]float64 `json:"loss,omitempty"`
+	Jit  map[string]float64 `json:"jit,omitempty"`
+	Retr float64            `json:"retr"`
+	Conn int                `json:"conn"`
 }
 
 type MonthTraffic struct {
@@ -44,6 +49,9 @@ type Metrics struct {
 	lastNet  [2]uint64
 	lastT    time.Time
 	lastLat  map[string]float64
+	lastLoss map[string]float64
+	lastJit  map[string]float64
+	lastSNMP [2]uint64
 	hourBuf  []Sample
 	hourMark int64
 }
@@ -191,11 +199,14 @@ func (a *Agent) saveMetrics() {
 }
 
 func avgSamples(list []Sample, t int64) Sample {
-	s := Sample{T: t, Lat: map[string]float64{}}
+	s := Sample{T: t, Lat: map[string]float64{}, Loss: map[string]float64{}, Jit: map[string]float64{}}
 	if len(list) == 0 {
 		return s
 	}
 	latN := map[string]int{}
+	lossN := map[string]int{}
+	jitN := map[string]int{}
+	conn := 0
 	for _, x := range list {
 		s.CPU += x.CPU
 		s.Mem += x.Mem
@@ -208,6 +219,16 @@ func avgSamples(list []Sample, t int64) Sample {
 				latN[k]++
 			}
 		}
+		for k, v := range x.Loss {
+			s.Loss[k] += v
+			lossN[k]++
+		}
+		for k, v := range x.Jit {
+			s.Jit[k] += v
+			jitN[k]++
+		}
+		s.Retr += x.Retr
+		conn += x.Conn
 	}
 	n := float64(len(list))
 	s.CPU /= n
@@ -218,6 +239,14 @@ func avgSamples(list []Sample, t int64) Sample {
 	for k, c := range latN {
 		s.Lat[k] /= float64(c)
 	}
+	for k, c := range lossN {
+		s.Loss[k] /= float64(c)
+	}
+	for k, c := range jitN {
+		s.Jit[k] /= float64(c)
+	}
+	s.Retr /= n
+	s.Conn = conn / len(list)
 	return s
 }
 
@@ -227,27 +256,41 @@ func (a *Agent) collect(withLatency bool) {
 	now := time.Now()
 	idle, total := readCPU()
 	rx, tx := readNet()
-	var lat map[string]float64
+	var lat, loss, jit map[string]float64
 	if withLatency {
-		lat = map[string]float64{}
+		lat, loss, jit = map[string]float64{}, map[string]float64{}, map[string]float64{}
 		var wg sync.WaitGroup
 		var lmu sync.Mutex
 		for name, host := range a.latTargets() {
 			wg.Add(1)
 			go func(name, host string) {
 				defer wg.Done()
-				v := pingMs(host)
+				// 每个目标连发 10 个 ping（间隔 0.3 秒），同时得到延迟、丢包、抖动
+				r := icmpPing(host, 10, 300*time.Millisecond, 2*time.Second)
 				lmu.Lock()
-				lat[name] = v
-				lmu.Unlock()
+				defer lmu.Unlock()
+				if r.Error != "" { // 没有原始套接字权限（个别容器）：退回老办法，只测延迟
+					lat[name] = pingMs(host)
+					return
+				}
+				if r.Recv > 0 {
+					lat[name] = r.Avg
+				} else {
+					lat[name] = -1
+				}
+				loss[name] = r.Loss
+				jit[name] = r.Jitter
 			}(name, host)
 		}
 		wg.Wait()
 	}
+	snmp := readSNMP()
+	out, retr := snmp["Tcp.OutSegs"], snmp["Tcp.RetransSegs"]
+	conn := readTCPStats().InUse
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if lat != nil {
-		m.lastLat = lat
+		m.lastLat, m.lastLoss, m.lastJit = lat, loss, jit
 	}
 	month := now.In(a.loc()).Format("2006-01")
 	if m.Month.Month != month {
@@ -268,7 +311,10 @@ func (a *Agent) collect(withLatency bool) {
 	}
 	if !m.lastT.IsZero() {
 		secs := now.Sub(m.lastT).Seconds()
-		s := Sample{T: now.Unix(), Mem: readMem(), Load: readLoad(), Lat: m.lastLat}
+		s := Sample{T: now.Unix(), Mem: readMem(), Load: readLoad(), Lat: m.lastLat, Loss: m.lastLoss, Jit: m.lastJit, Conn: conn}
+		if dOut := out - m.lastSNMP[0]; out >= m.lastSNMP[0] && retr >= m.lastSNMP[1] && dOut > 0 && m.lastSNMP[0] > 0 {
+			s.Retr = 100 * float64(retr-m.lastSNMP[1]) / float64(dOut)
+		}
 		if dt := total - m.lastCPU[1]; dt > 0 && total >= m.lastCPU[1] {
 			s.CPU = 100 * (1 - float64(idle-m.lastCPU[0])/float64(dt))
 		}
@@ -291,6 +337,7 @@ func (a *Agent) collect(withLatency bool) {
 		m.hourMark = hour
 		m.hourBuf = append(m.hourBuf, s)
 	}
+	m.lastSNMP = [2]uint64{out, retr}
 	m.lastCPU = [2]uint64{idle, total}
 	m.lastNet = [2]uint64{rx, tx}
 	m.lastT = now

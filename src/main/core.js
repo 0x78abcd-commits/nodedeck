@@ -745,7 +745,7 @@ function serverPorts(state, server) {
     const t = resolveForwardTarget(state, f);
     ports.push({ port: Number(f.listenPort), net: t?.network || 'both' });
   }
-  ports.push({ port: Number(state.settings?.subPort || 2096), net: 'tcp' });
+  ports.push({ port: Number(state.settings?.subPort || 2096), net: 'both' }); // UDP 用于测丢包（带口令的回显）
   return ports;
 }
 

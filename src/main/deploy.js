@@ -171,6 +171,7 @@ function agentConfig(state, server = {}) {
     singbox: SB_BIN,
     service: 'nodedeck-singbox',
     reality: realityAgentCfg(state, server),
+    speedToken: server.speedToken || '',
     alerts: { off: st.alerts?.enabled === false, diskPct: Number(st.alerts?.diskPct) || 0, cpuPct: Number(st.alerts?.cpuPct) || 0, latencyMs: Number(st.alerts?.latencyMs) || 0 },
   };
 }
@@ -372,10 +373,17 @@ async function deployServer(state, server, { resourcesDir, log }) {
     await writeUnits(ssh, server);
     await tuneSmallBox(ssh, state, server, info, log);
 
-    log('开启 BBR、放行防火墙端口 …');
-    await ssh.run(`
-grep -q nodedeck-bbr /etc/sysctl.conf 2>/dev/null || printf '\\n# nodedeck-bbr\\nnet.core.default_qdisc=fq\\nnet.ipv4.tcp_congestion_control=bbr\\n' >> /etc/sysctl.conf
-sysctl -p >/dev/null 2>&1 || true`);
+    // 网络优化：先检测内核和现有设置，只改有依据的几项（BBR + fq、缓冲区、MTU 探测），原值会备份，可以一键恢复
+    if (state.settings?.netAutoTune !== false) {
+      log('检测网络设置并优化（BBR、缓冲区等，原值已备份）…');
+      try {
+        const r = await agentJSON(ssh, `net-tune -c ${DIR}/agent.json`);
+        server.netTunedAt = Date.now();
+        if (r.done?.length) for (const d of r.done) log('  ' + d);
+        else log('  现有设置已经合适，没有改动');
+        if (r.error) log('  ⚠ ' + r.error);
+      } catch (e) { log('⚠ 网络优化没做成（不影响使用）：' + e.message); }
+    }
     log('§reality');
     // 端口：被 VPS 上其它程序占了的，换成优先端口（443 → 8443 → 2053 …）或随机端口
     const busy = await busyTcpPorts(ssh);
@@ -590,9 +598,11 @@ async function serverLogs(server) {
 async function uninstall(server) {
   return withSSH(server, (ssh) => ssh.run(`
 echo '{}' > /tmp/nodedeck-empty.json && ${AGENT_BIN} apply-hops -c /tmp/nodedeck-empty.json >/dev/null 2>&1; rm -f /tmp/nodedeck-empty.json
+# 网络优化恢复成部署前的原值（有备份才会改）
+${AGENT_BIN} net-restore -c ${DIR}/agent.json >/dev/null 2>&1; rm -f /etc/sysctl.d/99-nodedeck-net.conf /etc/modules-load.d/nodedeck-bbr.conf
 ${svcOf(server).remove}
 rm -f ${AGENT_BIN} ${SB_BIN} ${SB_BIN}.old ${SB_BIN}.bad
-rm -rf ${DIR}
+rm -rf ${DIR} /root/.nodedeck-bench
 # NodeDeck 加的 swap、日志限制、BBR 以外的系统改动一并撤销
 if grep -q '^/nodedeck.swap ' /etc/fstab 2>/dev/null; then swapoff /nodedeck.swap 2>/dev/null; sed -i '\#^/nodedeck.swap #d' /etc/fstab; rm -f /nodedeck.swap /etc/sysctl.d/99-nodedeck-swap.conf; fi
 if [ -f /etc/systemd/journald.conf.d/nodedeck.conf ]; then rm -f /etc/systemd/journald.conf.d/nodedeck.conf; systemctl restart systemd-journald 2>/dev/null; fi
@@ -641,6 +651,73 @@ echo "TIME=$(date +%s)"
 }
 
 // 在服务器上测试 Reality 目标域名（延迟应尽量低）
+// 运行 agent 的一个返回 JSON 的命令
+async function agentJSON(ssh, args, timeout = 120000) {
+  const r = await ssh.exec(`${AGENT_BIN} ${args}`, { timeout });
+  try { return JSON.parse(r.stdout.trim().split('\n').pop()); } catch (_) {
+    if (/unknown|未知命令|用法/i.test(r.stdout + r.stderr)) throw new Error('VPS 上的 agent 太旧，先点「同步」升级');
+    throw new Error((r.stderr || r.stdout || '没有返回结果').trim().slice(0, 300));
+  }
+}
+
+// ---------- 网络优化（agent 命令的包装）----------
+const netInfo = (server) => withSSH(server, (ssh) => agentJSON(ssh, `net-info -c ${DIR}/agent.json`));
+const netTune = (server, keys = []) => withSSH(server, (ssh) => agentJSON(ssh, `net-tune -c ${DIR}/agent.json${keys.length ? ' -domains ' + shq(keys.join(',')) : ''}`));
+const netRestore = (server) => withSSH(server, (ssh) => agentJSON(ssh, `net-restore -c ${DIR}/agent.json`));
+const netTrace = (server) => withSSH(server, (ssh) => agentJSON(ssh, `trace -c ${DIR}/agent.json`, 180000));
+const netMtu = (server) => withSSH(server, (ssh) => agentJSON(ssh, `net-mtu -c ${DIR}/agent.json`, 120000));
+const netTcp = (ssh) => agentJSON(ssh, `net-tcp -c ${DIR}/agent.json`);
+const netSetCC = (ssh, cc) => agentJSON(ssh, `net-cc -c ${DIR}/agent.json -text ${shq(cc)}`);
+
+// ---------- 社区测试脚本（NodeQuality / TcpQuality）：在 VPS 后台运行，断开 SSH 也不影响 ----------
+const BENCH_DIR = '/root/.nodedeck-bench';
+const BENCH = {
+  nodequality: (o) => `printf '%s\\n' ${shq(o.hq || 'f')} ${shq(o.iq || 'y')} ${shq(o.nq || 'l')} ${shq(o.bt || 'y')} n n n n | bash <(curl -sL https://run.NodeQuality.com)`,
+  tcpquality: (o) => `bash <(curl -fsSL https://raw.githubusercontent.com/ibsgss/TcpQuality/main/runTcpQuality.sh)${o.speedtest ? ' --speedtest' : ''}${o.v4 ? ' -v4' : ''}`,
+};
+const BENCH_URL = /https?:\/\/(?:www\.)?(?:nodequality\.com|tcpquality\.ibsgss\.uk)\/r\/[A-Za-z0-9_-]+/g;
+
+async function benchStart(server, kind, opts = {}) {
+  if (!BENCH[kind]) throw new Error('未知的测试');
+  return withSSH(server, async (ssh) => {
+    const chk = await ssh.exec(`command -v bash >/dev/null && command -v curl >/dev/null && echo OK; df -Pm /root | awk 'NR==2{print $4}'; [ -f ${BENCH_DIR}/${kind}.pid ] && kill -0 "$(cat ${BENCH_DIR}/${kind}.pid)" 2>/dev/null && echo RUNNING`);
+    if (!chk.stdout.includes('OK')) throw new Error('VPS 上缺少 bash 或 curl（Alpine 可以先 apk add bash curl）');
+    if (chk.stdout.includes('RUNNING')) return { running: true, already: true };
+    const free = Number((chk.stdout.match(/^\d+$/m) || [0])[0]);
+    if (free && free < 1024) throw new Error(`磁盘只剩 ${free}MB，测试脚本需要下载临时系统，至少要 1GB 空闲`);
+    const script = `#!/bin/bash\nexport TERM=xterm LANG=C.UTF-8\ncd ${BENCH_DIR}\n${BENCH[kind](opts)}\necho\necho "[nodedeck] 测试结束（退出码 $?）"\n`;
+    await ssh.run(`mkdir -p ${BENCH_DIR} && chmod 700 ${BENCH_DIR}`);
+    await ssh.writeFile(`${BENCH_DIR}/${kind}.sh`, script, '700');
+    await ssh.run(`cd ${BENCH_DIR} && : > ${kind}.log && (setsid nohup bash ${kind}.sh > ${kind}.log 2>&1 < /dev/null & echo $! > ${kind}.pid)`);
+    return { running: true };
+  });
+}
+
+// 读取后台测试的输出（从 offset 开始），返回去掉颜色码的文本、是否还在运行、报告链接
+async function benchPoll(server, kind, offset = 0) {
+  return withSSH(server, async (ssh) => {
+    const r = await ssh.exec(`f=${BENCH_DIR}/${kind}.log; [ -f "$f" ] || { echo NOLOG; exit 0; }; s=$(wc -c < "$f"); echo "SIZE=$s"; ( [ -f ${BENCH_DIR}/${kind}.pid ] && kill -0 "$(cat ${BENCH_DIR}/${kind}.pid)" 2>/dev/null ) && echo RUN=1 || echo RUN=0; echo ---; tail -c +$(( ${Number(offset) || 0} + 1 )) "$f" | head -c 200000`);
+    if (r.stdout.startsWith('NOLOG')) return { none: true };
+    const [head, ...rest] = r.stdout.split('\n---\n');
+    const size = Number((head.match(/SIZE=(\d+)/) || [])[1] || 0);
+    const running = /RUN=1/.test(head);
+    const raw = rest.join('\n---\n');
+    const text = raw.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '').replace(/\r(?!\n)/g, '\n');
+    const all = (await ssh.exec(`cat ${BENCH_DIR}/${kind}.log 2>/dev/null | tr -d '\\033'`)).stdout;
+    const urls = [...new Set(all.match(BENCH_URL) || [])];
+    return { size, running, text, url: urls[urls.length - 1] || '' };
+  });
+}
+
+async function benchStop(server, kind) {
+  return withSSH(server, (ssh) => ssh.exec(`[ -f ${BENCH_DIR}/${kind}.pid ] && kill -INT -"$(cat ${BENCH_DIR}/${kind}.pid)" 2>/dev/null; kill "$(cat ${BENCH_DIR}/${kind}.pid 2>/dev/null)" 2>/dev/null; true`));
+}
+
+// BBR 和 CUBIC 对比：交替切换拥塞控制，各测几轮下载速度（由调用方测），最后恢复原来的设置
+async function withCC(server, fn) {
+  return withSSH(server, async (ssh) => fn({ setCC: (cc) => netSetCC(ssh, cc), tcp: () => netTcp(ssh), info: () => agentJSON(ssh, `net-info -c ${DIR}/agent.json`) }));
+}
+
 // 「重新优选 Reality 目标」
 async function pickReality(server, log = () => {}) {
   return withSSH(server, (ssh) => pickRealityOn(ssh, server, log));
@@ -701,4 +778,4 @@ async function gateRealityTarget(ssh, server, log, force) {
   log(`✔ Reality 目标 ${rp.sni} 检测通过（TLS 1.3、HTTP/2、X25519、证书有效，${r.ms} ms）`);
 }
 
-module.exports = { swapSize, memLimits, writeUnits, tuneSmallBox, rememberHw, pickReality, adminNotify, realityCheck, deployServer, syncServer, updateSingbox, serverSelfCheck, notifyTest, fetchMetrics, scanReality, serverStatus, fetchStats, resetTraffic, serverLogs, uninstall, testSSH, remoteTlsCheck, agentConfig };
+module.exports = { netInfo, netTune, netRestore, netTrace, netMtu, withCC, benchStart, benchPoll, benchStop, swapSize, memLimits, writeUnits, tuneSmallBox, rememberHw, pickReality, adminNotify, realityCheck, deployServer, syncServer, updateSingbox, serverSelfCheck, notifyTest, fetchMetrics, scanReality, serverStatus, fetchStats, resetTraffic, serverLogs, uninstall, testSSH, remoteTlsCheck, agentConfig };

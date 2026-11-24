@@ -60,7 +60,9 @@ type Config struct {
 	VPSExpireAt    int64             `json:"vpsExpireAt"`
 	// 0.6.0 起
 	Reality *RealityCfg `json:"reality"`
-	Alerts  AlertCfg    `json:"alerts"`
+	// 0.7.0 起：测速口令（桌面端测速、UDP 丢包测试用，防止别人拿来刷流量）
+	SpeedToken string   `json:"speedToken"`
+	Alerts     AlertCfg `json:"alerts"`
 }
 
 type User struct {
@@ -698,6 +700,8 @@ func run(cfgPath string) {
 
 	pub := http.NewServeMux()
 	pub.HandleFunc("/sub/", a.handleSub)
+	pub.HandleFunc("/nd-speed/", a.handleSpeed)
+	go a.udpEcho()
 	pub.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { http.NotFound(w, r) })
 	go func() {
 		log.Fatal((&http.Server{Addr: a.cfg.SubListen, Handler: pub, ReadHeaderTimeout: 10 * time.Second}).ListenAndServe())
@@ -847,6 +851,52 @@ func main() {
 		adminCall(*cfgPath, "/admin/notify-test")
 	case "check-reality":
 		checkRealityCmd(*domains)
+	case "net-info":
+		printJSON(collectNetInfo(cfgDataDir(*cfgPath)))
+	case "net-tune":
+		var keys []string
+		if *domains != "" {
+			keys = strings.Split(*domains, ",")
+		}
+		ni, done, err := applyTune(cfgDataDir(*cfgPath), keys)
+		res := map[string]any{"info": ni, "done": done}
+		if err != nil {
+			res["error"] = err.Error()
+		}
+		printJSON(res)
+	case "net-restore":
+		done, err := restoreTune(cfgDataDir(*cfgPath))
+		res := map[string]any{"done": done, "info": collectNetInfo(cfgDataDir(*cfgPath))}
+		if err != nil {
+			res["error"] = err.Error()
+		}
+		printJSON(res)
+	case "net-cc":
+		if err := setCC(*text); err != nil {
+			printJSON(map[string]string{"error": err.Error()})
+		} else {
+			printJSON(map[string]string{"cc": sysctlGet("net.ipv4.tcp_congestion_control")})
+		}
+	case "net-tcp":
+		printJSON(readTCPStats())
+	case "trace":
+		printJSON(traceAll())
+	case "net-mtu":
+		type mtuRes struct {
+			Name  string `json:"name"`
+			MTU   int    `json:"mtu"`
+			Error string `json:"error,omitempty"`
+		}
+		var out []mtuRes
+		for _, t := range []struct{ n, ip string }{{"电信", "202.96.209.133"}, {"联通", "210.22.97.1"}, {"移动", "211.136.112.200"}} {
+			m, err := pathMTU(t.ip)
+			r := mtuRes{Name: t.n, MTU: m}
+			if err != nil {
+				r.Error = err.Error()
+			}
+			out = append(out, r)
+		}
+		printJSON(map[string]any{"iface": readIface(defaultIface()), "paths": out})
 	case "pick-reality":
 		pickRealityCmd(*selfIP, *domains)
 	case "gencert":
@@ -915,4 +965,18 @@ func shadowrocketSub(v2ray string, up, down, total, expire int64) string {
 		st += " · 到期 " + time.Unix(expire, 0).Format("2006-01-02")
 	}
 	return base64.StdEncoding.EncodeToString([]byte(st + "\n" + string(raw)))
+}
+
+func printJSON(v any) {
+	b, _ := json.Marshal(v)
+	fmt.Println(string(b))
+}
+
+// 读 agent.json 里的数据目录（CLI 用）
+func cfgDataDir(cfgPath string) string {
+	var c Config
+	if readJSON(cfgPath, &c) == nil && c.DataDir != "" {
+		return c.DataDir
+	}
+	return "/etc/nodedeck"
 }

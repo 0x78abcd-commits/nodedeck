@@ -5,6 +5,7 @@ const { app, BrowserWindow, ipcMain, net, session, shell, dialog, Menu, nativeTh
 const core = require('./core');
 const tools = require('./tools');
 const deploy = require('./deploy');
+const netlab = require('./netlab');
 const nodetest = require('./nodetest');
 const diagnose = require('./diagnose');
 const links = require('./links');
@@ -431,6 +432,105 @@ function registerIpc() {
     store.upsert('users', { id: userId, tempSubs: (u.tempSubs || []).filter((t) => t.token !== token) });
     for (const x of state().servers) if (x.deployedAt && core.userHasServer(u, x.id)) { try { await syncOne(x.id, () => {}); } catch (_) { /* ignore */ } }
     return true;
+  });
+  // ---------- 网络优化 ----------
+  const netSave = (id, patch) => { const cur = getServer(id); store.upsert('servers', { id, netLab: { ...(cur.netLab || {}), ...patch } }); return getServer(id).netLab; };
+  const netLog = (id) => taskLogger('net:' + id);
+  // 测速口令：第一次测速时生成并同步到 VPS（agent 用它校验测速请求）
+  async function ensureSpeedToken(id) {
+    if (getServer(id).speedToken) return;
+    store.upsert('servers', { id, speedToken: core.randId(32) });
+    netLog(id)('第一次测速：先把测速口令同步到 VPS …');
+    await syncOne(id, netLog(id));
+  }
+  handle('net:info', async (id) => netSave(id, { info: { ...(await deploy.netInfo(getServer(id))), at: Date.now() } }));
+  handle('net:tune', async (id, keys) => {
+    const r = await deploy.netTune(getServer(id), keys || []);
+    store.upsert('servers', { id, netTunedAt: Date.now() });
+    netSave(id, { info: { ...r.info, at: Date.now() } });
+    return r;
+  });
+  handle('net:restore', async (id) => {
+    const r = await deploy.netRestore(getServer(id));
+    netSave(id, { info: { ...r.info, at: Date.now() } });
+    return r;
+  });
+  handle('net:trace', async (id) => netSave(id, { trace: { list: await deploy.netTrace(getServer(id)), at: Date.now() } }));
+  handle('net:traceForward', async (id) => netSave(id, { fwd: { ...(await netlab.forwardTrace(getServer(id).host)), at: Date.now() } }));
+  handle('net:mtu', async (id) => netSave(id, { mtu: { ...(await deploy.netMtu(getServer(id))), at: Date.now() } }));
+  handle('net:speed', async (id) => {
+    await ensureSpeedToken(id);
+    const r = await netlab.speedTest(state(), getServer(id));
+    if (r.down?.error && r.up?.error) throw new Error(`测速失败：${r.down.error}。VPS 的订阅端口可能没放行，或者 agent 还是旧版（先点「同步」）`);
+    return netSave(id, { speed: r });
+  });
+  handle('net:udp', async (id) => {
+    await ensureSpeedToken(id);
+    return netSave(id, { udp: await netlab.udpTest(state(), getServer(id)) });
+  });
+  handle('net:peak', async (id) => {
+    const m = await deploy.fetchMetrics(getServer(id), '7d');
+    return { report: netlab.peakReport(m.series, state().settings.timezone || 'Asia/Shanghai'), hours: (m.series || []).length, now: m.now };
+  });
+  handle('net:advice', (id) => { const s = getServer(id); return netlab.quicAdvice(s, s.netLab?.udp, s.netLab?.speed); });
+  handle('net:fixQuic', async (id, action) => {
+    const s = getServer(id);
+    const hy = { ...s.protocols.hysteria2 };
+    if (action === 'antiqos') { if (!hy.obfs) hy.obfs = core.randId(16); if (!hy.hopPorts) hy.hopPorts = '20000-30000'; }
+    else if (action === 'hycap0') { hy.upMbps = 0; hy.downMbps = 0; }
+    else throw new Error('未知操作');
+    store.upsert('servers', { id, protocols: { ...s.protocols, hysteria2: hy } });
+    const errs = core.checkPortConflicts(state(), getServer(id));
+    if (errs.length) { store.upsert('servers', { id, protocols: s.protocols }); throw new Error(errs.join('；')); }
+    await syncOne(id, netLog(id));
+    return true;
+  });
+  // BBR 和 CUBIC 对比：交替切换，每轮从 VPS 下载 8 秒，比较速度、首字节时间和重传率；最后恢复原来的设置
+  handle('net:compare', async (id, rounds = 3) => {
+    await ensureSpeedToken(id);
+    const srv = getServer(id);
+    const base = netlab.speedBase(state(), srv);
+    const log = netLog(id);
+    const res = await deploy.withCC(srv, async ({ setCC, tcp, info }) => {
+      const ni = await info();
+      if (!ni.bbrSupport) throw new Error('这台的内核不支持 BBR，没法对比：' + (ni.bbrNote || ''));
+      const orig = ni.cc;
+      const out = { bbr: [], cubic: [], orig };
+      try {
+        const order = [];
+        for (let i = 0; i < rounds; i++) order.push(i % 2 ? 'bbr' : 'cubic', i % 2 ? 'cubic' : 'bbr');
+        for (const [n, cc] of order.entries()) {
+          const r = await setCC(cc);
+          if (r.error) throw new Error(`切换到 ${cc} 失败：${r.error}（容器 VPS 通常不能改）`);
+          const t0 = await tcp();
+          const d = await netlab.downloadTest(base, 8);
+          const t1 = await tcp();
+          const out1 = t1.outSegs - t0.outSegs; const re1 = t1.retransSegs - t0.retransSegs;
+          const row = { mbps: d.mbps || 0, ttfb: d.ttfbMs || 0, retr: out1 > 0 ? (100 * re1) / out1 : 0, error: d.error };
+          out[cc].push(row);
+          log(`第 ${n + 1}/${order.length} 轮 ${cc.toUpperCase()}：${d.error ? '失败 ' + d.error : `${row.mbps.toFixed(1)} Mbps，重传 ${row.retr.toFixed(2)}%`}`);
+        }
+      } finally {
+        await setCC(orig).catch(() => {});
+      }
+      return out;
+    });
+    const avg = (v, k) => { const x = v.filter((r) => !r.error); return x.length ? x.reduce((a, r) => a + r[k], 0) / x.length : 0; };
+    const sum = { bbr: { mbps: avg(res.bbr, 'mbps'), retr: avg(res.bbr, 'retr'), ttfb: avg(res.bbr, 'ttfb') }, cubic: { mbps: avg(res.cubic, 'mbps'), retr: avg(res.cubic, 'retr'), ttfb: avg(res.cubic, 'ttfb') } };
+    const better = sum.bbr.mbps > sum.cubic.mbps * 1.15 ? 'bbr' : sum.cubic.mbps > sum.bbr.mbps * 1.15 ? 'cubic' : '';
+    return netSave(id, { compare: { ...res, sum, better, at: Date.now() } });
+  });
+  // ---------- 社区测试脚本 ----------
+  handle('bench:start', (id, kind, opts) => deploy.benchStart(getServer(id), kind, opts));
+  handle('bench:stop', (id, kind) => deploy.benchStop(getServer(id), kind));
+  handle('bench:poll', async (id, kind, offset) => {
+    const r = await deploy.benchPoll(getServer(id), kind, offset);
+    if (r.url) {
+      const s = getServer(id);
+      const list = s.benchReports || [];
+      if (!list.some((x) => x.url === r.url)) store.upsert('servers', { id, benchReports: [{ kind, url: r.url, at: Date.now() }, ...list].slice(0, 30) });
+    }
+    return r;
   });
   handle('server:metrics', (id, range) => deploy.fetchMetrics(getServer(id), range));
   handle('tools:realityScan', (serverId) => deploy.scanReality(getServer(serverId)));

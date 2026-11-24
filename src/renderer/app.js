@@ -273,6 +273,7 @@ async function viewServers(v) {
         h('button', { class: 'small', onclick: () => editServer(s) }, '编辑'),
         h('button', { class: 'small', onclick: (e) => menu(e.currentTarget, [
           s.deployedAt && { label: '监控面板', onClick: () => showMonitor(s) },
+          s.deployedAt && { label: '网络优化（线路 / 测速 / BBR）', onClick: () => showNetLab(s) },
           s.deployedAt && { label: '刷新状态', onClick: async () => { await api.call('server:status', s.id); toast('已刷新', 'ok'); render(); } },
           s.deployedAt && { label: '查看日志', onClick: () => showLogs(s) },
           s.deployedAt && { label: '升级 sing-box 内核', onClick: async () => { toast('正在检查内核更新…'); const m = await api.call('server:updateSingbox', s.id); toast(m, 'ok'); render(); } },
@@ -758,6 +759,229 @@ function showMonitor(s) {
   };
   modal({ title: `监控 · ${s.name}`, wide: true, body, buttons: [{ label: '刷新', close: false, onClick: load }, { label: '关闭' }] });
   load();
+}
+
+// ---------- 网络优化 ----------
+const NET_TABS = [['overview', '内核设置'], ['route', '线路'], ['quality', '质量 / 晚高峰'], ['speed', '测速 / UDP'], ['compare', 'BBR 对比'], ['bench', '社区测试']];
+let netTab = 'overview';
+const fmtMbps = (v) => (v == null ? '—' : v >= 100 ? v.toFixed(0) + ' Mbps' : v.toFixed(1) + ' Mbps');
+const fmtPct = (v, d = 1) => (v == null ? '—' : v.toFixed(d) + '%');
+const fmtMs = (v) => (v == null || v < 0 ? '—' : v.toFixed(0) + ' ms');
+const netAgo = (t) => (t ? fmtDate(t) : '');
+
+function showNetLab(srv) {
+  const id = srv.id;
+  const body = h('div', {});
+  const logBox = h('pre', { class: 'log hidden', style: { maxHeight: '140px', marginTop: '12px' } });
+  const off = api.on('task-log', (m) => {
+    if (m.task !== 'net:' + id) return;
+    logBox.classList.remove('hidden'); logBox.textContent += m.line + '\n'; logBox.scrollTop = logBox.scrollHeight;
+  });
+  let poll = null;
+  const S1 = () => S.servers.find((x) => x.id === id) || srv;
+  const lab = () => S1().netLab || {};
+  const run = (btn, fn) => busy(btn, async () => { await fn(); await reload(); draw(); });
+  const note = (t) => h('p', { class: 'muted', style: { fontSize: '12px', margin: '6px 0 0' } }, t);
+  const tabs = h('div', { class: 'tabs' });
+  const pane = h('div', {});
+  body.append(tabs, pane, logBox);
+
+  function draw() {
+    if (poll && netTab !== 'bench') { clearInterval(poll); poll = null; }
+    tabs.innerHTML = '';
+    for (const [k, l] of NET_TABS) tabs.append(h('a', { class: netTab === k ? 'active' : '', onclick: () => { netTab = k; draw(); } }, l));
+    pane.innerHTML = '';
+    ({ overview, route, quality, speed, compare, bench })[netTab]();
+  }
+
+  // 1. 内核设置
+  function overview() {
+    const ni = lab().info;
+    const top = h('div', { class: 'toolbar' }, h('div', { class: 'muted' }, ni ? `检测时间 ${netAgo(ni.at)}` : '还没检测过'), h('div', { class: 'spacer' }),
+      h('button', { class: ni ? '' : 'primary', onclick: (e) => run(e.currentTarget, () => api.call('net:info', id)) }, ni ? '重新检测' : '检测'));
+    pane.append(top);
+    if (!ni) { pane.append(note('会读取内核版本、拥塞控制、发包队列、网卡、IPv4 / IPv6 和 TCP 重传情况，只读不改。')); return; }
+    const kv2 = (k, v) => [h('div', { class: 'k' }, k), h('div', {}, v)];
+    pane.append(h('div', { class: 'card' }, h('div', { class: 'kv' },
+      kv2('系统内核', ni.kernel + (ni.container ? `（${ni.virt} 容器：大部分内核参数由宿主机决定）` : '')),
+      kv2('BBR', h('span', { class: 'tag ' + (ni.cc === 'bbr' ? 'ok' : ni.bbrSupport ? 'warn' : 'bad') }, ni.bbrNote)),
+      kv2('拥塞控制', `${ni.cc}（可用：${(ni.ccAvail || []).join('、')}）`),
+      kv2('发包队列', `${ni.qdisc}${ni.iface?.qdisc ? `，网卡当前 ${ni.iface.qdisc}` : ''}`),
+      kv2('网卡', `${ni.iface?.name || '?'} · ${ni.iface?.driver || ''} · MTU ${ni.iface?.mtu || '?'} · ${ni.iface?.txQueues || 1} 个发送队列${ni.iface?.speed ? ' · ' + ni.iface.speed : ''}`),
+      kv2('IPv4 / IPv6', `${ni.ipv4 ? '有' : '无'} / ${ni.ipv6 ? '有' : '无'}`),
+      kv2('TCP 重传率', `${fmtPct(ni.tcp?.retransPct, 2)}（开机以来）${ni.tcp?.retransPct > 2 ? ' — 偏高，线路可能有丢包' : ''}`),
+      kv2('TCP 连接', `${ni.tcp?.established || 0} 个已建立 · ${ni.tcp?.timeWait || 0} 个等待关闭`))));
+    const pending = (ni.items || []).filter((x) => x.apply);
+    const cbs = {};
+    const list = h('div', { class: 'card' }, h('h3', {}, pending.length ? `建议调整 ${pending.length} 项` : '设置已经合适'),
+      note('只改有依据的几项。改之前会备份原值，随时可以「恢复原始设置」。勾掉的不会改。'));
+    for (const it of ni.items || []) {
+      const cb = it.apply ? h('input', { type: 'checkbox', checked: true }) : null;
+      if (cb) cbs[it.key] = cb;
+      list.append(h('div', { class: 'diag-step' },
+        it.apply ? h('label', { style: { gridRow: 'span 2' } }, cb, ' 改') : h('span', { class: 'tag ok' }, '合适'),
+        h('div', {}, h('b', {}, it.name), ' ', h('span', { class: 'mono muted' }, it.apply ? `${it.cur} → ${it.want}` : it.cur),
+          h('div', { class: 'muted', style: { fontSize: '12px', marginTop: '2px' } }, it.why))));
+    }
+    list.append(h('div', { class: 'toolbar', style: { marginTop: '12px', marginBottom: 0 } },
+      pending.length ? h('button', { class: 'primary', onclick: (e) => run(e.currentTarget, async () => {
+        const keys = Object.entries(cbs).filter(([, c]) => c.checked).map(([k]) => k);
+        if (!keys.length) { toast('没有勾选', 'warn'); return; }
+        const r = await api.call('net:tune', id, keys);
+        toast((r.done?.length ? '已调整：\n' + r.done.join('\n') : '没有改动') + (r.error ? '\n' + r.error : ''), r.error ? 'warn' : 'ok');
+      }) }, '应用勾选的调整') : null,
+      ni.backup ? h('button', { onclick: (e) => run(e.currentTarget, async () => {
+        if (!(await confirmBox('把网络设置恢复成第一次调整前的样子？'))) return;
+        const r = await api.call('net:restore', id);
+        toast(r.error || (r.done?.length ? '已恢复：\n' + r.done.join('\n') : '已经是原始设置'), r.error ? 'warn' : 'ok');
+      }) }, '恢复原始设置') : null));
+    pane.append(list);
+  }
+
+  // 2. 线路
+  function route() {
+    const tr = lab().trace; const fw = lab().fwd;
+    const lineTag = (l) => h('span', { class: 'tag ' + (/GIA|9929|CMIN2|CMI/.test(l) ? 'ok' : /未识别/.test(l) ? '' : /GT|10099/.test(l) ? 'blue' : 'warn') }, l);
+    const hopsLine = (hops) => h('div', { class: 'mono muted', style: { fontSize: '11px', marginTop: '4px', wordBreak: 'break-all' } }, (hops || []).map((x) => `${x.ip}${x.ms ? ` ${x.ms.toFixed(0)}ms` : ''}`).join(' → '));
+    const box1 = h('div', { class: 'card' }, h('div', { class: 'toolbar' }, h('h3', { style: { margin: 0 } }, '回程（VPS → 国内三网）'), h('div', { class: 'spacer' }), tr ? h('span', { class: 'muted' }, netAgo(tr.at)) : null,
+      h('button', { class: tr ? '' : 'primary', onclick: (e) => run(e.currentTarget, () => api.call('net:trace', id)) }, tr ? '重新测' : '开始测（约 30 秒）')),
+      note('从 VPS 到北京、上海、广州的电信 / 联通 / 移动做路由追踪，按经过的骨干网判断线路。回程决定下载速度，最重要。'));
+    if (tr) {
+      const tb = h('tbody');
+      for (const r of tr.list || []) {
+        const det = h('tr', { class: 'hidden' }, h('td', { colspan: 4 }, hopsLine(r.hops)));
+        tb.append(h('tr', {}, h('td', {}, r.name), h('td', {}, r.error ? h('span', { class: 'tag bad' }, '失败') : lineTag(r.line)), h('td', { class: 'muted' }, r.error || r.lineTip),
+          h('td', {}, r.hops?.length ? h('button', { class: 'small', onclick: () => det.classList.toggle('hidden') }, `${r.hops.length} 跳`) : '')), det);
+      }
+      box1.append(h('table', { style: { marginTop: '10px' } }, h('thead', {}, h('tr', {}, ['目标', '线路', '说明', ''].map((t) => h('th', {}, t)))), tb));
+    }
+    const box2 = h('div', { class: 'card' }, h('div', { class: 'toolbar' }, h('h3', { style: { margin: 0 } }, '去程（你的电脑 → VPS）'), h('div', { class: 'spacer' }), fw ? h('span', { class: 'muted' }, netAgo(fw.at)) : null,
+      h('button', { onclick: (e) => run(e.currentTarget, () => api.call('net:traceForward', id)) }, fw ? '重新测' : '开始测（约 1 分钟）')),
+      note('用 Windows 自带的路由追踪。去程决定上传和延迟。开着代理软件的 TUN / 全局模式会测成代理的路线，先关掉。'));
+    if (fw) box2.append(fw.error ? h('p', {}, h('span', { class: 'tag bad' }, '失败'), ' ', fw.error) : h('div', { style: { marginTop: '8px' } }, lineTag(fw.line), ' ', h('span', { class: 'muted' }, fw.lineTip), hopsLine(fw.hops)));
+    pane.append(box1, box2);
+  }
+
+  // 3. 质量 / 晚高峰
+  function quality() {
+    const out = h('div', {});
+    const mtu = lab().mtu;
+    pane.append(h('div', { class: 'card' }, h('h3', {}, '三网延迟、丢包、抖动：平时 vs 晚高峰'), note('VPS 每 5 分钟往国内三网各发 10 个 ping，这里汇总最近 7 天。晚高峰按 20:00–23:59 算。数据要攒一两天才准。'), out));
+    out.append(h('p', { class: 'muted' }, h('span', { class: 'spin' }), ' 读取中…'));
+    api.call('net:peak', id).then((r) => {
+      out.innerHTML = '';
+      const keys = Object.keys(r.report || {});
+      if (!keys.length) { out.append(note('还没有数据：需要 0.7.0 以上的 agent（点「同步」升级），运行几个小时后再看。')); return; }
+      const cell = (a, b, f, badAt) => { const worse = a != null && b != null && b > a * 1.3 && b > badAt; return h('td', {}, f(a), ' / ', h('span', { style: { color: worse ? 'var(--danger)' : '' } }, f(b))); };
+      out.append(h('table', {}, h('thead', {}, h('tr', {}, ['', '延迟（平时 / 晚高峰）', '丢包', '抖动'].map((t) => h('th', {}, t)))),
+        h('tbody', {}, keys.map((k) => { const x = r.report[k]; return h('tr', {}, h('td', {}, k), cell(x.off.lat, x.peak.lat, fmtMs, 20), cell(x.off.loss, x.peak.loss, (v) => fmtPct(v), 1), cell(x.off.jit, x.peak.jit, fmtMs, 5)); }))));
+      if (r.now) out.append(note(`当前 TCP 重传率 ${fmtPct(r.now.retr, 2)} · TCP 连接 ${r.now.conn ?? '—'} 个（重传率持续高于 2% 说明线路丢包多）`));
+    }).catch((e) => { out.innerHTML = ''; out.append(h('p', {}, h('span', { class: 'tag bad' }, '读取失败'), ' ', e.message)); });
+    const mbox = h('div', { class: 'card' }, h('div', { class: 'toolbar' }, h('h3', { style: { margin: 0 } }, '路径 MTU'), h('div', { class: 'spacer' }), mtu ? h('span', { class: 'muted' }, netAgo(mtu.at)) : null,
+      h('button', { onclick: (e) => run(e.currentTarget, () => api.call('net:mtu', id)) }, mtu ? '重新测' : '开始测')),
+      note('测 VPS 到三网能通过的最大包。小于 1500 说明中间有隧道之类的设备，已开启的「路径 MTU 探测」会自动处理，一般不用管。'));
+    if (mtu) mbox.append(h('div', { class: 'kv', style: { marginTop: '8px' } }, h('div', { class: 'k' }, '网卡 MTU'), h('div', {}, mtu.iface?.mtu || '?'),
+      (mtu.paths || []).flatMap((p) => [h('div', { class: 'k' }, `到${p.name}`), h('div', {}, p.error ? h('span', { class: 'muted' }, p.error) : `${p.mtu}${p.mtu < 1500 ? '（比 1500 小）' : ''}`)])));
+    pane.append(mbox);
+  }
+
+  // 4. 测速 / UDP
+  function speed() {
+    const sp = lab().speed; const ud = lab().udp;
+    pane.append(note('测的是你这台电脑到 VPS 这一段，也就是用户实际走的路。测之前关掉代理软件的 TUN / 全局模式。每次测速最多消耗 VPS 约 250MB 流量（速度越快用得越多）。'));
+    const b1 = h('div', { class: 'card' }, h('div', { class: 'toolbar' }, h('h3', { style: { margin: 0 } }, 'TCP 速度'), h('div', { class: 'spacer' }), sp ? h('span', { class: 'muted' }, netAgo(sp.at)) : null,
+      h('button', { class: sp ? '' : 'primary', onclick: (e) => run(e.currentTarget, () => api.call('net:speed', id)) }, sp ? '重新测' : '开始测（约 20 秒）')));
+    if (sp) b1.append(h('div', { class: 'statstrip', style: { gridTemplateColumns: 'repeat(3, 1fr)', marginTop: '10px', marginBottom: 0 } },
+      h('div', {}, h('div', { class: 'n' }, sp.down?.error ? '—' : fmtMbps(sp.down?.mbps).replace(' Mbps', ''), h('small', {}, ' Mbps')), h('div', { class: 'l' }, sp.down?.error || '下载（VPS → 你）')),
+      h('div', {}, h('div', { class: 'n' }, sp.up?.error ? '—' : fmtMbps(sp.up?.mbps).replace(' Mbps', ''), h('small', {}, ' Mbps')), h('div', { class: 'l' }, sp.up?.error || '上传（你 → VPS）')),
+      h('div', {}, h('div', { class: 'n' }, sp.down?.ttfbMs ?? '—', h('small', {}, ' ms')), h('div', { class: 'l' }, '首字节时间'))));
+    const b2 = h('div', { class: 'card' }, h('div', { class: 'toolbar' }, h('h3', { style: { margin: 0 } }, 'UDP 丢包 / 抖动（Hysteria2、TUIC 走 UDP）'), h('div', { class: 'spacer' }), ud ? h('span', { class: 'muted' }, netAgo(ud.at)) : null,
+      h('button', { class: ud ? '' : 'primary', onclick: (e) => run(e.currentTarget, () => api.call('net:udp', id)) }, ud ? '重新测' : '开始测（约 7 秒）')),
+      note('每 20 毫秒发一个 1200 字节的包（和 QUIC 包差不多大），一共 250 个，看回来多少。'));
+    if (ud) b2.append(ud.error && !ud.recv ? h('p', {}, h('span', { class: 'tag bad' }, '不通'), ' ', ud.error) : h('div', { class: 'statstrip', style: { marginTop: '10px', marginBottom: 0 } },
+      h('div', {}, h('div', { class: 'n', style: { color: ud.loss >= 10 ? 'var(--danger)' : ud.loss >= 3 ? 'var(--warn)' : '' } }, ud.loss.toFixed(1), h('small', {}, ' %')), h('div', { class: 'l' }, `丢包（${ud.recv}/${ud.sent}）`)),
+      h('div', {}, h('div', { class: 'n' }, ud.avg.toFixed(0), h('small', {}, ' ms')), h('div', { class: 'l' }, `延迟（最低 ${ud.min.toFixed(0)}，95% ${ud.p95.toFixed(0)}）`)),
+      h('div', {}, h('div', { class: 'n' }, ud.jitter.toFixed(1), h('small', {}, ' ms')), h('div', { class: 'l' }, '抖动')),
+      h('div', {}, h('div', { class: 'n' }, ud.maxBurst), h('div', { class: 'l' }, '最多连续丢包'))));
+    const b3 = h('div', { class: 'card' }, h('h3', {}, 'Hysteria2 / TUIC 建议'));
+    if (!ud) b3.append(note('先做一次 UDP 测试（最好也测一下 TCP 速度），这里会根据结果给建议。'));
+    else api.call('net:advice', id).then((tips) => {
+      for (const t of tips) b3.append(h('div', { style: { margin: '6px 0' } }, h('span', { class: 'tag ' + ({ ok: 'ok', warn: 'warn', bad: 'bad', info: 'blue' }[t.level] || '') }, { ok: '正常', warn: '注意', bad: '问题', info: '建议' }[t.level] || ''), ' ', t.text,
+        t.action ? [' ', h('button', { class: 'small', onclick: (e) => run(e.currentTarget, async () => {
+          if (t.action === 'antiqos' && !(await confirmBox('给 Hysteria2 开启 salamander 混淆和端口跳跃（20000-30000）？改完会同步到 VPS，用户要刷新订阅。'))) return;
+          await api.call('net:fixQuic', id, t.action); toast('已修改并同步，用户刷新订阅即可', 'ok');
+        }) }, t.action === 'antiqos' ? '开启混淆 + 端口跳跃' : '改成不限')] : null));
+    }).catch((e) => b3.append(h('p', {}, e.message)));
+    pane.append(b1, b2, b3);
+  }
+
+  // 5. BBR 对比
+  function compare() {
+    const c = lab().compare;
+    const box = h('div', { class: 'card' }, h('div', { class: 'toolbar' }, h('h3', { style: { margin: 0 } }, 'BBR 和 CUBIC 对比'), h('div', { class: 'spacer' }), c ? h('span', { class: 'muted' }, netAgo(c.at)) : null,
+      h('button', { class: c ? '' : 'primary', onclick: (e) => run(e.currentTarget, async () => {
+        if (!(await confirmBox('交替切换 BBR 和 CUBIC，各测 3 轮下载（每轮 8 秒），大约 1 分半钟，消耗 VPS 约 200–500MB 流量。测试期间新建的连接会用到正在测的那种算法，测完自动恢复原设置。开始？'))) return;
+        await api.call('net:compare', id, 3);
+      }) }, c ? '重新对比' : '开始对比')),
+      note('两种算法交替测，减少网速随时间波动带来的误差。差距超过 15% 才算明显。只测 TCP（BBR 和 Hysteria2 / TUIC 无关）。'));
+    if (c) {
+      const row = (k, name) => h('tr', {}, h('td', {}, h('b', {}, name), c.orig === k ? h('span', { class: 'muted' }, '（原设置）') : ''), h('td', {}, fmtMbps(c.sum[k].mbps)), h('td', {}, fmtPct(c.sum[k].retr, 2)), h('td', {}, fmtMs(c.sum[k].ttfb)), h('td', { class: 'muted mono', style: { fontSize: '11px' } }, c[k].map((r) => r.error ? '失败' : r.mbps.toFixed(1)).join(' / ')));
+      box.append(h('table', { style: { marginTop: '10px' } }, h('thead', {}, h('tr', {}, ['', '平均速度', '重传率', '首字节', '每轮速度'].map((t) => h('th', {}, t)))), h('tbody', {}, row('bbr', 'BBR'), row('cubic', 'CUBIC'))));
+      const ni = lab().info;
+      const msg = c.better === 'bbr' ? `BBR 明显更快（快 ${((c.sum.bbr.mbps / Math.max(0.1, c.sum.cubic.mbps) - 1) * 100).toFixed(0)}%），建议启用。` : c.better === 'cubic' ? 'CUBIC 在这条线路上反而更快，建议保持 CUBIC（如果之前开过 BBR，可以在「内核设置」里恢复原始设置）。' : '两者差距不到 15%，在误差范围内。长距离线路一般建议 BBR，晚高峰丢包多时差距会更明显，可以晚上再测一次。';
+      box.append(h('p', { style: { marginBottom: 0 } }, h('b', {}, '结论：'), msg, ' ',
+        c.better === 'bbr' && ni?.cc !== 'bbr' ? h('button', { class: 'small primary', onclick: (e) => run(e.currentTarget, async () => { const r = await api.call('net:tune', id, ['net.ipv4.tcp_congestion_control', 'net.core.default_qdisc']); toast(r.done?.join('\n') || '已启用', 'ok'); await api.call('net:info', id); }) }, '启用 BBR') : null));
+    }
+    pane.append(box);
+  }
+
+  // 6. 社区测试
+  function bench() {
+    const reports = S1().benchReports || [];
+    const mk = (kind, title, desc, optsEl, getOpts) => {
+      const pre = h('pre', { class: 'log hidden', style: { maxHeight: '260px', marginTop: '10px' } });
+      const st = h('span', { class: 'muted' });
+      let offset = 0;
+      const start = h('button', { class: 'primary' }, '开始测试');
+      const stop = h('button', { class: 'hidden' }, '停止');
+      const tick = async () => {
+        try {
+          const r = await api.call('bench:poll', id, kind, offset);
+          if (r.none) return false;
+          if (r.text) { pre.classList.remove('hidden'); pre.textContent += r.text; pre.scrollTop = pre.scrollHeight; }
+          offset = r.size;
+          st.textContent = r.running ? '运行中…（可以关掉窗口，VPS 上会继续跑）' : r.url ? '已完成' : '已结束';
+          stop.classList.toggle('hidden', !r.running); start.disabled = r.running;
+          if (r.url && !reports.some((x) => x.url === r.url)) { reports.unshift({ kind, url: r.url, at: Date.now() }); await reload(); draw(); }
+          return r.running;
+        } catch (e) { st.textContent = e.message; return false; }
+      };
+      start.onclick = (e) => busy(e.currentTarget, async () => {
+        await api.call('bench:start', id, kind, getOpts());
+        pre.textContent = ''; offset = 0; st.textContent = '已启动…';
+        if (!poll) poll = setInterval(async () => { if (!(await tick())) { clearInterval(poll); poll = null; } }, 3000);
+      });
+      stop.onclick = (e) => busy(e.currentTarget, async () => { await api.call('bench:stop', id, kind); toast('已发送停止信号', 'ok'); });
+      tick().then((running) => { if (running && !poll) poll = setInterval(async () => { if (!(await tick())) { clearInterval(poll); poll = null; } }, 3000); });
+      return h('div', { class: 'card' }, h('h3', {}, title), note(desc), optsEl, h('div', { class: 'toolbar', style: { marginTop: '10px', marginBottom: 0 } }, start, stop, st), pre);
+    };
+    const sel = (opts, v) => { const e = h('select', { class: 'auto' }, opts.map(([k, l]) => h('option', { value: k }, l))); e.value = v; return e; };
+    const hq = sel([['f', '快速'], ['y', '标准'], ['n', '跳过']], 'f'); hq.style.width = '96px';
+    const nq = sel([['l', '省流量'], ['y', '完整'], ['n', '跳过']], 'l'); nq.style.width = '96px';
+    const iq = h('input', { type: 'checkbox', checked: true }); const bt = h('input', { type: 'checkbox', checked: true });
+    const tsp = h('input', { type: 'checkbox' }); const tv4 = h('input', { type: 'checkbox', checked: true });
+    pane.append(note('这两个是 NodeSeek 社区常用的测试脚本，直接在 VPS 上运行官方脚本，测完给一个可以分享的报告链接。脚本在临时系统里运行，测完自动清理。'),
+      mk('nodequality', 'NodeQuality（综合：硬件、IP 质量、网络质量、回程）', '大约 5–15 分钟。完整网络测试会跑多地测速、用掉较多流量，小流量机器选「省流量」。', h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '18px', alignItems: 'center' } }, h('label', { style: { display: 'flex', gap: '6px', alignItems: 'center' } }, '硬件测试', hq), h('label', { style: { display: 'flex', gap: '6px', alignItems: 'center' } }, '网络测试', nq), h('label', {}, iq, ' IP 质量'), h('label', {}, bt, ' 回程路由')),
+        () => ({ hq: hq.value, nq: nq.value, iq: iq.checked ? 'y' : 'n', bt: bt.checked ? 'y' : 'n' })),
+      mk('tcpquality', 'TcpQuality（国内各省三网回程丢包、大包重传）', '大约 3–8 分钟，从国内多个省份的节点测到这台 VPS 的丢包和延迟。', h('div', { style: { display: 'flex', gap: '18px' } }, h('label', {}, tv4, ' 只测 IPv4'), h('label', {}, tsp, ' 加测单线程速度（多用流量）')),
+        () => ({ speedtest: tsp.checked, v4: tv4.checked })));
+    if (reports.length) pane.append(h('div', { class: 'card' }, h('h3', {}, '历史报告'), h('table', {}, h('tbody', {}, reports.map((r) => h('tr', {}, h('td', {}, r.kind === 'nodequality' ? 'NodeQuality' : 'TcpQuality'), h('td', { class: 'muted' }, fmtDate(r.at)),
+      h('td', {}, h('a', { href: '#', onclick: (e) => { e.preventDefault(); api.call('open:external', r.url); } }, r.url)), h('td', {}, h('button', { class: 'small', onclick: () => copy(r.url) }, '复制'))))))));
+  }
+
+  draw();
+  modal({ title: `网络优化 · ${srv.name}`, wide: true, body, onClose: () => { off(); if (poll) clearInterval(poll); }, buttons: [{ label: '关闭' }] });
+  if (!lab().info) api.call('net:info', id).then(() => reload()).then(() => { if (netTab === 'overview') draw(); }).catch(() => {});
 }
 
 async function rotateServer(s) {
@@ -1383,6 +1607,7 @@ async function viewSettings(v) {
   const al = st.alerts || {};
   const alOn = h('input', { type: 'checkbox', checked: al.enabled !== false });
   const tuneOn = h('input', { type: 'checkbox', checked: st.smallBoxTuning !== false });
+  const netOn = h('input', { type: 'checkbox', checked: st.netAutoTune !== false });
   const alDisk = h('input', { type: 'number', min: 50, max: 99, value: al.diskPct || 90 });
   const alCpu = h('input', { type: 'number', min: 50, max: 100, value: al.cpuPct || 90 });
   const alLat = h('input', { type: 'number', min: 50, value: al.latencyMs || 300 });
@@ -1394,9 +1619,10 @@ async function viewSettings(v) {
     field('被墙巡检（软件开着时每 30 分钟）', bwMode, '本机连不通、海外能通，连续两次才判定被墙；电脑网络断了不会误报'),
     h('label', { class: 'f' }, alOn, ' Telegram 运维告警：sing-box 挂了（会先自动重启）、磁盘快满、CPU 持续过高、三网延迟变差'),
     h('div', { class: 'row' }, field('磁盘用到 %', alDisk), field('CPU 连续 15 分钟高于 %', alCpu), field('三网延迟高于 ms', alLat)),
+    h('label', { class: 'f' }, netOn, ' 部署时自动做网络优化：检测后只改有依据的几项（BBR + fq、缓冲区、路径 MTU 探测），原值会备份，在服务器「更多 → 网络优化」里可以随时恢复'),
     h('label', { class: 'f' }, tuneOn, ' 小配置 VPS 自动优化：内存 ≤ 2GB 且没有 swap 时加一个 swap 文件（1GB 内存加 1GB，2GB 内存加 2GB，磁盘不够会减小或跳过），磁盘 < 20GB 时把系统日志限制在 200MB。卸载时会一并撤销'),
     h('button', { class: 'primary', onclick: async () => {
-      await api.call('settings:set', { smallBoxTuning: tuneOn.checked, realityPatrol: rpMode.value, blockWatch: bwMode.value, alerts: { enabled: alOn.checked, diskPct: Number(alDisk.value) || 90, cpuPct: Number(alCpu.value) || 90, latencyMs: Number(alLat.value) || 300 } });
+      await api.call('settings:set', { netAutoTune: netOn.checked, smallBoxTuning: tuneOn.checked, realityPatrol: rpMode.value, blockWatch: bwMode.value, alerts: { enabled: alOn.checked, diskPct: Number(alDisk.value) || 90, cpuPct: Number(alCpu.value) || 90, latencyMs: Number(alLat.value) || 300 } });
       toast('已保存，点「同步全部」后各服务器生效', 'ok'); markDirty();
     } }, '保存'));
   v.append(h('h1', {}, '设置'), h('p', { class: 'sub' }, `数据目录：${info.dataDir}`));
