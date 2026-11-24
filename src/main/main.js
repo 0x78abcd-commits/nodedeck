@@ -189,7 +189,7 @@ async function notifyAll(srv, text) {
   if (state().settings.telegram?.enabled) { try { await deploy.adminNotify(srv, text); } catch (_) { /* VPS 连不上就算了 */ } }
 }
 async function blockWatchTick() {
-  const mode = state().settings.blockWatch || 'notify';
+  const mode = state().settings.blockWatch || 'off'; // 默认关
   if (mode === 'off') return;
   const list = state().servers.filter((x) => x.deployedAt && x.role !== 'relay' && mainTcpPort(x));
   if (!list.length) return;

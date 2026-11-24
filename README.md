@@ -4,7 +4,7 @@ Windows 桌面软件：**填 VPS → 一键部署全套协议 → 分配给用�
 
 | 模块 | 功能 |
 |---|---|
-| 服务器 | 批量操作；被墙巡检（只提醒或自动换新）；SSH 一键安装 sing-box + agent，自签或 Let's Encrypt 证书、BBR、防火墙放行；支持 Debian / Ubuntu / CentOS（systemd）和 Alpine（OpenRC），x86-64 / ARM64 / ARMv7 / x86；一键体检、被墙检测、一键换新；监控面板（CPU、内存、网速、三网延迟、本月流量、VPS 到期提醒） |
+| 服务器 | 批量操作；被墙巡检（默认关，可开成只提醒或自动换新）；SSH 一键安装 sing-box + agent，自签或 Let's Encrypt 证书、BBR、防火墙放行；支持 Debian / Ubuntu / CentOS（systemd）和 Alpine（OpenRC），x86-64 / ARM64 / ARMv7 / x86；一键体检、被墙检测、一键换新；监控面板（CPU、内存、网速、三网延迟、本月流量、VPS 到期提醒） |
 | 协议 | VLESS-Reality（部署时自动挑同网段邻居做目标，定期巡检自动换）、Trojan、VMess-WS、Hysteria2（混淆 + 端口跳跃）、TUIC v5、AnyTLS、Shadowsocks-2022；三种一键模板；IPv6 线路；Cloudflare 隧道（IP 被墙也能用，可配优选地址） |
 | 路由 | 屏蔽 BT / 广告 / 回国流量，指定网站走 Cloudflare WARP |
 | 节点 | 分享链接、二维码、本地测试（延迟 + 出口 IP + 是否机房 IP） |

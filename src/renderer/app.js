@@ -1615,7 +1615,7 @@ async function viewSettings(v) {
   };
   const sel = (opts, val) => { const e = h('select', {}, opts.map(([k, l]) => h('option', { value: k }, l))); e.value = val; return e; };
   const rpMode = sel([['auto', '自动换新目标并通知'], ['notify', '只通知'], ['off', '不检查']], st.realityPatrol || 'auto');
-  const bwMode = sel([['notify', '只提醒'], ['auto', '自动一键换新（6 小时内最多一次）并提醒'], ['off', '关闭']], st.blockWatch || 'notify');
+  const bwMode = sel([['off', '关闭（需要时在「工具箱 → 被墙检测」或服务器「体检」里手动查）'], ['notify', '只提醒'], ['auto', '自动一键换新（6 小时内最多一次）并提醒']], st.blockWatch || 'off');
   const al = st.alerts || {};
   const alOn = h('input', { type: 'checkbox', checked: al.enabled !== false });
   const tuneOn = h('input', { type: 'checkbox', checked: st.smallBoxTuning !== false });
@@ -1629,7 +1629,7 @@ async function viewSettings(v) {
   const lookCard = h('div', { class: 'card' }, h('h3', {}, '外观'), field('主题', theme, '深色适合长时间看监控；跟随系统会随 Windows 的深浅色自动切换'));
   const guardCard = h('div', { class: 'card' }, h('h3', {}, '巡检与告警'),
     field('Reality 目标巡检（VPS 每 6 小时检查一次）', rpMode, '目标网站下线、证书过期或不再支持 TLS 1.3 / HTTP2 时节点会连不上。自动模式下连续 3 次失败会换成同网段邻居或最快的大站，并改好本机订阅'),
-    field('被墙巡检（软件开着时每 30 分钟）', bwMode, '本机连不通、海外能通，连续两次才判定被墙；电脑网络断了不会误报'),
+    field('被墙巡检（打开后软件开着时每 30 分钟查一次，默认关）', bwMode, '本机连不通、海外能通，连续两次才判定被墙；电脑网络断了不会误报'),
     h('label', { class: 'f' }, alOn, ' Telegram 运维告警：sing-box 挂了（会先自动重启）、磁盘快满、CPU 持续过高、三网延迟变差'),
     h('div', { class: 'row' }, field('磁盘用到 %', alDisk), field('CPU 连续 15 分钟高于 %', alCpu), field('三网延迟高于 ms', alLat)),
     h('label', { class: 'f' }, probeOn, ' 后台记录三网延迟和丢包：VPS 每 5 分钟往国内三网各发 10 个 ping（每台每月几十 MB 流量）。打开后监控面板的延迟曲线、「网络优化」的晚高峰对比和延迟告警才有数据。默认关，平时在「网络优化 → 质量」里手动测'),

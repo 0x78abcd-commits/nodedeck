@@ -12,6 +12,7 @@ function defaults() {
     version: 1,
     settings: {
       subPort: 2096,
+      bwDefaultOff: true, // 新装用户：被墙巡检默认就是关，不需要迁移
       statsPort: 9092,
       adminPort: 9091,
       singboxBase: '',
@@ -48,7 +49,10 @@ class Store {
         const rp = srv.protocols?.vlessReality;
         if (srv.deployedAt && rp && rp.sniDeployed === undefined) rp.sniDeployed = rp.sni;
       }
-      return { ...d, ...s, settings: { ...d.settings, ...(s.settings || {}) } };
+      const st = s.settings || {};
+      // 0.7.3：被墙巡检默认关；之前是「只提醒」（旧默认）的一并改成关，选了「自动换新」的保留
+      if (!st.bwDefaultOff) { if (!st.blockWatch || st.blockWatch === 'notify') st.blockWatch = 'off'; st.bwDefaultOff = true; }
+      return { ...d, ...s, settings: { ...d.settings, ...st } };
     } catch (e) {
       const bak = this.file + '.broken-' + Date.now();
       try { fs.copyFileSync(this.file, bak); } catch (_) { /* ignore */ }
