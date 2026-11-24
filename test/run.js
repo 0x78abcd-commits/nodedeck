@@ -70,6 +70,16 @@ st3.users = state.users.map((u) => ({ ...u }));
 check('server-full-0.4', core.buildServerConfig(st3, full));
 const conflicts = core.checkPortConflicts(st3, full);
 if (conflicts.length) { console.log('FAIL conflicts', conflicts); process.exitCode = 1; } else console.log('OK   no-conflicts-0.4');
+// 0.8.0：自签证书按公钥指纹校验（certificate_public_key_sha256），配置要能通过 sing-box check
+{
+  const pinned = { ...state.servers[0], certSpki: 'LZhWSbvelN+PuGH5RkfshQc1Of/0y6Mq7YCqZUCxzoU=' };
+  const stP = { ...state, servers: [pinned, ...state.servers.slice(1)] };
+  for (const e of core.nodeEntries(stP, pinned).filter((x) => ['trojan', 'hysteria2', 'tuic', 'anytls'].includes(x.protocol))) {
+    const ob = core.clientOutbound(stP, e, owner);
+    if (!ob.tls.certificate_public_key_sha256 || ob.tls.insecure) { console.log('FAIL', 'pin-' + e.label, '没有带公钥指纹'); process.exitCode = 1; }
+    check('client-pin-' + e.label, core.clientTestConfig(ob, 18084));
+  }
+}
 for (const e of core.nodeEntries(st3, full)) check('client-0.4-' + e.label, core.clientTestConfig(core.clientOutbound(st3, e, owner), 18081));
 check('singbox-client-0.4', core.buildSingboxClient(st3, owner));
 console.log(core.nodeEntries(st3, full).map((e) => core.shareLink(st3, e, owner)).filter((l) => /^(ss|hysteria2|trojan):/.test(l)).join('\n'));

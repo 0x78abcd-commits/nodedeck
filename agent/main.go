@@ -27,7 +27,9 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -575,7 +577,7 @@ func (a *Agent) handleSub(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		io.WriteString(w, s.Singbox)
+		io.WriteString(w, singboxCompat(s.Singbox, r.UserAgent()))
 	case "shadowrocket":
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		io.WriteString(w, shadowrocketSub(s.V2ray, up, down, s.Total, expire))
@@ -1007,4 +1009,42 @@ func cfgDataDir(cfgPath string) string {
 		return c.DataDir
 	}
 	return "/etc/nodedeck"
+}
+
+var sbVerRe = regexp.MustCompile(`(?i)(?:sing-box[ /v]*|\bSF[AIMT]/)(\d+)\.(\d+)`)
+
+// singboxCompat 自签证书的公钥指纹校验（certificate_public_key_sha256）要 sing-box 1.13 以上。
+// 能从 UA 看出是 1.13 以上的客户端原样返回；看不出版本或版本更旧的，换回跳过证书校验，保证能用
+func singboxCompat(js, ua string) string {
+	if !strings.Contains(js, "certificate_public_key_sha256") {
+		return js
+	}
+	if m := sbVerRe.FindStringSubmatch(ua); m != nil {
+		maj, _ := strconv.Atoi(m[1])
+		min, _ := strconv.Atoi(m[2])
+		if maj > 1 || (maj == 1 && min >= 13) {
+			return js
+		}
+	}
+	var cfg map[string]any
+	if json.Unmarshal([]byte(js), &cfg) != nil {
+		return js
+	}
+	outs, _ := cfg["outbounds"].([]any)
+	for _, o := range outs {
+		om, _ := o.(map[string]any)
+		tls, _ := om["tls"].(map[string]any)
+		if tls == nil {
+			continue
+		}
+		if _, ok := tls["certificate_public_key_sha256"]; ok {
+			delete(tls, "certificate_public_key_sha256")
+			tls["insecure"] = true
+		}
+	}
+	b, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return js
+	}
+	return string(b)
 }

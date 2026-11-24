@@ -10,7 +10,7 @@ const nodetest = require('./nodetest');
 const diagnose = require('./diagnose');
 const links = require('./links');
 const proxy = require('./proxy');
-const { setProxyProvider } = require('./ssh');
+const { setProxyProvider, setHostKeySaver } = require('./ssh');
 const { Store } = require('./store');
 const { Updater, publish } = require('./updater');
 
@@ -47,6 +47,12 @@ function redact(text) {
   return t;
 }
 function taskLogger(task) { return (line) => send('task-log', { task, line: String(line).startsWith('§') ? String(line) : redact(line), time: Date.now() }); }
+
+// 只允许用浏览器打开 http / https 链接（防止被诱导打开本地文件或其它协议）
+function openSafe(url) {
+  try { const u = new URL(String(url)); if (u.protocol === 'https:' || u.protocol === 'http:') return shell.openExternal(u.href); } catch (_) { /* ignore */ }
+  return false;
+}
 
 function getServer(id) {
   const s = state().servers.find((x) => x.id === id);
@@ -263,7 +269,8 @@ function createWindow() {
   });
   Menu.setApplicationMenu(null);
   win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
-  win.webContents.setWindowOpenHandler(({ url }) => { shell.openExternal(url); return { action: 'deny' }; });
+  win.webContents.setWindowOpenHandler(({ url }) => { openSafe(url); return { action: 'deny' }; });
+  win.webContents.on('will-navigate', (e, url) => { if (!url.startsWith('file:')) { e.preventDefault(); openSafe(url); } });
   win.webContents.on('before-input-event', (_e, input) => {
     if (input.key === 'F12' || (input.control && input.shift && input.key.toLowerCase() === 'i')) win.webContents.toggleDevTools();
   });
@@ -285,7 +292,7 @@ function registerIpc() {
   handle('new:server', (fields) => core.newServer(fields));
   handle('new:user', (fields) => core.newUser(fields));
   handle('new:reality', () => core.realityKeypair());
-  handle('open:external', (url) => shell.openExternal(url));
+  handle('open:external', (url) => openSafe(url));
 
   // 节点
   handle('nodes:list', () => {
@@ -652,6 +659,12 @@ app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(
 app.whenReady().then(() => {
   store = new Store();
   setProxyProvider(sshProxies);
+  // 第一次连上某台服务器时记下 SSH 主机指纹，以后核对
+  setHostKeySaver((srv, fp) => {
+    // 直接改现有对象再保存（不用 upsert 换新对象：部署 / 同步途中手里拿着的服务器对象还要继续用）
+    const cur = srv.id && state().servers.find((x) => x.id === srv.id);
+    if (cur && cur.host === srv.host) { cur.hostKey = fp; store.save(); }
+  });
   updater = new Updater((st) => send('update-status', st));
   registerIpc();
   createWindow();

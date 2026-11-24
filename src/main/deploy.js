@@ -492,7 +492,12 @@ async function pushConfig(ssh, state, server, log = () => {}) {
   // 记下自签证书的指纹，分享链接里要带上（新版 v2rayNG 不再支持跳过证书验证）
   try {
     const pem = (await ssh.exec(`cat ${DIR}/cert.pem 2>/dev/null`)).stdout;
-    if (pem.includes('BEGIN CERTIFICATE')) server.certSha256 = new crypto.X509Certificate(pem).fingerprint256.replace(/:/g, '').toLowerCase();
+    if (pem.includes('BEGIN CERTIFICATE')) {
+      const x = new crypto.X509Certificate(pem);
+      server.certSha256 = x.fingerprint256.replace(/:/g, '').toLowerCase();
+      // sing-box 客户端按公钥指纹校验自签证书（certificate_public_key_sha256，1.13 起支持）
+      server.certSpki = crypto.createHash('sha256').update(x.publicKey.export({ type: 'spki', format: 'der' })).digest('base64');
+    }
   } catch { /* 读不到就不带指纹 */ }
   const full = core.buildServerConfig(state, server);
   await ssh.writeFile(`${DIR}/config.full.json`, JSON.stringify(full, null, 2));

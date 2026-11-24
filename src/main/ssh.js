@@ -9,6 +9,16 @@ function shq(s) { return `'${String(s).replace(/'/g, `'\\''`)}'`; }
 let proxyProvider = async () => [];
 function setProxyProvider(fn) { proxyProvider = fn; }
 
+// 主机指纹：第一次连上时记下来（由主进程注入保存方法），以后每次核对，变了就拒绝连接（防中间人截获密码）
+let hostKeySaver = () => {};
+function setHostKeySaver(fn) { hostKeySaver = fn; }
+function fingerprint(key) { return 'SHA256:' + require('crypto').createHash('sha256').update(key).digest('base64').replace(/=+$/, ''); }
+function mismatchError(server, got) {
+  const e = new Error(`服务器 ${server.host} 的 SSH 主机指纹和第一次连接时不一样，已拒绝连接，密码没有发出去。\n上次：${server.hostKey}\n这次：${got}\n如果你刚重装过系统或换了 IP 上的机器，这是正常的：在「编辑」里点「重置指纹」后再连。否则可能有人在中间劫持连接，先别继续。`);
+  e.hostKeyMismatch = true;
+  return e;
+}
+
 // 记住哪些服务器上次是经代理连上的，下次先走代理
 const preferProxy = new Map();
 
@@ -43,11 +53,22 @@ class SSH {
     return new Promise((resolve, reject) => {
       const conn = new Client();
       const timer = setTimeout(() => { conn.end(); reject(new Error('SSH 连接超时')); }, readyTimeout + 5000);
-      conn.on('ready', () => { clearTimeout(timer); this.conn = conn; resolve(this); });
-      conn.on('error', (e) => { clearTimeout(timer); reject(e); });
+      let seen = ''; let mismatch = false;
+      conn.on('ready', () => {
+        clearTimeout(timer); this.conn = conn; this.hostKey = seen;
+        if (seen && !s.hostKey) { s.hostKey = seen; try { hostKeySaver(s, seen); } catch (_) { /* ignore */ } }
+        resolve(this);
+      });
+      conn.on('error', (e) => { clearTimeout(timer); reject(mismatch ? mismatchError(s, seen) : e); });
       const opts = {
         host: s.host, port: Number(s.sshPort) || 22, username: s.username || 'root',
         readyTimeout, keepaliveInterval: 15000,
+        // 在发送密码之前核对主机指纹
+        hostVerifier: (key) => {
+          seen = fingerprint(key);
+          if (s.hostKey && s.hostKey !== seen) { mismatch = true; return false; }
+          return true;
+        },
       };
       if (sock) opts.sock = sock;
       if (s.authType === 'key') {
@@ -73,6 +94,7 @@ class SSH {
     for (const mode of order) {
       if (mode === 'direct') {
         try { await this.connect({ readyTimeout: 12000 }); preferProxy.delete(key); return this; } catch (e) {
+          if (e.hostKeyMismatch) throw e;
           if (isAuthError(e)) throw new Error(friendlyError(e, s));
           lastErr = e;
           continue;
@@ -91,6 +113,7 @@ class SSH {
           return this;
         } catch (e) {
           if (sock) sock.destroy();
+          if (e.hostKeyMismatch) throw e;
           if (isAuthError(e)) throw new Error(friendlyError(e, s));
           if (!lastErr) lastErr = e;
         }
@@ -146,4 +169,4 @@ async function withSSH(server, fn, { log } = {}) {
   try { return await fn(ssh); } finally { ssh.end(); }
 }
 
-module.exports = { SSH, withSSH, shq, setProxyProvider, friendlyError };
+module.exports = { SSH, withSSH, shq, setProxyProvider, setHostKeySaver, friendlyError, fingerprint };

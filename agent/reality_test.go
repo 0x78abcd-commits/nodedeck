@@ -55,3 +55,23 @@ func TestClientIPCloudflare(t *testing.T) {
 		t.Fatal("must not trust CF header from non-Cloudflare IP")
 	}
 }
+
+func TestSingboxCompat(t *testing.T) {
+	js := `{"outbounds":[{"type":"trojan","tls":{"enabled":true,"certificate_public_key_sha256":["LZhWSbvelN+PuGH5RkfshQc1Of/0y6Mq7YCqZUCxzoU="]}},{"type":"vless","tls":{"enabled":true,"reality":{"enabled":true}}}]}`
+	for ua, keep := range map[string]bool{
+		"SFA/1.13.2 (Android; sing-box 1.13.2)":                     true,
+		"sing-box 1.14.0":                                           true,
+		"SFI/1.12.4 (sing-box 1.12.4)":                              false,
+		"HiddifyNext/2.5.7 (android) like ClashMeta v2ray sing-box": false,
+		"": false,
+	} {
+		out := singboxCompat(js, ua)
+		has := strings.Contains(out, "certificate_public_key_sha256")
+		if has != keep {
+			t.Fatalf("%q: keep=%v got %v\n%s", ua, keep, has, out)
+		}
+		if !keep && !strings.Contains(out, `"insecure": true`) {
+			t.Fatalf("%q: 降级后应该是 insecure", ua)
+		}
+	}
+}

@@ -403,6 +403,14 @@ async function editServer(orig, opts = {}) {
   auth.onchange = syncAuth; syncAuth();
   const role = h('select', {}, h('option', { value: 'node' }, '节点机'), h('option', { value: 'relay' }, '中转机（只做转发）'));
   role.value = s.role || 'node';
+  // SSH 主机指纹（第一次连上时自动记录，之后每次核对，防止有人在中间截获密码）
+  const hostKeyBox = h('div', { class: 'muted', style: { fontSize: '12px', margin: '-4px 0 10px' } });
+  const drawHostKey = () => {
+    hostKeyBox.innerHTML = '';
+    if (!s.hostKey) { hostKeyBox.append('SSH 主机指纹：第一次连接时自动记录，之后每次连接都会核对'); return; }
+    hostKeyBox.append('SSH 主机指纹 ', h('span', { class: 'mono' }, s.hostKey), ' ', h('a', { href: '#', onclick: (e) => { e.preventDefault(); s.hostKey = ''; drawHostKey(); toast('保存后，下次连接会重新记录指纹（只在重装过系统时这样做）'); } }, '重置指纹'));
+  };
+  drawHostKey();
   // 自签证书的 SNI：常用大站 / 自定义。客户端核对的是证书指纹，名字本身对抗封锁影响不大，所以不做「优选」，
   // 只保证别选国内按 SNI 屏蔽的域名（会被直接掐断）
   const SELF_SNI = [['www.bing.com', '必应（默认）'], ['www.microsoft.com', '微软'], ['www.apple.com', '苹果'], ['www.amazon.com', '亚马逊'], ['www.nvidia.com', '英伟达'], ['www.samsung.com', '三星']];
@@ -558,7 +566,7 @@ async function editServer(orig, opts = {}) {
   const body = h('div', {},
     h('div', { class: 'row' }, field('名称', name), field('地址', host)),
     h('div', { class: 'row' }, field('SSH 端口', port), field('用户名', user), field('认证方式', auth)),
-    pwdBox, keyBox,
+    pwdBox, keyBox, hostKeyBox,
     h('div', { class: 'row' }, field('角色', role), field('出口', exit), field('VPS 到期日（可选）', vpsExp, '到期前 7 天和 1 天会 Telegram 提醒续费')),
     field('自签证书域名（Trojan / Hy2 / TUIC / AnyTLS 的 SNI）', sniBox),
     h('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', margin: '14px 0 8px' } }, h('h4', { style: { margin: 0 } }, '协议'), h('div', { class: 'spacer' }), tpl), grid,
@@ -581,6 +589,7 @@ async function editServer(orig, opts = {}) {
     s.name = name.value.trim() || host.value.trim();
     s.host = host.value.trim();
     s.sshPort = Number(port.value) || 22;
+    if (orig && (s.host !== orig.host || s.sshPort !== (Number(orig.sshPort) || 22))) s.hostKey = ''; // 换了地址 / 端口：重新记录指纹
     s.username = user.value.trim() || 'root';
     s.authType = auth.value; s.password = pwd.value; s.privateKey = key.value; s.passphrase = pass.value;
     s.role = role.value;
@@ -1072,7 +1081,7 @@ function showNetLab(srv) {
       // 打开页签时看一眼是不是正在跑（关掉窗口后 VPS 上会继续跑）
       api.call('bench:poll', id, kind, 1e12).then((r) => {
         if (r.none) return;
-        if (r.running) { st.textContent = `运行中，已 ${fmtDur(r.elapsed)}`; view.classList.remove('hidden'); view.classList.add('primary'); start.classList.add('hidden'); }
+        if (r.running) { st.textContent = `运行中，已 ${fmtSecs(r.elapsed)}`; view.classList.remove('hidden'); view.classList.add('primary'); start.classList.add('hidden'); }
         else { st.textContent = r.url ? '上次已完成' : '上次已结束'; view.textContent = '查看上次输出'; view.classList.remove('hidden'); }
       }).catch(() => {});
       return h('div', { class: 'card' }, h('h3', {}, title), note(desc), optsEl, h('div', { class: 'toolbar', style: { marginTop: '12px', marginBottom: 0 } }, start, view, st));
@@ -1082,7 +1091,7 @@ function showNetLab(srv) {
     const nq = sel([['l', '省流量'], ['y', '完整'], ['n', '跳过']], 'l'); nq.style.width = '96px';
     const iq = h('input', { type: 'checkbox', checked: true }); const bt = h('input', { type: 'checkbox', checked: true });
     const tsp = h('input', { type: 'checkbox' }); const tv4 = h('input', { type: 'checkbox', checked: true });
-    pane.append(note('这两个是 NodeSeek 社区常用的测试脚本，直接在 VPS 上运行官方脚本，测完给一个可以分享的报告链接。脚本在临时系统里运行，测完自动清理。'),
+    pane.append(note('这两个是 NodeSeek 社区常用的测试脚本，直接在 VPS 上运行官方脚本，测完给一个可以分享的报告链接。注意：脚本由第三方维护，会以 root 权限在你的 VPS 上运行，只在需要时跑；报告链接是公开的，里面会有这台 VPS 的 IP。'),
       mk('nodequality', 'NodeQuality（综合：硬件、IP 质量、网络质量、回程）', '大约 5–15 分钟。完整网络测试会跑多地测速、用掉较多流量，小流量机器选「省流量」。', h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '18px', alignItems: 'center' } }, h('label', { style: { display: 'flex', gap: '6px', alignItems: 'center' } }, '硬件测试', hq), h('label', { style: { display: 'flex', gap: '6px', alignItems: 'center' } }, '网络测试', nq), h('label', {}, iq, ' IP 质量'), h('label', {}, bt, ' 回程路由')),
         () => ({ hq: hq.value, nq: nq.value, iq: iq.checked ? 'y' : 'n', bt: bt.checked ? 'y' : 'n' })),
       mk('tcpquality', 'TcpQuality（国内各省三网回程丢包、大包重传）', '大约 3–8 分钟，从国内多个省份的节点测到这台 VPS 的丢包和延迟。', h('div', { style: { display: 'flex', gap: '18px' } }, h('label', {}, tv4, ' 只测 IPv4'), h('label', {}, tsp, ' 加测单线程速度（多用流量）')),
@@ -1095,7 +1104,7 @@ function showNetLab(srv) {
   modal({ title: `网络优化 · ${srv.name}`, wide: true, body, onClose: () => { off(); stopPolls(); }, buttons: [{ label: '关闭' }] });
 }
 
-function fmtDur(sec) {
+function fmtSecs(sec) {
   sec = Math.max(0, Math.round(sec || 0));
   return sec >= 3600 ? `${Math.floor(sec / 3600)} 小时 ${Math.floor((sec % 3600) / 60)} 分` : sec >= 60 ? `${Math.floor(sec / 60)} 分 ${sec % 60} 秒` : `${sec} 秒`;
 }
@@ -1135,7 +1144,7 @@ function benchModal(srv, kind, name, onClosed) {
     elapsed = r.elapsed || elapsed; lastTick = Date.now();
     if (r.url) showReport(r.url);
   };
-  const paintClock = () => { clock.textContent = (running ? '已用时 ' : '用时 ') + fmtDur(elapsed + (running ? (Date.now() - lastTick) / 1000 : 0)); };
+  const paintClock = () => { clock.textContent = (running ? '已用时 ' : '用时 ') + fmtSecs(elapsed + (running ? (Date.now() - lastTick) / 1000 : 0)); };
   const clockTimer = setInterval(paintClock, 1000);
   const step = async () => {
     if (!alive) return;

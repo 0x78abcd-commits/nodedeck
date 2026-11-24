@@ -529,7 +529,9 @@ function clientOutbound(state, entry, user, tag = 'proxy') {
   const pc = server.protocols[entry.protocol];
   const base = { tag, server: entry.host, server_port: entry.port };
   const sni = tlsSniFor(server);
-  const tlsOf = (alpn) => ({ enabled: true, server_name: sni, ...(usesAcme(server) ? {} : { insecure: true }), ...(alpn ? { alpn } : {}) });
+  // 自签证书：有公钥指纹就按指纹校验（防中间人），没有才退回跳过校验。旧版 sing-box 客户端由 agent 按 UA 降级
+  const spki = !usesAcme(server) && /^[A-Za-z0-9+/]{43}=$/.test(server.certSpki || '') ? server.certSpki : '';
+  const tlsOf = (alpn) => ({ enabled: true, server_name: sni, ...(usesAcme(server) ? {} : spki ? { certificate_public_key_sha256: [spki] } : { insecure: true }), ...(alpn ? { alpn } : {}) });
   switch (entry.protocol) {
     case 'vlessReality':
       return { ...base, type: 'vless', uuid: user.uuid, flow: 'xtls-rprx-vision', tls: { enabled: true, server_name: pc.sni, utls: { enabled: true, fingerprint: fpOf(pc) }, reality: { enabled: true, public_key: pc.publicKey, short_id: pc.shortId } } };
