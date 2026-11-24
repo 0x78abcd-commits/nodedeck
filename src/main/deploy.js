@@ -940,8 +940,9 @@ async function cleanOthers(server, items, log = () => {}, { backup: doBackup = f
       `owned() { dpkg -S "$1" >/dev/null 2>&1 || rpm -qf "$1" >/dev/null 2>&1 || apk info -W "$1" >/dev/null 2>&1; }`,
       `safe_path() { case "$1" in /www|/usr/?*/?*|/usr/local/?*|/etc/?*|/opt/?*|/var/?*/?*|/root/?*|/www/?*) case "$1" in *nodedeck*|*..*) return 1;; esac; return 0;; esac; return 1; }`,
     ];
-    // 第一步：找出每个程序的服务和路径，停掉服务
+    // 第一步：找出每个程序的服务和路径
     const cronPats = [];
+    sh.push(': > $T/bkonly');
     for (const a of apps) {
       sh.push(`echo "▶ ${a.name}"`);
       for (const u of a.units) sh.push(`for f in $(unit_files '${u}'); do note_unit "$f"; done`);
@@ -950,17 +951,37 @@ async function cleanOthers(server, items, log = () => {}, { backup: doBackup = f
       if (a.extraPaths) sh.push(`for p in $(${a.extraPaths}); do safe_path "$p" && [ -e "$p" ] && echo "$p" >> $T/paths; done`);
       cronPats.push(...a.paths.filter((x) => x !== '/www'), ...(a.markers || []));
     }
+    const dockerItems = items.filter((it) => it.kind === 'docker' && /^[0-9a-f]{6,64}$/.test(it.id));
+    const with1p = apps.some((a) => a.id === '1panel');
+    const backingUp = doBackup && (apps.length || dockerItems.length);
+    // 第二步（可选）：容器备份要在停服务、删容器之前做：配置（docker inspect）、数据卷、挂载目录、本地镜像
+    if (backingUp && (dockerItems.length || with1p)) {
+      sh.push(`mkdir -p ${BK}/docker && chmod 700 ${BACKUP_ROOT} ${BK}`,
+        `bk_ctr() { c="$1"; n=$(docker inspect -f '{{.Name}}' "$c" 2>/dev/null | tr -d '/'); [ -n "$n" ] || return 0; docker inspect "$c" > ${BK}/docker/ctr-$n.json; echo "  备份容器 $n"
+  for v in $(docker inspect -f '{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}} {{end}}{{end}}' "$c"); do [ -f ${BK}/docker/vol-$v.tar.gz ] || { mp=$(docker volume inspect -f '{{.Mountpoint}}' "$v" 2>/dev/null); [ -n "$mp" ] && tar czf ${BK}/docker/vol-$v.tar.gz -C "$mp" . 2>/dev/null && echo "    数据卷 $v"; }; done
+  for b in $(docker inspect -f '{{range .Mounts}}{{if eq .Type "bind"}}{{.Source}} {{end}}{{end}}' "$c"); do [ -d "$b" ] && safe_path "$b" && echo "$b" >> $T/bkonly; done
+  wd=$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' "$c" 2>/dev/null); case "$wd" in /*) safe_path "$wd" && echo "$wd" >> $T/bkonly;; esac
+  img=$(docker inspect -f '{{.Config.Image}}' "$c"); if [ "$(docker image inspect -f '{{len .RepoDigests}}' "$img" 2>/dev/null)" = "0" ]; then f=${BK}/docker/img-$(printf %s "$img" | tr -c 'A-Za-z0-9._-' '_').tar.gz; [ -f "$f" ] || { docker save "$img" | gzip > "$f" && echo "    本地镜像 $img"; }; fi; }`);
+      for (const it of dockerItems) sh.push(`bk_ctr ${it.id}`);
+      if (with1p) sh.push(`for c in $(docker ps -aq --filter label=createdBy=1Panel 2>/dev/null); do bk_ctr "$c"; done`);
+    }
+    // 停服务、做删除前的准备
     if (apps.length) sh.push(`while IFS='|' read -r n f; do [ -n "$n" ] && stop_unit "$n" "$f"; done < $T/units`);
     for (const a of apps) if (a.pre) sh.push(a.pre);
-    // 第二步（可选）：整套备份
-    if (doBackup && apps.length) {
-      const meta = { at: Date.now(), apps: apps.map((a) => ({ id: a.id, name: a.name })), host: server.host };
+    // 第三步（可选）：程序整套打包
+    if (backingUp) {
+      const portsOf = (it) => (it.ports || []).filter((x) => /^\d{1,5}\/(tcp|udp)$/.test(x));
+      const meta = {
+        at: Date.now(), host: server.host,
+        apps: apps.map((a) => ({ id: a.id, name: a.name, ports: portsOf(items.find((it) => it.kind === 'app' && it.id === a.id) || {}) })),
+        containers: dockerItems.map((it) => String(it.name || it.id).replace(/[^\w.-]/g, '')).concat(with1p ? ['1Panel 的应用容器'] : []),
+      };
       sh.push(`mkdir -p ${BK} && chmod 700 ${BACKUP_ROOT} ${BK}`,
-        `{ cut -d'|' -f2 $T/units; cat $T/paths; } | sort -u | sed 's#^/##' > $T/list`,
-        `echo "  打包备份（程序、配置、服务文件）…"; tar czf ${BK}/files.tar.gz -C / -T $T/list 2>/dev/null; cp $T/units ${BK}/units.txt`,
+        `{ cut -d'|' -f2 $T/units; cat $T/paths $T/bkonly; } | grep -v '^$' | sort -u | sed 's#^/##' > $T/list`,
+        `echo "  打包备份（程序、配置、服务文件、数据目录）…"; if [ -s $T/list ]; then tar czf ${BK}/files.tar.gz -C / -T $T/list 2>/dev/null; else tar czf ${BK}/files.tar.gz -T /dev/null; fi; cp $T/units ${BK}/units.txt`,
         cronPats.length ? `crontab -l 2>/dev/null | grep -F ${[...new Set(cronPats)].map((x) => '-e ' + shq(x)).join(' ')} > ${BK}/cron.txt` : `: > ${BK}/cron.txt`,
         `printf '%s' ${shq(JSON.stringify(meta))} > ${BK}/meta.json`,
-        `[ -s ${BK}/files.tar.gz ] && echo "备份完成：${BK}（$(du -sh ${BK} | cut -f1)），可以在 NodeDeck 里一键恢复" || echo "⚠ 备份失败"`);
+        `[ -f ${BK}/files.tar.gz ] && echo "备份完成：${BK}（$(du -sh ${BK} | cut -f1)），可以在 NodeDeck 里一键恢复" || echo "⚠ 备份失败"`);
     }
     // 第三步：删除服务文件、路径、软件包、定时任务
     if (apps.length) {
@@ -974,7 +995,8 @@ async function cleanOthers(server, items, log = () => {}, { backup: doBackup = f
         sh.push('echo "▶ 删除旧版留下的备份"; for f in /root/nodedeck-cleanup-*.tar.gz; do [ -f "$f" ] && rm -f "$f" && echo "  删除 $f"; done');
       } else if (it.kind === 'docker' && /^[0-9a-f]{6,64}$/.test(it.id)) {
         const img = /^[\w./:@-]+$/.test(it.image || '') ? it.image : '';
-        sh.push(`echo "▶ 删除 Docker 容器 ${String(it.name || it.id).replace(/[^\w.-]/g, '')}"; docker rm -f -v ${it.id} >/dev/null 2>&1 && echo "  已删除容器和它的匿名数据卷" || echo "  删除失败"${img ? `; docker image rm ${shq(img)} >/dev/null 2>&1 && echo "  已删除镜像 ${img}"` : ''}`);
+        // 先记下它用的命名数据卷，删容器后没有别的容器在用就一起删
+        sh.push(`echo "▶ 删除 Docker 容器 ${String(it.name || it.id).replace(/[^\w.-]/g, '')}"; vols=$(docker inspect -f '{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}} {{end}}{{end}}' ${it.id} 2>/dev/null); docker rm -f -v ${it.id} >/dev/null 2>&1 && echo "  已删除容器" || echo "  删除失败"; for v in $vols; do docker volume rm "$v" >/dev/null 2>&1 && echo "  已删除数据卷 $v"; done${img ? `; docker image rm ${shq(img)} >/dev/null 2>&1 && echo "  已删除镜像 ${img}"` : ''}`);
       } else if (it.kind === 'other' && /^[\w@.:-]+$/.test(it.unit || '') && !/nodedeck|ssh|systemd|docker|containerd/.test(it.unit)) {
         sh.push(`echo "▶ 停用服务 ${it.unit}"; for f in $(unit_files ${shq(it.unit)}); do stop_unit ${shq(it.unit)} "$f"; done`);
       }
@@ -983,27 +1005,117 @@ async function cleanOthers(server, items, log = () => {}, { backup: doBackup = f
     const st = streamLog(log);
     const r = await ssh.exec(sh.join('\n'), { timeout: 1200000, onData: st.onData });
     st.flush();
-    return { backup: doBackup && apps.length && /备份完成/.test(r.stdout) ? BK : '', output: r.stdout };
+    return { backup: /备份完成/.test(r.stdout) ? BK : '', output: r.stdout };
   }, { log });
 }
 
-// 一键恢复：解压回原位置、恢复定时任务、重新启用并启动服务
-async function restoreBackup(server, id, log = () => {}) {
+// 恢复前读取备份内容和 VPS 当前占用的端口（用来提前解决端口冲突）
+async function backupInfo(server, id) {
+  if (!/^\d{12,14}$/.test(String(id))) throw new Error('备份编号不对');
+  const BK = `${BACKUP_ROOT}/${id}`;
+  return withSSH(server, async (ssh) => {
+    const r = await ssh.exec(`cat ${BK}/meta.json 2>/dev/null; echo; echo "---CTR"; for f in ${BK}/docker/ctr-*.json; do [ -f "$f" ] && { cat "$f"; echo "---SEP"; }; done; echo "---LISTEN"; (ss -tulnpH 2>/dev/null || netstat -tulnp 2>/dev/null | tail -n +3); echo "---DOCKER"; command -v docker >/dev/null && echo yes`, { timeout: 60000 });
+    const [metaTxt, rest = ''] = r.stdout.split('---CTR');
+    const [ctrTxt, rest2 = ''] = rest.split('---LISTEN');
+    const [listen, dockerTxt = ''] = rest2.split('---DOCKER');
+    let meta = {};
+    try { meta = JSON.parse(metaTxt.trim()); } catch (_) { throw new Error('读不到这份备份的信息，可能已经被删了'); }
+    const containers = [];
+    for (const part of ctrTxt.split('---SEP')) { try { const j = JSON.parse(part.trim()); if (Array.isArray(j) && j[0]) containers.push(j[0]); } catch (_) { /* ignore */ } }
+    const busy = [];
+    for (const l of listen.split('\n')) {
+      const t = l.trim().split(/\s+/);
+      if (t.length < 5) continue;
+      const local = t.find((x, i) => i >= 3 && /:\d+$/.test(x)) || '';
+      const m = local.match(/:(\d+)$/);
+      if (!m) continue;
+      const pname = (l.match(/\(\("([^"]+)"/) || l.match(/\s\d+\/(\S+)/) || [])[1] || '';
+      busy.push({ port: Number(m[1]), proto: /^udp/i.test(t[0]) ? 'udp' : 'tcp', pname });
+    }
+    return { meta, containers, busy, docker: /yes/.test(dockerTxt) };
+  });
+}
+
+// 按 docker inspect 的结果重新生成 docker run（remap：{ '主机端口/协议': 新端口 }）
+function dockerRunCmd(ins, remap = {}) {
+  const c = ins.Config || {}; const hc = ins.HostConfig || {};
+  const a = ['docker run -d', '--name ' + shq(String(ins.Name || '').replace(/^\//, ''))];
+  const rp = hc.RestartPolicy || {};
+  if (rp.Name && rp.Name !== 'no') a.push('--restart ' + (rp.Name === 'on-failure' && rp.MaximumRetryCount ? `on-failure:${rp.MaximumRetryCount}` : rp.Name));
+  const net = hc.NetworkMode;
+  if (net && !['default', 'bridge'].includes(net)) a.push('--network ' + shq(net));
+  if (net !== 'host') {
+    for (const [cp, binds] of Object.entries(hc.PortBindings || {})) {
+      const proto = cp.split('/')[1] || 'tcp';
+      for (const b of binds || []) {
+        const hp = remap[`${b.HostPort}/${proto}`] || b.HostPort;
+        const ip = b.HostIp && b.HostIp !== '0.0.0.0' && b.HostIp !== '::' ? (b.HostIp.includes(':') ? `[${b.HostIp}]:` : `${b.HostIp}:`) : '';
+        a.push('-p ' + shq(`${ip}${hp ? hp + ':' : ''}${cp}`));
+      }
+    }
+  }
+  for (const e of c.Env || []) a.push('-e ' + shq(e));
+  for (const m of ins.Mounts || []) {
+    const ro = m.RW === false ? ':ro' : '';
+    if (m.Type === 'volume' && m.Name) a.push('-v ' + shq(`${m.Name}:${m.Destination}${ro}`));
+    else if (m.Type === 'bind') a.push('-v ' + shq(`${m.Source}:${m.Destination}${ro}`));
+  }
+  if (hc.Privileged) a.push('--privileged');
+  for (const x of hc.CapAdd || []) a.push('--cap-add ' + shq(x));
+  for (const d of hc.Devices || []) a.push('--device ' + shq(`${d.PathOnHost}:${d.PathInContainer}`));
+  for (const x of hc.ExtraHosts || []) a.push('--add-host ' + shq(x));
+  for (const [k, v] of Object.entries(c.Labels || {})) if (!k.startsWith('com.docker.compose')) a.push('--label ' + shq(`${k}=${v}`));
+  if (c.WorkingDir) a.push('-w ' + shq(c.WorkingDir));
+  if (c.User) a.push('-u ' + shq(c.User));
+  const ep = c.Entrypoint || [];
+  let cmd = c.Cmd || [];
+  if (ep.length) { a.push('--entrypoint ' + shq(ep[0])); cmd = [...ep.slice(1), ...cmd]; }
+  a.push(shq(c.Image));
+  for (const x of cmd) a.push(shq(x));
+  return a.join(' ');
+}
+
+// 一键恢复：解压回原位置、恢复定时任务、重新启用并启动服务；容器按备份重新创建（端口冲突的按 remap 换端口）
+async function restoreBackup(server, id, log = () => {}, { containers = [], remap = {} } = {}) {
   if (!/^\d{12,14}$/.test(String(id))) throw new Error('备份编号不对');
   const BK = `${BACKUP_ROOT}/${id}`;
   return withSSH(server, async (ssh) => {
     const sh = ['set +e',
       `[ -f ${BK}/files.tar.gz ] || { echo "找不到备份文件"; exit 1; }`,
-      `echo "▶ 解压程序和配置到原来的位置…"; tar xzf ${BK}/files.tar.gz -C / && echo "  完成"`,
+      `echo "▶ 解压程序、配置和数据到原来的位置…"; tar xzf ${BK}/files.tar.gz -C / && echo "  完成"`,
       `if [ -s ${BK}/cron.txt ]; then T=$(mktemp); crontab -l 2>/dev/null > $T; while IFS= read -r l; do grep -qxF "$l" $T || echo "$l" >> $T; done < ${BK}/cron.txt; crontab $T && echo "  定时任务已恢复"; rm -f $T; fi`,
       'systemctl daemon-reload >/dev/null 2>&1',
-      `while IFS='|' read -r n f; do [ -n "$n" ] || continue; case "$f" in /etc/init.d/*) (update-rc.d "$n" defaults >/dev/null 2>&1 || chkconfig --add "$n" >/dev/null 2>&1 || rc-update add "$n" default >/dev/null 2>&1); "$f" start >/dev/null 2>&1;; *) systemctl enable "$n" >/dev/null 2>&1; systemctl start "$n" >/dev/null 2>&1;; esac; echo "  启动服务 $n"; done < ${BK}/units.txt`,
-      'echo "恢复完成"',
+      `[ -f ${BK}/units.txt ] && while IFS='|' read -r n f; do [ -n "$n" ] || continue; case "$f" in /etc/init.d/*) (update-rc.d "$n" defaults >/dev/null 2>&1 || chkconfig --add "$n" >/dev/null 2>&1 || rc-update add "$n" default >/dev/null 2>&1); "$f" start >/dev/null 2>&1;; *) systemctl enable "$n" >/dev/null 2>&1; systemctl start "$n" >/dev/null 2>&1;; esac; echo "  启动服务 $n"; done < ${BK}/units.txt`,
     ];
+    if (containers.length) {
+      sh.push('echo "▶ 恢复 Docker 容器"',
+        // 没有 Docker 就先装上（官方安装脚本）
+        `if ! command -v docker >/dev/null; then echo "  VPS 上没有 Docker，正在安装（官方脚本，约 1–3 分钟）…"; curl -fsSL https://get.docker.com | sh >/dev/null 2>&1 || wget -qO- https://get.docker.com | sh >/dev/null 2>&1; systemctl enable --now docker >/dev/null 2>&1; command -v docker >/dev/null && echo "  Docker 已安装" || { echo "  ✗ Docker 安装失败，容器没法恢复"; exit 2; }; fi`,
+        `for f in ${BK}/docker/img-*.tar.gz; do [ -f "$f" ] && gunzip -c "$f" | docker load >/dev/null 2>&1 && echo "  导入本地镜像 $(basename "$f")"; done`,
+        `for f in ${BK}/docker/vol-*.tar.gz; do [ -f "$f" ] || continue; v=$(basename "$f" .tar.gz); v=\${v#vol-}; docker volume create "$v" >/dev/null 2>&1; mp=$(docker volume inspect -f '{{.Mountpoint}}' "$v" 2>/dev/null); [ -n "$mp" ] && tar xzf "$f" -C "$mp" && echo "  数据卷 $v"; done`);
+      const projects = new Set();
+      for (const ins of containers) {
+        const name = String(ins.Name || '').replace(/^\//, '').replace(/[^\w.-]/g, '');
+        const wd = ins.Config?.Labels?.['com.docker.compose.project.working_dir'];
+        if (wd && /^\/[\w./@-]+$/.test(wd)) {
+          // docker compose 部署的：用原来的项目目录整体拉起（目录已经随备份恢复）
+          if (projects.has(wd)) continue;
+          projects.add(wd);
+          sh.push(`if [ -d ${shq(wd)} ]; then cd ${shq(wd)} && { docker compose up -d >/dev/null 2>&1 || docker-compose up -d >/dev/null 2>&1; } && echo "  compose 项目 ${wd} 已启动" || echo "  ✗ compose 项目 ${wd} 启动失败"; cd /; fi`);
+          continue;
+        }
+        const net = ins.HostConfig?.NetworkMode;
+        if (net && !['default', 'bridge', 'host', 'none'].includes(net) && !/^container:/.test(net)) sh.push(`docker network inspect ${shq(net)} >/dev/null 2>&1 || docker network create ${shq(net)} >/dev/null 2>&1`);
+        const img = ins.Config?.Image || '';
+        sh.push(`docker image inspect ${shq(img)} >/dev/null 2>&1 || { echo "  下载镜像 ${img.replace(/[^\w./:@-]/g, '')} …"; docker pull ${shq(img)} >/dev/null 2>&1; }`,
+          `docker rm -f ${shq(name)} >/dev/null 2>&1; ${dockerRunCmd(ins, remap)} >/dev/null 2>&1 && echo "  容器 ${name} 已启动" || echo "  ✗ 容器 ${name} 启动失败"`);
+      }
+    }
+    sh.push('echo "恢复完成"');
     const st = streamLog(log);
-    const r = await ssh.exec(sh.join('\n'), { timeout: 1200000, onData: st.onData });
+    const r = await ssh.exec(sh.join('\n'), { timeout: 1800000, onData: st.onData });
     st.flush();
-    if (r.code !== 0) throw new Error((r.stdout + r.stderr).trim().split('\n').pop() || '恢复失败');
+    if (r.code !== 0 && !/恢复完成/.test(r.stdout)) throw new Error((r.stdout + r.stderr).trim().split('\n').pop() || '恢复失败');
     return true;
   }, { log });
 }
@@ -1078,4 +1190,4 @@ async function gateRealityTarget(ssh, server, log, force) {
   log(`✔ Reality 目标 ${rp.sni} 检测通过（TLS 1.3、HTTP/2、X25519、证书有效，${r.ms} ms）`);
 }
 
-module.exports = { OTHER_APPS, scanOthers, cleanOthers, restoreBackup, deleteBackup, netPing, netInfo, netTune, netRestore, netTrace, netMtu, withCC, benchStart, benchPoll, benchStop, swapSize, memLimits, writeUnits, tuneSmallBox, rememberHw, pickReality, adminNotify, realityCheck, deployServer, syncServer, updateSingbox, serverSelfCheck, notifyTest, fetchMetrics, scanReality, serverStatus, fetchStats, resetTraffic, serverLogs, uninstall, testSSH, remoteTlsCheck, agentConfig };
+module.exports = { OTHER_APPS, scanOthers, cleanOthers, backupInfo, dockerRunCmd, restoreBackup, deleteBackup, netPing, netInfo, netTune, netRestore, netTrace, netMtu, withCC, benchStart, benchPoll, benchStop, swapSize, memLimits, writeUnits, tuneSmallBox, rememberHw, pickReality, adminNotify, realityCheck, deployServer, syncServer, updateSingbox, serverSelfCheck, notifyTest, fetchMetrics, scanReality, serverStatus, fetchStats, resetTraffic, serverLogs, uninstall, testSSH, remoteTlsCheck, agentConfig };

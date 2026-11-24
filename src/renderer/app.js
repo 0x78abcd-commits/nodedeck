@@ -1218,8 +1218,8 @@ async function cleanOthers(s) {
       const sel = picks.filter((p) => p.cb.checked);
       goBtn.disabled = !sel.length || busyNow;
       goBtn.textContent = sel.length ? `删除选中的（${sel.length}）` : '删除选中的';
-      const anyApp = sel.some((p) => p.it.kind === 'app');
-      bakRow.classList.toggle('hidden', !anyApp);
+      const canBak = sel.some((p) => p.it.kind === 'app' || p.it.kind === 'docker');
+      bakRow.classList.toggle('hidden', !canBak);
     };
     const conflict = (ports) => ports.map((p) => Number(String(p).split('/')[0])).filter((p) => ourPorts.has(p));
     const portTags = (ports) => ports.map((p) => { const bad = conflict([p]).length; return h('span', { class: 'tag ' + (bad ? 'bad' : ''), title: bad ? '和 NodeDeck 的节点端口冲突' : '' }, p); });
@@ -1230,7 +1230,7 @@ async function cleanOthers(s) {
       return h('label', { class: 'cl-item' }, cb, h('div', { style: { flex: 1, minWidth: 0 } }, h('div', { class: 'cl-title' }, title), sub ? h('div', { class: 'muted cl-sub' }, sub) : null, extra));
     };
     const section = (t, desc, rows) => rows.length ? h('div', { class: 'cl-sec' }, h('h4', {}, t), desc ? h('p', { class: 'muted', style: { fontSize: '12px', margin: '0 0 6px' } }, desc) : null, rows) : null;
-    const apps = r.apps.map((a) => item({ kind: 'app', id: a.id }, true,
+    const apps = r.apps.map((a) => item({ kind: 'app', id: a.id, ports: a.ports }, true,
       h('span', {}, h('b', {}, a.name), ' ', h('span', { class: 'tag ' + (a.running ? 'warn' : '') }, a.running ? '运行中' : '没在运行'), a.mb ? h('span', { class: 'tag' }, mbText(a.mb)) : null, conflict(a.ports).length ? h('span', { class: 'tag bad' }, '占用了节点端口') : null),
       [a.units.length ? '服务 ' + a.units.map((u) => u.name).join('、') : '', a.paths.length ? '目录 ' + a.paths.map((x) => `${x.path}${x.mb > 1 ? `（${mbText(x.mb)}）` : ''}`).join('、') : ''].filter(Boolean).join(' · '),
       h('div', {}, a.ports.length ? h('span', { class: 'muted', style: { fontSize: '12px' } }, '端口 ', portTags(a.ports)) : null, a.danger ? h('div', { class: 'cl-danger' }, '⚠ ' + a.danger) : null)));
@@ -1241,23 +1241,38 @@ async function cleanOthers(s) {
     const olds = r.oldBackups.length ? [item({ kind: 'oldBackups' }, true, h('b', {}, `旧版留下的配置备份（${r.oldBackups.length} 个）`), r.oldBackups.map((b) => b.path).join('、'))] : [];
     // 可以恢复的备份
     const bks = r.backups.map((b) => h('div', { class: 'cl-item cl-bk' },
-      h('div', { style: { flex: 1, minWidth: 0 } }, h('div', { class: 'cl-title' }, h('b', {}, (b.apps || []).map((x) => x.name).join('、') || '备份'), h('span', { class: 'tag' }, mbText(b.kb / 1024))), h('div', { class: 'muted cl-sub' }, `${fmtDate(b.at)} · /root/nodedeck-backup/${b.id}`)),
+      h('div', { style: { flex: 1, minWidth: 0 } }, h('div', { class: 'cl-title' }, h('b', {}, [...(b.apps || []).map((x) => x.name), ...(b.containers || []).map((x) => (/容器/.test(x) ? x : '容器 ' + x))].join('、') || '备份'), h('span', { class: 'tag' }, mbText(b.kb / 1024))), h('div', { class: 'muted cl-sub' }, `${fmtDate(b.at)} · /root/nodedeck-backup/${b.id}`)),
       h('button', { class: 'small primary', onclick: async () => {
-        if (!(await confirmBox(`把「${(b.apps || []).map((x) => x.name).join('、')}」恢复回去？\n\n程序、配置、服务文件和定时任务会放回原来的位置并启动。如果它和 NodeDeck 的节点用了同一个端口，会互相抢端口，恢复后注意检查。`, '恢复'))) return;
-        await runTask(async () => { await api.call('server:restoreBackup', s.id, b.id); toast('已恢复', 'ok'); });
+        let plan;
+        toast('正在检查端口…');
+        try { plan = await api.call('server:restorePlan', s.id, b.id); } catch (e) { toast(e.message, 'err'); return; }
+        const what = [...plan.apps, ...plan.containers.map((x) => '容器 ' + x)].join('、');
+        const lines = [`把「${what}」恢复回去？程序、配置、数据和服务会放回原来的位置并启动。`];
+        if (plan.needDocker) lines.push('', 'VPS 上没有 Docker，会先自动安装（官方脚本）。');
+        if (plan.moves.length) lines.push('', '端口冲突会这样处理：', ...plan.moves.map((m) => `• ${m.who} 要用 ${m.from}，NodeDeck 的 ${m.label} 改到 ${m.to} 并同步（用户需要刷新订阅）`));
+        if (plan.remapList.length) lines.push('', ...plan.remapList.map((x) => `• 容器 ${x.name} 的 ${x.from}/${x.proto} 被占用，改用空闲端口 ${x.to}`));
+        if (plan.warnings.length) lines.push('', '⚠ ' + plan.warnings.join('\n⚠ '));
+        if (!plan.moves.length && !plan.remapList.length && !plan.warnings.length) lines.push('', '端口检查：没有冲突。');
+        if (!(await confirmBox(lines.join('\n'), '恢复'))) return;
+        await runTask(async () => {
+          const r = await api.call('server:restoreBackup', s.id, b.id, plan);
+          const notes = [...r.moves.map((m) => `${m.label} 端口改成了 ${m.to}`), ...r.remapList.map((x) => `容器 ${x.name} 改用端口 ${x.to}`)];
+          toast('已恢复' + (notes.length ? '：' + notes.join('；') + (r.moves.length ? '。用户需要刷新订阅' : '') : ''), 'ok');
+          await reload();
+        });
       } }, '一键恢复'),
       h('button', { class: 'small danger', onclick: async () => {
         if (!(await confirmBox(`删除这份备份？删除后就不能恢复了。`, '删除'))) return;
         await runTask(async () => { await api.call('server:deleteBackup', s.id, b.id); toast('备份已删除', 'ok'); });
       } }, '删除')));
-    const bakRow = h('label', { class: 'f cl-bakrow' }, bakCb, ' 删除前整套备份（程序、配置、服务文件、定时任务），以后可以在这里一键恢复。默认不备份，彻底删干净');
+    const bakRow = h('label', { class: 'f cl-bakrow' }, bakCb, ' 删除前整套备份（程序、配置、服务文件、定时任务、容器和它的数据），以后可以在这里一键恢复。默认不备份，彻底删干净');
     if (!apps.length && !docks.length && !others.length && !olds.length) {
       body.append(h('div', { class: 'cl-empty' }, h('b', {}, '很干净'), h('p', { class: 'muted' }, '没有发现其他面板、代理程序、Docker 容器，也没有别的程序占用公网端口。')));
     } else {
       body.append(
         h('div', { class: 'cl-warn' }, '默认是彻底删除，不能恢复；需要留后路就勾选下面的「删除前整套备份」。SSH、系统服务和 NodeDeck 自己的东西不会动。'),
         section('面板 / 代理程序', '停止服务、取消开机自启，删除它的程序、配置、服务文件和定时任务。', apps),
-        section('Docker 容器', '默认不勾。勾上的容器连同它的匿名数据卷和镜像一起删除（镜像还被别的容器用着时保留）。容器不会备份。', docks),
+        section('Docker 容器', '默认不勾。勾上的容器连同它的数据卷和镜像一起删除（还被别的容器用着的保留）。勾了「整套备份」的话，容器的配置、数据卷、挂载目录和本地镜像也会备份，可以一键重新装回来。', docks),
         section('其他占用公网端口的程序', '不认识的程序默认不勾，只停用不删除。', others),
         section('旧备份', '', olds),
         bakRow);

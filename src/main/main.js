@@ -613,7 +613,79 @@ function registerIpc() {
   // 清理其他面板 / 代理程序
   handle('server:scanOthers', (id) => deploy.scanOthers(getServer(id)));
   handle('server:cleanOthers', (id, items, opts) => deploy.cleanOthers(getServer(id), items || [], taskLogger('clean:' + id), opts || {}));
-  handle('server:restoreBackup', (id, bid) => deploy.restoreBackup(getServer(id), bid, taskLogger('clean:' + id)));
+  // 恢复前先算好端口怎么让：恢复的程序 / compose 容器要用的端口如果被 NodeDeck 的节点占着，把节点挪到空闲端口；
+  // 普通容器直接换一个空闲的主机端口
+  async function restorePlan(id, bid) {
+    const srv = getServer(id);
+    const info = await deploy.backupInfo(srv, bid);
+    const st = state();
+    const ours = [];
+    for (const [k, p] of Object.entries(srv.protocols || {})) if (p?.enabled && core.PROTOCOLS[k]) for (const n of core.netsOf(core.PROTOCOLS[k].net)) ours.push({ key: k, port: Number(p.port), proto: n, fixed: !!p.fixedPort });
+    const otherBusy = info.busy.filter((b) => !/^nodedeck/.test(b.pname));
+    const k2 = (port, proto) => `${port}/${proto}`;
+    const need = new Map(); // 恢复后固定要用的端口 → 谁要用
+    for (const a of info.meta.apps || []) for (const p of a.ports || []) need.set(p, a.name);
+    const plain = []; // 可以换主机端口的普通容器
+    for (const ins of info.containers) {
+      const name = String(ins.Name || '').replace(/^\//, '');
+      const compose = !!ins.Config?.Labels?.['com.docker.compose.project.working_dir'];
+      for (const [cp, binds] of Object.entries(ins.HostConfig?.PortBindings || {})) {
+        const proto = cp.split('/')[1] || 'tcp';
+        for (const b of binds || []) {
+          if (!b.HostPort) continue;
+          if (compose) need.set(k2(b.HostPort, proto), `容器 ${name}`); else plain.push({ name, port: Number(b.HostPort), proto });
+        }
+      }
+    }
+    const warnings = [];
+    const moves = [];
+    const taken = new Set([...info.busy.map((b) => k2(b.port, b.proto)), ...need.keys(), ...plain.map((x) => k2(x.port, x.proto))]);
+    for (const o of ours) {
+      const who = need.get(k2(o.port, o.proto));
+      if (!who || moves.some((m) => m.key === o.key)) continue;
+      const label = core.PROTOCOLS[o.key].label;
+      if (o.fixed) { warnings.push(`${who} 要用 ${o.port}/${o.proto}，但 NodeDeck 的 ${label} 是固定端口，没有挪，${who} 可能起不来`); continue; }
+      const to = core.pickFreePort(st, srv, o.key, [...taken].map((x) => Number(x.split('/')[0])));
+      for (const n of core.netsOf(core.PROTOCOLS[o.key].net)) taken.add(k2(to, n));
+      moves.push({ key: o.key, label, from: o.port, to, who });
+    }
+    const ourNow = new Set(ours.filter((o) => !moves.some((m) => m.key === o.key)).map((o) => k2(o.port, o.proto)));
+    for (const m of moves) for (const n of core.netsOf(core.PROTOCOLS[m.key].net)) ourNow.add(k2(m.to, n));
+    const remap = {}; const remapList = [];
+    const busyOther = new Set(otherBusy.map((b) => k2(b.port, b.proto)));
+    for (const c of plain) {
+      const key = k2(c.port, c.proto);
+      if (!ourNow.has(key) && !busyOther.has(key) && !need.has(key)) continue;
+      if (remap[key]) continue;
+      let to = 0;
+      for (let i = 0; i < 500 && !to; i++) { const p = 20000 + Math.floor(Math.random() * 40000); if (![...taken, ...ourNow].includes(k2(p, c.proto))) to = p; }
+      remap[key] = to; taken.add(k2(to, c.proto));
+      remapList.push({ name: c.name, from: c.port, to, proto: c.proto });
+    }
+    for (const [key, who] of need) { const b = otherBusy.find((x) => k2(x.port, x.proto) === key); if (b) warnings.push(`${who} 要用的 ${key} 已经被 ${b.pname || '其他程序'} 占用，${who} 可能起不来`); }
+    return { id: bid, apps: (info.meta.apps || []).map((a) => a.name), containers: info.containers.map((c) => String(c.Name || '').replace(/^\//, '')), moves, remap, remapList, warnings, needDocker: info.containers.length > 0 && !info.docker };
+  }
+  handle('server:restorePlan', (id, bid) => restorePlan(id, bid));
+  handle('server:restoreBackup', async (id, bid, plan) => {
+    const log = taskLogger('clean:' + id);
+    if (!plan || plan.id !== bid) plan = await restorePlan(id, bid);
+    // 先把 NodeDeck 的节点挪开并同步，腾出端口
+    const moves = (plan.moves || []).filter((m) => core.PROTOCOLS[m.key] && Number.isInteger(m.to) && m.to > 0 && m.to < 65536);
+    if (moves.length) {
+      const cur = getServer(id);
+      const protocols = { ...cur.protocols };
+      for (const m of moves) { protocols[m.key] = { ...protocols[m.key], port: m.to }; log(`NodeDeck 的 ${m.label} 端口 ${m.from} 让给 ${m.who}，改用 ${m.to}`); }
+      store.upsert('servers', { id, protocols });
+      const errs = core.checkPortConflicts(state(), getServer(id));
+      if (errs.length) { store.upsert('servers', { id, protocols: cur.protocols }); throw new Error('换端口失败：' + errs.join('；')); }
+      await syncOne(id, log);
+    }
+    const remap = {};
+    for (const [k, v] of Object.entries(plan.remap || {})) if (/^\d+\/(tcp|udp)$/.test(k) && Number.isInteger(v)) remap[k] = v;
+    const info = await deploy.backupInfo(getServer(id), bid);
+    await deploy.restoreBackup(getServer(id), bid, log, { containers: info.containers, remap });
+    return { moves, remapList: plan.remapList || [] };
+  });
   handle('server:deleteBackup', (id, bid) => deploy.deleteBackup(getServer(id), bid));
   // Reality 目标质量：VPS 上检测（四项 + 握手延迟 + 目标 IP）和这台电脑（国内）能不能连上，一起返回
   handle('server:realityQuality', async (id) => {
