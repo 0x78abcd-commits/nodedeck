@@ -73,7 +73,7 @@ Windows 上的 NodeDeck ──SSH──▶ VPS
 
 ## 跟进参考仓库
 
-已于 2026-11-25 停止跟踪 Teminuosi/tms-client：不再自动检查它的新版本，也不再有每周的定时任务。以前的处理记录保留在 `docs/upstream-tracking.md`。`参考仓库更新提醒` 工作流继续跟踪 sing-box、Xray、Hysteria、TUIC、v2rayN / v2rayNG、mihomo 这些内核和客户端的新版本。
+`上游仓库更新提醒` 工作流每周检查 sing-box、Xray、Hysteria、TUIC、cloudflared、v2rayN / v2rayNG、mihomo、NodeQuality、TcpQuality、CELERITY-panel 和 Teminuosi/tms-client 的新版本，有更新就开 Issue。TMS 不公开源码，只看它的更新说明，自己实现。清单和理由见 `docs/upstream-tracking.md`。
 
 ## 本地开发
 

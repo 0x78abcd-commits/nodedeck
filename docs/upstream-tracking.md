@@ -16,7 +16,7 @@
 | P1 | ibsgss/TcpQuality | 主分支提交 | 同上 |
 | P2 | MetaCubeX/mihomo | Clash 订阅字段 | 已出 Clash 订阅 |
 | P2 | ClickDevTech/CELERITY-panel | Tag | 同类面板（MIT）：Xray XHTTP、级联中转、负载均衡、外部探针 |
-| P2 | acidmiku/z_panel | 主分支提交 | 同类面板：SSH 安全加固、多节点管理（没有开源许可证，只参考功能，不复制代码） |
+| P2 | Teminuosi/tms-client | Release（含预发布） | 同类桌面工具：功能灵感（不公开源码，只看更新说明，自己实现；不解包安装包）。11-25 停过一次，当天恢复 |
 
 不跟踪的（2026-11-25 评估）：
 
@@ -25,7 +25,7 @@
 - docker/compose：只在「清理其他程序」的一键恢复里用到 `docker compose up -d`，接口很稳定
 - prometheus/prometheus：NodeDeck 的监控由 agent 采集、桌面端画图，不打算引入 Prometheus
 - xykt/NetQuality：NodeQuality 的「网络质量」一项就是直接调用它的脚本（Net.Check.Place），社区测试里已经包含；它的变化会通过 NodeQuality 体现，单独跟踪重复
-- Teminuosi/tms-client：2026-11-25 起停止跟踪
+- acidmiku/z_panel：星数很少、没有开源许可证，参考价值不大（2026-11-25 取消）
 
 ## 自动化与原则
 
