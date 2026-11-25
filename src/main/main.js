@@ -92,7 +92,25 @@ function appVersionForAgent() { return app.isPackaged ? app.getVersion() : ''; }
 async function syncOne(id, log) {
   const st = await deploy.syncServer(state(), getServer(id), { log, resourcesDir, appVersion: appVersionForAgent() });
   store.upsert('servers', { id, lastStatus: st, syncedAt: Date.now() });
+  watchSubCert(id);
   return st;
+}
+
+// 订阅 HTTPS 证书是 agent 重启后在后台申请的（十几秒到一两分钟）：同步完过一会儿再读一次状态，
+// 拿到证书后订阅地址自动变成 https
+const subCertWatch = new Map();
+function watchSubCert(id, tries = 0) {
+  clearTimeout(subCertWatch.get(id));
+  const s = state().servers.find((x) => x.id === id);
+  if (!s || !s.deployedAt || !core.subTlsWanted(state()) || core.subCertOk(state(), s) || tries >= 4) return;
+  subCertWatch.set(id, setTimeout(async () => {
+    try {
+      const st = await deploy.status(getServer(id));
+      store.upsert('servers', { id, lastStatus: st });
+      if (core.subCertOk(state(), getServer(id))) { send('toast', { text: `${getServer(id).name} 的订阅证书申请好了，订阅地址变成 https://（旧的 http 地址继续能用）`, level: 'ok' }); return; }
+    } catch (_) { /* ignore */ }
+    watchSubCert(id, tries + 1);
+  }, [45000, 120000, 300000, 900000][tries]));
 }
 
 // 部署后从本机测 TCP 协议端口，不通的自动换端口（每个最多 3 次）；全部不通时不改动
@@ -560,6 +578,12 @@ function registerIpc() {
       url, clashUrl: url ? url + '?format=clash' : '', singboxUrl: url ? url + '?format=singbox' : '', pageUrl: url ? url + '?format=html' : '',
       backups: core.subscriptionUrls(s, u).filter((x) => x.url !== url),
       links: sub.links, qr: url ? await tools.qr(url) : null, status: core.userStatus(u), used: core.userUsedBytes(u), expireAt: core.userExpireAt(u),
+      https: (() => {
+        if (!core.subTlsWanted(s)) return null;
+        const home = s.servers.find((x) => x.id === core.homeServerId(s, u));
+        const c = home?.lastStatus?.subCert;
+        return { ok: core.subCertOk(s, home), error: c?.error || '', notAfter: c?.notAfter || 0, server: home?.name || '' };
+      })(),
     };
   });
   handle('users:refreshUsage', () => refreshUsage());

@@ -721,10 +721,18 @@ function homeServerId(state, user) {
   return pick ? pick.id : null;
 }
 
-function subBase(host, port) {
+function subBase(host, port, https = false) {
   const h = String(host).trim();
   if (/^https?:\/\//i.test(h)) return h.replace(/\/+$/, ''); // 填了完整地址（如 https://sub.example.com）
-  return `http://${hostForUri(h)}:${port}`;
+  return `${https ? 'https' : 'http'}://${hostForUri(h)}:${port}`;
+}
+
+// 订阅走 HTTPS（不用域名）：设置里没关、也没填订阅域名时，agent 给 VPS 的 IP 申请 Let's Encrypt 证书
+function subTlsWanted(state) { return state.settings?.subHttps !== false && !state.settings?.subDomain; }
+// 这台服务器的订阅证书现在能用（agent 报告有效、对得上地址、还有至少 1 小时）
+function subCertOk(state, s) {
+  const c = s?.lastStatus?.subCert;
+  return !!(subTlsWanted(state) && c && c.ok && c.notAfter > Date.now() + 3600e3 && String(c.host || '') === String(s.host || '').replace(/^\[|\]$/g, ''));
 }
 
 // 订阅地址：设置了订阅域名就用域名（换服务器地址不变），否则用主服务器
@@ -733,13 +741,13 @@ function subscriptionUrl(state, user) {
   if (state.settings?.subDomain) return `${subBase(state.settings.subDomain, port)}/sub/${user.token}`;
   const s = (state.servers || []).find((x) => x.id === homeServerId(state, user));
   if (!s) return '';
-  return `${subBase(s.host, port)}/sub/${user.token}`;
+  return `${subBase(s.host, port, subCertOk(state, s))}/sub/${user.token}`;
 }
 
 // 备用订阅地址：用户的每台已部署服务器都能提供同样的订阅
 function subscriptionUrls(state, user) {
   const port = state.settings?.subPort || 2096;
-  return (state.servers || []).filter((s) => s.deployedAt && userHasServer(user, s.id)).map((s) => ({ server: s.name, url: `${subBase(s.host, port)}/sub/${user.token}` }));
+  return (state.servers || []).filter((s) => s.deployedAt && userHasServer(user, s.id)).map((s) => ({ server: s.name, url: `${subBase(s.host, port, subCertOk(state, s))}/sub/${user.token}` }));
 }
 
 function serverPorts(state, server) {
@@ -749,6 +757,7 @@ function serverPorts(state, server) {
   const hop = p.hysteria2?.enabled ? hopRange(server, {}) : null;
   if (hop) ports.push({ range: hop, net: 'udp' });
   if (usesAcme(server)) ports.push({ port: 80, net: 'tcp', acme: true });
+  else if (subTlsWanted(state)) ports.push({ port: 80, net: 'tcp', acme: true }); // 订阅证书的 http-01 验证（只在验证时临时监听）
   for (const f of state.forwards || []) {
     if (f.relayServerId !== server.id || f.enabled === false) continue;
     const t = resolveForwardTarget(state, f);
@@ -845,6 +854,6 @@ module.exports = {
   newServer, newUser, userStatus, userExpireAt, homeServerId, subscriptionUrls, buildSingboxClient, uniqueEntries, userUsedBytes, userHasServer, usersForServer,
   buildServerConfig, nodeEntries, shareLink, clashProxy, clientOutbound, clientTestConfig,
   userEntries, buildSubscription, buildAgentUsers, buildAgentSubs, subscriptionUrl,
-  SNI_BLOCKED, sniBlocked, netsOf, serverPorts, checkPortConflicts, resolveForwardTarget, landingOutbound, pickFreePort, rotateServer,
+  SNI_BLOCKED, sniBlocked, netsOf, subTlsWanted, subCertOk, serverPorts, checkPortConflicts, resolveForwardTarget, landingOutbound, pickFreePort, rotateServer,
   netsOf, ensureProtocols, ssUserKey, cfTunnelOf, buildTunnelConfig, certPinOf, fpOf, FINGERPRINTS, REALITY_FALLBACKS, PREFERRED_TCP_PORTS, pickPreferredPort, usesAcme, tlsSniFor, hopRange, serverHosts, WARP_SITES,
 };

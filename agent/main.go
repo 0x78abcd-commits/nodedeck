@@ -10,11 +10,13 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -67,6 +69,8 @@ type Config struct {
 	// 0.7.2 起：后台每 5 分钟测三网延迟 / 丢包（默认关，需要时在设置里打开；平时在「网络优化」里手动测）
 	LatencyProbe bool     `json:"latencyProbe"`
 	Alerts       AlertCfg `json:"alerts"`
+	// 0.8.7 起：订阅走 HTTPS（IP 证书）
+	SubTLS *SubTLSCfg `json:"subTls"`
 }
 
 type User struct {
@@ -708,7 +712,26 @@ func run(cfgPath string) {
 	go a.udpEcho()
 	pub.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { http.NotFound(w, r) })
 	go func() {
-		log.Fatal((&http.Server{Addr: a.cfg.SubListen, Handler: pub, ReadHeaderTimeout: 10 * time.Second}).ListenAndServe())
+		srv := &http.Server{Handler: pub, ReadHeaderTimeout: 10 * time.Second}
+		ln, err := net.Listen("tcp", a.cfg.SubListen)
+		if err != nil {
+			log.Fatal(err)
+		}
+		// 0.8.7 起：订阅端口同时接受 HTTPS（Let's Encrypt IP 证书，不需要域名）和 HTTP（旧地址继续能用）
+		if a.cfg.SubTLS != nil && a.cfg.SubTLS.Enabled {
+			h := &certHolder{}
+			cf, kf, _ := subCertPaths(a.cfg.DataDir)
+			h.load(cf, kf)
+			go a.subCertLoop(h)
+			tcfg := &tls.Config{MinVersion: tls.VersionTLS12, NextProtos: []string{"http/1.1"}, GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+				if c, _ := h.get(); c != nil {
+					return c, nil
+				}
+				return nil, errors.New("证书还没申请下来")
+			}}
+			log.Fatal(srv.Serve(newDualListener(ln, tcfg)))
+		}
+		log.Fatal(srv.Serve(ln))
 	}()
 
 	adm := http.NewServeMux()
@@ -902,6 +925,9 @@ func main() {
 		printJSON(readTCPStats())
 	case "trace":
 		printJSON(traceAll())
+	case "sub-cert":
+		// 订阅 HTTPS 证书的状态（桌面端同步时读）
+		printJSON(subCertInfo(cfgDataDir(*cfgPath)))
 	case "dns-fix":
 		// 系统 DNS 自检，解析不了就换成能通的公共 DNS
 		printJSON(fixDNS(cfgDataDir(*cfgPath)))

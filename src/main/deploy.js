@@ -173,6 +173,8 @@ function agentConfig(state, server = {}) {
     reality: realityAgentCfg(state, server),
     speedToken: server.speedToken || '',
     latencyProbe: !!st.latencyProbe, // 后台定时测三网延迟，默认关（省流量）
+    // 订阅 HTTPS：给 VPS 的 IP 申请 Let's Encrypt 证书（6 天有效，agent 自动续）
+    subTls: core.subTlsWanted(state) ? { enabled: true, host: String(server.host || '').replace(/^\[|\]$/g, '') } : null,
     alerts: { off: st.alerts?.enabled === false, diskPct: Number(st.alerts?.diskPct) || 0, cpuPct: Number(st.alerts?.cpuPct) || 0, latencyMs: Number(st.alerts?.latencyMs) || 0 },
   };
 }
@@ -545,6 +547,7 @@ echo LOAD=$(cut -d' ' -f1-3 /proc/loadavg)
 echo MEM=$(free -m | awk '/Mem:/{print $3"/"$2"MB"}')
 echo UP=$(uptime -p 2>/dev/null)
 echo UPS=$(cut -d. -f1 /proc/uptime)
+echo SUBCERT=$(${AGENT_BIN} sub-cert -c ${DIR}/agent.json 2>/dev/null | tr -d '\n')
 echo CPUS=$(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo)
 echo MEMI=$(awk '/^MemTotal:/{t=$2} /^MemAvailable:/{a=$2} END{print int((t-a)/1024)" "int(t/1024)}' /proc/meminfo)
 echo DISK=$(df -Pm / | awk 'NR==2{print $3" "$2}')
@@ -559,6 +562,7 @@ echo IP6=$(ip -6 addr show scope global 2>/dev/null | awk '/inet6/{print $2}' | 
   return {
     singbox: kv.SB === 'active', agent: kv.AG === 'active', version: kv.VER || '', agentVersion: kv.AGV || '', cf: kv.CF === 'active', ipv6: kv.IP6 || '', load: kv.LOAD, mem: kv.MEM, uptime: kv.UP,
     // 给服务器列表画仪表用（MB）
+    subCert: (() => { try { const j = JSON.parse(kv.SUBCERT || ''); return j && typeof j === 'object' && 'ok' in j ? j : null; } catch (_) { return null; } })(),
     memUsed: memUsed || 0, memTotal: memTotal || 0, diskUsed: diskUsed || 0, diskTotal: diskTotal || 0, cpus: Number(kv.CPUS) || 0, cpu: kv.CPU === '' || kv.CPU == null ? null : Number(kv.CPU), uptimeSec: Number(kv.UPS) || 0, at: Date.now(),
   };
 }

@@ -1602,6 +1602,9 @@ async function showSub(u) {
         row('Clash Meta / Mihomo', r.clashUrl),
         row('sing-box（SFA / SFI / SFM，1.12 及以上）', r.singboxUrl),
         h('p', { class: 'muted' }, `状态：${r.status.reason} · 已用 ${fmtBytes(r.used)}${r.expireAt ? ' · 到期 ' + fmtDate(r.expireAt) : ''}。`, h('a', { href: r.pageUrl, target: '_blank' }, '打开订阅信息页'), '（用户在浏览器打开订阅地址会看到用量和一键导入按钮）'))));
+    if (r.https) body.append(r.https.ok
+      ? h('p', { class: 'muted', style: { fontSize: '12px' } }, h('span', { class: 'tag ok' }, 'HTTPS'), ' 订阅内容加密传输（Let\'s Encrypt 给 IP 签的证书，每 6 天自动续）。以前发出去的 http:// 地址也还能用，建议让用户换成上面的新地址')
+      : h('p', { class: 'muted', style: { fontSize: '12px' } }, h('span', { class: 'tag warn' }, '还是 HTTP'), ' ', r.https.error ? `${r.https.server} 的订阅证书没申请下来：${r.https.error}` : '订阅证书还没申请（点「同步」后一两分钟内自动申请，申请好地址会自动变成 https://）'));
     if (r.backups.length) body.append(h('h4', {}, '备用订阅地址（主地址打不开时用）'), r.backups.map((b) => row(b.server, b.url)));
     // 临时订阅链接：给试用或临时分享，到期自动失效，不影响主地址
     const tempBox = h('div', {});
@@ -1964,6 +1967,7 @@ async function viewSettings(v) {
   const syncProxy = () => proxyRow.classList.toggle('hidden', proxyMode.value !== 'custom');
   proxyMode.onchange = syncProxy; syncProxy();
   const detected = h('span', { class: 'muted' });
+  const subHttps = h('input', { type: 'checkbox', checked: st.subHttps !== false });
   const subDomain = h('input', { value: st.subDomain || '', placeholder: '留空 = 用用户的主服务器 IP；可填 sub.example.com 或 https://sub.example.com' });
   const tz = h('select', {}, [['Asia/Shanghai', '北京时间（UTC+8）'], ['Asia/Hong_Kong', '香港'], ['Asia/Taipei', '台北'], ['Asia/Tokyo', '东京（UTC+9）'], ['Asia/Singapore', '新加坡'], ['Europe/London', '伦敦'], ['America/Los_Angeles', '洛杉矶'], ['America/New_York', '纽约'], ['UTC', 'UTC']].map(([k, l]) => h('option', { value: k }, l)));
   tz.value = st.timezone || 'Asia/Shanghai';
@@ -2015,6 +2019,7 @@ async function viewSettings(v) {
       field('订阅端口（对外开放）', subPort),
       h('div', { class: 'row' }, field('统计 API 端口（仅本机）', statsPort), field('agent 管理端口（仅本机）', adminPort)),
       field('订阅域名（可选）', subDomain, '把一个域名解析到任意一台已部署的服务器，订阅地址就不会因为换服务器而改变'),
+      h('label', { class: 'f' }, subHttps, ' 订阅链接用 HTTPS（不需要域名：自动给每台 VPS 的 IP 申请 Let\'s Encrypt 证书，6 天有效、自动续。需要放行 TCP 80 端口做验证，NodeDeck 会自动开防火墙；服务商有安全组的话也要放行。填了订阅域名时用域名）'),
       field('时区', tz, '流量重置、日报、升级时间段都按这个时区计算'),
       field('sing-box 内核渠道', sbBase, '默认是你仓库里名为 singbox 的 Release，GitHub Actions 每天自动构建官方最新正式版'),
       h('label', { class: 'f' }, sbAuto, ' VPS 自动升级 sing-box 内核（每 6 小时检查，升级前校验配置，失败自动回滚）'),
@@ -2023,7 +2028,7 @@ async function viewSettings(v) {
       h('label', { class: 'f' }, autoUp, ' 自动检查软件更新'),
       h('button', { class: 'primary', onclick: async () => {
         await api.call('settings:set', { subPort: Number(subPort.value) || 2096, statsPort: Number(statsPort.value) || 9092, adminPort: Number(adminPort.value) || 9091, singboxBase: sbBase.value.trim(), singboxAutoUpdate: sbAuto.checked, autoUpdate: autoUp.checked,
-          subDomain: subDomain.value.trim(), timezone: tz.value, upgradeWindow: { enabled: uwOn.checked, start: Number(uwStart.value) || 0, end: Number(uwEnd.value) || 0 } });
+          subDomain: subDomain.value.trim(), subHttps: subHttps.checked, timezone: tz.value, upgradeWindow: { enabled: uwOn.checked, start: Number(uwStart.value) || 0, end: Number(uwEnd.value) || 0 } });
         toast('已保存，点「同步全部」后对各 VPS 生效（改了端口需要重新部署）', 'ok'); markDirty();
       } }, '保存')),
     h('div', {}, updateCard(), lookCard, guardCard,
