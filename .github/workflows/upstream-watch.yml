@@ -27,7 +27,6 @@ jobs:
           - { upstream: 2dust/v2rayNG,           label: upstream-v2rayng,  short: v2rayNG,   pre: false, why: '安卓客户端兼容、链接导入（如 allowInsecure 被移除）' }
           - { upstream: 2dust/v2rayN,            label: upstream-v2rayn,   short: v2rayN,    pre: false, why: 'Windows 客户端兼容' }
           - { upstream: MetaCubeX/mihomo,        label: upstream-mihomo,   short: mihomo,    pre: false, why: 'Clash Meta 订阅字段' }
-          - { upstream: Teminuosi/tms-client,    label: upstream-tms,      short: TMS,       pre: true,  why: '功能灵感（不公开源码，只看说明，自己实现）' }
     env:
       GH_TOKEN: ${{ github.token }}
       UPSTREAM: ${{ matrix.upstream }}

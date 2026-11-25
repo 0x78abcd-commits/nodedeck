@@ -72,10 +72,7 @@ Windows 上的 NodeDeck ──SSH──▶ VPS
 
 ## 跟进参考仓库
 
-- `参考仓库更新提醒` 工作流每周检查 [Teminuosi/tms-client](https://github.com/Teminuosi/tms-client/releases) 的新版本，有新版就在本仓库开一个带 `upstream-tms` 标签的 Issue，列出它的更新说明。
-- Claude 的每周定时任务会读这些更新说明，判断哪些值得加，自己实现后提交 Pull Request，你审核合并后再发版。
-- 参考仓库不公开源码，所以只参考它的功能描述，自己实现，不复制它的代码或安装包。
-- 已处理过的版本记录在 `docs/upstream-tracking.md`。
+已于 2026-11-25 停止跟踪 Teminuosi/tms-client：不再自动检查它的新版本，也不再有每周的定时任务。以前的处理记录保留在 `docs/upstream-tracking.md`。`参考仓库更新提醒` 工作流继续跟踪 sing-box、Xray、Hysteria、TUIC、v2rayN / v2rayNG、mihomo 这些内核和客户端的新版本。
 
 ## 本地开发
 

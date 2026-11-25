@@ -12,7 +12,6 @@
 | P1 | tuic-protocol/tuic | TUIC v5 变更 | 已支持 TUIC |
 | P1 | 2dust/v2rayNG、2dust/v2rayN | 客户端兼容、导入问题 | 用户最多，链接必须能导入（例：2026-08 起移除 allowInsecure，自签证书要带证书指纹） |
 | P2 | MetaCubeX/mihomo | Clash 订阅字段 | 已出 Clash 订阅 |
-| P2 | Teminuosi/tms-client | 面板功能 | 功能灵感（不公开源码，只看说明） |
 
 ## 自动化与原则
 
@@ -26,6 +25,8 @@
 # 参考仓库跟进记录
 
 参考仓库：https://github.com/Teminuosi/tms-client （只发布安装包，不公开源码）
+
+> 2026-11-25 起停止跟踪：工作流和每周定时任务都已取消，下面是停止前的记录。
 
 NodeDeck 0.1.0 按参考仓库 README 的功能表实现（截至 2026-11-20，对方最新版 0.1.69）。
 之后每处理一个版本，在下面加一行：版本、处理日期、结论（已实现 / 已有 / 不适用 / 暂缓）和对应的 PR。
