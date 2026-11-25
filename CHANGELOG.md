@@ -10,7 +10,7 @@
 - [新增] 本机测试 XHTTP 节点：安装包里带了 Windows 版 Xray
 - [新增] Xray 内核每天自动从官方同步（校验官方 SHA2-256）；VPS 上和 sing-box 一起自动升级，升级前校验配置，起不来自动回滚。「更多 → 升级内核」会两个一起升级
 - [修复] 开了「指定网站走 WARP」的服务器同步失败（sing-box 报 gVisor is not included）：服务端内核编译时少了 gVisor，现在补上重新编译，VPS 会自动升级到新内核（也可以在「更多 → 升级内核」里手动升级）
-- [新增] 上游跟踪加了 cloudflared、NodeQuality、TcpQuality、NetQuality、CELERITY-panel、z_panel
+- [新增] 上游跟踪加了 cloudflared、NodeQuality、TcpQuality、CELERITY-panel、z_panel
 - [新增] 订阅链接用 HTTPS，不需要域名：agent 自动给 VPS 的公网 IP 申请 Let's Encrypt 的 IP 证书（6 天有效，快到期自动续），订阅内容（节点密码）不再明文传输。验证时临时用一下 TCP 80 端口，NodeDeck 会自动放行防火墙（服务商有安全组的话也要放行）。证书申请好后订阅地址自动变成 https://，以前发出去的 http:// 地址继续能用。设置里可以关；填了订阅域名时用域名
 - [调整] 停止跟踪参考仓库 TMS：去掉每周检查它新版本的工作流和定时任务
 

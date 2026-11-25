@@ -15,7 +15,6 @@
 | P1 | LloydAsp/NodeQuality | 主分支提交 | 社区测试直接运行它的脚本，交互选项、报告链接格式变了要跟着改 |
 | P1 | ibsgss/TcpQuality | 主分支提交 | 同上 |
 | P2 | MetaCubeX/mihomo | Clash 订阅字段 | 已出 Clash 订阅 |
-| P2 | xykt/NetQuality | 主分支提交 | 三网回程、BGP、国际互联检测脚本，可以加进社区测试（AGPL，只调用脚本） |
 | P2 | ClickDevTech/CELERITY-panel | Tag | 同类面板（MIT）：Xray XHTTP、级联中转、负载均衡、外部探针 |
 | P2 | acidmiku/z_panel | 主分支提交 | 同类面板：SSH 安全加固、多节点管理（没有开源许可证，只参考功能，不复制代码） |
 
@@ -25,6 +24,7 @@
 - acmesh-official/acme.sh：NodeDeck 不用它，域名证书由 sing-box 内置 ACME 申请，订阅的 IP 证书由 agent 自己申请
 - docker/compose：只在「清理其他程序」的一键恢复里用到 `docker compose up -d`，接口很稳定
 - prometheus/prometheus：NodeDeck 的监控由 agent 采集、桌面端画图，不打算引入 Prometheus
+- xykt/NetQuality：NodeQuality 的「网络质量」一项就是直接调用它的脚本（Net.Check.Place），社区测试里已经包含；它的变化会通过 NodeQuality 体现，单独跟踪重复
 - Teminuosi/tms-client：2026-11-25 起停止跟踪
 
 ## 自动化与原则
