@@ -2,6 +2,16 @@
 
 每个版本一节，格式：`## 版本号（日期）`。发版时 GitHub Actions 会把对应一节作为 Release 说明，软件里的更新提示也会显示它。
 
+## 0.8.8（2026-11-25）
+
+- [新增] 两个新协议：VLESS-XHTTP-Reality 和 VLESS-XHTTP-TLS，在服务器「编辑 → 协议」里勾选。由 Xray 内核提供，只有勾了才会在 VPS 上装 Xray（约 35MB），全取消勾选会自动卸掉。Xray 收到的流量交给 sing-box 出去，落地、WARP 分流、屏蔽 BT / 广告 / 回国这些规则照样生效，流量统计、超额停用也照常
+- [新增] XHTTP-Reality 和 VLESS-Reality 共用 Reality 目标和密钥（目标巡检、重新优选对两个都生效），只开 XHTTP-Reality 也行；XHTTP-TLS 用自签证书（链接带证书指纹），开了正式证书就用正式证书
+- [新增] 客户端：v2rayN / v2rayNG、Shadowrocket、Clash Verge 等 mihomo 1.19.22 以上的客户端能用。sing-box 客户端不支持 XHTTP，sing-box 订阅里自动去掉；老版本 Clash 内核拉订阅时也自动去掉这两个节点
+- [新增] 本机测试 XHTTP 节点：安装包里带了 Windows 版 Xray
+- [新增] Xray 内核每天自动从官方同步（校验官方 SHA2-256）；VPS 上和 sing-box 一起自动升级，升级前校验配置，起不来自动回滚。「更多 → 升级内核」会两个一起升级
+- [修复] 开了「指定网站走 WARP」的服务器同步失败（sing-box 报 gVisor is not included）：服务端内核编译时少了 gVisor，现在补上重新编译，VPS 会自动升级到新内核（也可以在「更多 → 升级内核」里手动升级）
+- [新增] 上游跟踪加了 cloudflared、NodeQuality、TcpQuality、NetQuality、CELERITY-panel、z_panel
+
 ## 0.8.7（2026-11-25）
 
 - [新增] 订阅链接用 HTTPS，不需要域名：agent 自动给 VPS 的公网 IP 申请 Let's Encrypt 的 IP 证书（6 天有效，快到期自动续），订阅内容（节点密码）不再明文传输。验证时临时用一下 TCP 80 端口，NodeDeck 会自动放行防火墙（服务商有安全组的话也要放行）。证书申请好后订阅地址自动变成 https://，以前发出去的 http:// 地址继续能用。设置里可以关；填了订阅域名时用域名

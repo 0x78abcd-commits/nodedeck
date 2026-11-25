@@ -1,0 +1,107 @@
+name: Xray 内核
+
+# 每天检查 Xray-core 官方最新正式版，校验官方 .dgst 里的 SHA2-256 后，
+# 把各架构的 xray 二进制压成 gz，发布到本仓库名为 "xray" 的预发布 Release。
+# 只有开了 XHTTP 协议（VLESS-XHTTP-Reality / VLESS-XHTTP-TLS）的 VPS 才会装 Xray；
+# agent 每 6 小时读 manifest.json 自动升级（新版必须能读当前配置，起不来自动回滚）。
+on:
+  schedule:
+    - cron: '41 2 * * *'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '指定 Xray 版本（如 26.11.9，留空 = 最新正式版）'
+        required: false
+      force:
+        description: '版本相同也重新发布'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: xray-mirror
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 检查版本
+        id: check
+        run: |
+          WANT="${{ inputs.version }}"
+          if [ -z "$WANT" ]; then
+            WANT=$(gh api repos/XTLS/Xray-core/releases/latest --jq .tag_name)
+            WANT="${WANT#v}"
+          fi
+          HAVE=""
+          if gh release download xray -p manifest.json -O /tmp/manifest.json 2>/dev/null; then
+            HAVE=$(jq -r .version /tmp/manifest.json)
+          fi
+          echo "官方最新: $WANT，当前: ${HAVE:-无}"
+          echo "version=$WANT" >> "$GITHUB_OUTPUT"
+          if [ "$WANT" = "$HAVE" ] && [ "${{ inputs.force }}" != "true" ]; then
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 下载并校验
+        if: steps.check.outputs.build == 'true'
+        run: |
+          V="${{ steps.check.outputs.version }}"
+          mkdir -p out dl
+          # 官方文件名 → Go 的 GOARCH（和 agent 里 runtime.GOARCH 对应）
+          for pair in 64:amd64 arm64-v8a:arm64 arm32-v7a:arm 32:386; do
+            src="${pair%%:*}"; arch="${pair##*:}"
+            base="https://github.com/XTLS/Xray-core/releases/download/v$V/Xray-linux-$src.zip"
+            curl -fsSL -o "dl/$arch.zip" "$base"
+            curl -fsSL -o "dl/$arch.dgst" "$base.dgst"
+            want=$(grep -i '^SHA2-256=' "dl/$arch.dgst" | awk '{print $2}' | tr 'A-F' 'a-f')
+            have=$(sha256sum "dl/$arch.zip" | cut -d' ' -f1)
+            if [ -z "$want" ] || [ "$want" != "$have" ]; then
+              echo "::error::Xray-linux-$src.zip 的 SHA2-256 对不上（官方 $want，下载 $have）"
+              exit 1
+            fi
+            unzip -o -q "dl/$arch.zip" xray LICENSE -d "dl/$arch"
+            gzip -9 -c "dl/$arch/xray" > "out/nodedeck-xray-linux-$arch.gz"
+          done
+          cp dl/amd64/LICENSE out/LICENSE-xray.txt
+          cd out
+          sum() { sha256sum "nodedeck-xray-linux-$1.gz" | cut -d' ' -f1; }
+          jq -n --arg v "$V" \
+            --arg a "$(sum amd64)" --arg b "$(sum arm64)" --arg c "$(sum arm)" --arg d "$(sum 386)" \
+            '{version:$v, sha256:{amd64:$a, arm64:$b, arm:$c, "386":$d}}' > manifest.json
+          cat manifest.json
+
+      # 新版 Xray 必须能通过 NodeDeck 生成的服务端 / 客户端配置校验才发布
+      - uses: actions/setup-node@v4
+        if: steps.check.outputs.build == 'true'
+        with:
+          node-version: 22
+      - name: 配置兼容性测试
+        if: steps.check.outputs.build == 'true'
+        run: |
+          gunzip -c out/nodedeck-xray-linux-amd64.gz > /tmp/xray-new && chmod +x /tmp/xray-new
+          /tmp/xray-new version
+          gh release download singbox -p nodedeck-sing-box-linux-amd64.gz -O /tmp/sb.gz
+          gunzip -c /tmp/sb.gz > /tmp/sb && chmod +x /tmp/sb
+          SINGBOX=/tmp/sb XRAY=/tmp/xray-new node test/run.js
+
+      - name: 发布
+        if: steps.check.outputs.build == 'true'
+        run: |
+          if ! gh release view xray >/dev/null 2>&1; then
+            gh release create xray --prerelease --title "Xray 内核（自动更新）" \
+              --notes "由 GitHub Actions 每天从 XTLS/Xray-core 官方 Release 同步（校验官方 SHA2-256），供 NodeDeck 的 XHTTP 协议使用，请勿删除。"
+          fi
+          # 先传二进制，最后传 manifest，保证 agent 读到新版本号时文件已就绪
+          gh release upload xray out/nodedeck-xray-linux-*.gz out/LICENSE-xray.txt --clobber
+          gh release upload xray out/manifest.json --clobber
+          gh release edit xray --notes "当前 Xray 版本：${{ steps.check.outputs.version }}（$(date -u +%F) 同步自官方）。由 GitHub Actions 每天自动检查，请勿删除。"

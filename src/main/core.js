@@ -16,7 +16,16 @@ const PROTOCOLS = {
   tuic: { label: 'TUIC', net: 'udp', defaultPort: 8443 },
   anytls: { label: 'AnyTLS', net: 'tcp', defaultPort: 8443 },
   shadowsocks: { label: 'Shadowsocks-2022', net: 'both', defaultPort: 8388 },
+  // 下面两个由 Xray 内核提供（sing-box 不支持 XHTTP）。Xray 收到的流量经本机 socks 交给 sing-box，
+  // 落地、WARP 分流、屏蔽 BT / 广告 / 回国等路由规则照样生效
+  vlessXhttpReality: { label: 'VLESS-XHTTP-Reality', net: 'tcp', defaultPort: 2053, core: 'xray' },
+  vlessXhttpTls: { label: 'VLESS-XHTTP-TLS', net: 'tcp', defaultPort: 2087, core: 'xray' },
 };
+const XRAY_KEYS = Object.keys(PROTOCOLS).filter((k) => PROTOCOLS[k].core === 'xray');
+function isXray(key) { return PROTOCOLS[key]?.core === 'xray'; }
+function usesXray(server) { return XRAY_KEYS.some((k) => server?.protocols?.[k]?.enabled); }
+// Reality 目标 / 密钥：VLESS-Reality 和 VLESS-XHTTP-Reality 共用一套（存在 protocols.vlessReality 里），巡检和重新优选对两个都生效
+function realityOn(server) { const p = server?.protocols || {}; return !!(p.vlessReality?.enabled || p.vlessXhttpReality?.enabled); }
 
 // 协议用到的网络：'both' 表示 TCP 和 UDP 都要
 function netsOf(net) { return net === 'both' || !net ? ['tcp', 'udp'] : [net]; }
@@ -51,6 +60,8 @@ function defaultProtocols() {
     tuic: { enabled: true, port: 8443 },
     anytls: { enabled: true, port: 8443 },
     shadowsocks: { enabled: false, port: 8388, serverKey: crypto.randomBytes(16).toString('base64') },
+    vlessXhttpReality: { enabled: false, port: 2053, path: '/' + randId(8) },
+    vlessXhttpTls: { enabled: false, port: 2087, path: '/' + randId(8) },
   };
 }
 
@@ -59,6 +70,8 @@ function ensureProtocols(server) {
   const p = server.protocols || (server.protocols = {});
   if (!p.shadowsocks) p.shadowsocks = { enabled: false, port: 8388, serverKey: crypto.randomBytes(16).toString('base64') };
   if (!p.shadowsocks.serverKey) p.shadowsocks.serverKey = crypto.randomBytes(16).toString('base64');
+  if (!p.vlessXhttpReality) p.vlessXhttpReality = { enabled: false, port: 2053, path: '/' + randId(8) };
+  if (!p.vlessXhttpTls) p.vlessXhttpTls = { enabled: false, port: 2087, path: '/' + randId(8) };
   return server;
 }
 
@@ -264,6 +277,9 @@ function buildServerConfig(state, server, opts = {}) {
     });
   }
 
+  // Xray（XHTTP 协议）收到的流量从这里进 sing-box：只监听本机，后面的路由规则、落地、WARP 都照常
+  if (usesXray(server)) inbounds.push({ type: 'socks', tag: 'xray-in', listen: '127.0.0.1', listen_port: xrayPorts(state).bridge });
+
   // 本机作为中转：端口转发
   const forwards = (state.forwards || []).filter((f) => f.relayServerId === server.id && f.enabled !== false);
   const fwdTags = [];
@@ -335,6 +351,65 @@ function buildServerConfig(state, server, opts = {}) {
     }];
   }
   return config;
+}
+
+// ---------- Xray（XHTTP） ----------
+function xrayPorts(state) {
+  const st = state.settings || {};
+  return { api: Number(st.xrayStatsPort) || 9093, bridge: Number(st.xrayBridgePort) || 9094 };
+}
+// 正式证书由 sing-box 申请（certmagic 存储格式），Xray 直接读同一份文件；证书续期后 agent 会重启 Xray
+function acmeCertFiles(server) {
+  const d = `${REMOTE_DIR}/acme/certificates/acme-v02.api.letsencrypt.org-directory/${server.domain}`;
+  return { cert: `${d}/${server.domain}.crt`, key: `${d}/${server.domain}.key` };
+}
+function xhttpPath(pc) { const v = String(pc?.path || '/').trim(); return v.startsWith('/') ? v : '/' + v; }
+
+// Xray 服务端配置；没开 XHTTP 协议返回 null。用户的 email 字段放用户 id，agent 按它统计流量、停用超额用户
+function buildXrayConfig(state, server, opts = {}) {
+  ensureProtocols(server);
+  if (!usesXray(server)) return null;
+  const includeInactive = opts.includeInactive !== false;
+  const users = usersForServer(state, server).filter((u) => includeInactive || userStatus(u).active);
+  const p = server.protocols;
+  const ports = xrayPorts(state);
+  const clients = users.map((u) => ({ id: u.uuid, email: u.id }));
+  const inbounds = [];
+  const sniffing = { enabled: false }; // 嗅探交给 sing-box
+  if (p.vlessXhttpReality?.enabled) {
+    const r = p.vlessReality;
+    inbounds.push({
+      tag: 'xhttp-reality-in', port: Number(p.vlessXhttpReality.port), protocol: 'vless',
+      settings: { clients, decryption: 'none' },
+      streamSettings: {
+        network: 'xhttp', xhttpSettings: { path: xhttpPath(p.vlessXhttpReality), mode: 'auto' },
+        security: 'reality',
+        realitySettings: { target: `${r.sni}:443`, serverNames: [r.sni], privateKey: r.privateKey, shortIds: [r.shortId] },
+      },
+      sniffing,
+    });
+  }
+  if (p.vlessXhttpTls?.enabled) {
+    const files = usesAcme(server) ? acmeCertFiles(server) : { cert: CERT_PATH, key: KEY_PATH };
+    inbounds.push({
+      tag: 'xhttp-tls-in', port: Number(p.vlessXhttpTls.port), protocol: 'vless',
+      settings: { clients, decryption: 'none' },
+      streamSettings: {
+        network: 'xhttp', xhttpSettings: { path: xhttpPath(p.vlessXhttpTls), mode: 'auto' },
+        security: 'tls',
+        tlsSettings: { alpn: ['h2', 'http/1.1'], certificates: [{ certificateFile: files.cert, keyFile: files.key }] },
+      },
+      sniffing,
+    });
+  }
+  return {
+    log: { loglevel: 'warning' },
+    api: { tag: 'api', listen: `127.0.0.1:${ports.api}`, services: ['StatsService'] },
+    stats: {},
+    policy: { levels: { 0: { statsUserUplink: true, statsUserDownlink: true } } },
+    inbounds,
+    outbounds: [{ tag: 'sing-box', protocol: 'socks', settings: { servers: [{ address: '127.0.0.1', port: ports.bridge }] } }],
+  };
 }
 
 function resolveForwardTarget(state, f) {
@@ -484,6 +559,14 @@ function shareLink(state, entry, user) {
       const ui = Buffer.from(`${SS_METHOD}:${pc.serverKey}:${ssUserKey(user)}`).toString('base64');
       return `ss://${ui}@${host}:${port}#${name}`;
     }
+    // XHTTP：Reality 用 stream-one（部分客户端 auto 模式下经 Reality 会断），TLS 用 auto
+    case 'vlessXhttpReality': {
+      const r = server.protocols.vlessReality;
+      return `vless://${user.uuid}@${host}:${port}?${qs({ encryption: 'none', security: 'reality', sni: r.sni, fp: fpOf(r), pbk: r.publicKey, sid: r.shortId, type: 'xhttp', path: xhttpPath(pc), mode: 'stream-one' })}#${name}`;
+    }
+    case 'vlessXhttpTls':
+      // 有指纹就只带 pcs（Xray 26 已删掉 allowInsecure，带上反而可能让新客户端报错）
+      return `vless://${user.uuid}@${host}:${port}?${qs({ encryption: 'none', security: 'tls', sni, fp: 'chrome', alpn: 'h2,http/1.1', allowInsecure: pin ? undefined : ins, pcs: pin, type: 'xhttp', path: xhttpPath(pc), mode: 'auto' })}#${name}`;
     default:
       return '';
   }
@@ -518,9 +601,46 @@ function clashProxy(state, entry, user) {
       return pinned({ ...base, type: 'anytls', password: user.password, sni, 'skip-cert-verify': skip, udp: true, 'client-fingerprint': 'chrome' });
     case 'shadowsocks':
       return { ...base, type: 'ss', cipher: SS_METHOD, password: `${pc.serverKey}:${ssUserKey(user)}`, udp: true };
+    // mihomo 1.19.13 起支持 XHTTP；更老的 Clash 内核由 agent 按 UA 去掉这两个节点
+    case 'vlessXhttpReality': {
+      const r = server.protocols.vlessReality;
+      return { ...base, type: 'vless', uuid: user.uuid, network: 'xhttp', tls: true, udp: true, servername: r.sni, 'client-fingerprint': fpOf(r), 'reality-opts': { 'public-key': r.publicKey, 'short-id': r.shortId }, 'xhttp-opts': { path: xhttpPath(pc), mode: 'stream-one' } };
+    }
+    case 'vlessXhttpTls':
+      return pinned({ ...base, type: 'vless', uuid: user.uuid, network: 'xhttp', tls: true, udp: true, servername: sni, alpn: ['h2', 'http/1.1'], 'client-fingerprint': 'chrome', 'skip-cert-verify': skip, 'xhttp-opts': { path: xhttpPath(pc), mode: 'auto' } });
     default:
       return null;
   }
+}
+
+// Xray 客户端出站（本地测试 XHTTP 节点用；sing-box 客户端不支持 XHTTP）
+function xrayClientOutbound(state, entry, user) {
+  const server = state.servers.find((s) => s.id === entry.serverId);
+  const pc = server.protocols[entry.protocol];
+  const vnext = { address: entry.host, port: entry.port, users: [{ id: user.uuid, encryption: 'none' }] };
+  const out = { tag: 'proxy', protocol: 'vless', settings: { vnext: [vnext] } };
+  if (entry.protocol === 'vlessXhttpReality') {
+    const r = server.protocols.vlessReality;
+    out.streamSettings = { network: 'xhttp', xhttpSettings: { path: xhttpPath(pc), mode: 'stream-one' }, security: 'reality', realitySettings: { serverName: r.sni, fingerprint: fpOf(r), publicKey: r.publicKey, shortId: r.shortId } };
+    return out;
+  }
+  if (entry.protocol === 'vlessXhttpTls') {
+    const tls = { serverName: tlsSniFor(server), fingerprint: 'chrome', alpn: ['h2', 'http/1.1'] };
+    const pin = certPinOf(server);
+    // Xray 26 起删掉了 allowInsecure，自签证书只能按指纹（pinnedPeerCertSha256）校验
+    if (pin) tls.pinnedPeerCertSha256 = pin;
+    else if (!usesAcme(server)) throw new Error('还没拿到这台服务器的自签证书指纹，先「同步」一次再测');
+    out.streamSettings = { network: 'xhttp', xhttpSettings: { path: xhttpPath(pc), mode: 'auto' }, security: 'tls', tlsSettings: tls };
+    return out;
+  }
+  return null;
+}
+function xrayTestConfig(outbound, httpPort) {
+  return {
+    log: { loglevel: 'warning' },
+    inbounds: [{ tag: 'http-in', listen: '127.0.0.1', port: httpPort, protocol: 'http' }],
+    outbounds: [outbound],
+  };
 }
 
 // sing-box 客户端出站（本地节点测试、sing-box 订阅）
@@ -656,11 +776,15 @@ function buildSubscription(state, user) {
   const entries = uniqueEntries(userEntries(state, user));
   const links = entries.map((e) => shareLink(state, e, user)).filter(Boolean);
   const proxies = entries.map((e) => clashProxy(state, e, user)).filter(Boolean);
-  return {
+  const out = {
     v2ray: Buffer.from(links.join('\n')).toString('base64'),
     clash: clashYaml(proxies),
     links,
   };
+  // 老版 Clash 内核不认识 XHTTP：另备一份不含 XHTTP 节点的，agent 按客户端 UA 挑
+  const legacy = proxies.filter((p) => p.network !== 'xhttp');
+  if (legacy.length !== proxies.length) out.clashLegacy = clashYaml(legacy);
+  return out;
 }
 
 // 推给某台服务器 agent 的用户元数据（流量限制 / 到期 / 订阅内容）
@@ -700,6 +824,7 @@ function buildAgentSubs(state, server) {
       name: u.name,
       v2ray: sub.v2ray,
       clash: sub.clash,
+      clashLegacy: sub.clashLegacy || '',
       singbox: JSON.stringify(buildSingboxClient(state, u), null, 2),
       url: subscriptionUrl(state, u),
       total: u.limitGB > 0 ? Math.round(u.limitGB * GB) : 0,
@@ -836,13 +961,14 @@ function rotateServer(state, server) {
       changes.push(`${PROTOCOLS[key].label} 端口 ${old} → ${pc.port}`);
     }
   }
-  if (p.vlessReality?.enabled) {
+  if (realityOn(s)) {
     const kp = realityKeypair();
     const fp = FINGERPRINTS.filter((x) => x !== fpOf(p.vlessReality))[crypto.randomInt(FINGERPRINTS.length - 1)];
     Object.assign(p.vlessReality, { privateKey: kp.privateKey, publicKey: kp.publicKey, shortId: randHex(4), fp });
     changes.push(`Reality 密钥、short id 已更换，客户端指纹改为 ${fp}`);
   }
   if (p.vmess?.enabled) { p.vmess.path = '/' + randId(6); changes.push('VMess 路径已更换'); }
+  for (const k of XRAY_KEYS) if (p[k]?.enabled) { p[k].path = '/' + randId(8); changes.push(`${PROTOCOLS[k].label} 路径已更换`); }
   if (p.shadowsocks?.enabled) { p.shadowsocks.serverKey = crypto.randomBytes(16).toString('base64'); changes.push('Shadowsocks 密钥已更换'); }
   if (p.hysteria2?.enabled && p.hysteria2.obfs) { p.hysteria2.obfs = randPassword(16); changes.push('Hysteria2 混淆密码已更换'); }
   return { server: s, changes };
@@ -854,6 +980,7 @@ module.exports = {
   newServer, newUser, userStatus, userExpireAt, homeServerId, subscriptionUrls, buildSingboxClient, uniqueEntries, userUsedBytes, userHasServer, usersForServer,
   buildServerConfig, nodeEntries, shareLink, clashProxy, clientOutbound, clientTestConfig,
   userEntries, buildSubscription, buildAgentUsers, buildAgentSubs, subscriptionUrl,
+  XRAY_KEYS, isXray, usesXray, realityOn, xrayPorts, buildXrayConfig, xrayClientOutbound, xrayTestConfig, acmeCertFiles, xhttpPath,
   SNI_BLOCKED, sniBlocked, netsOf, subTlsWanted, subCertOk, serverPorts, checkPortConflicts, resolveForwardTarget, landingOutbound, pickFreePort, rotateServer,
   netsOf, ensureProtocols, ssUserKey, cfTunnelOf, buildTunnelConfig, certPinOf, fpOf, FINGERPRINTS, REALITY_FALLBACKS, PREFERRED_TCP_PORTS, pickPreferredPort, usesAcme, tlsSniFor, hopRange, serverHosts, WARP_SITES,
 };

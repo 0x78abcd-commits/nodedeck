@@ -32,7 +32,7 @@
 - **内核可以自动升**：`singbox.yml` 每天构建 sing-box 最新正式版；发布前用新内核跑 `test/run.js`，NodeDeck 生成的所有配置都要通过 `sing-box check` 才发布。VPS 上的 agent 升级前还会用新内核校验本机的 config.json / config.full.json / cf.json，不通过就跳过，启动失败自动回滚。
 - **协议字段 / 配置变更要人工确认、测试通过后再合入**：Issue 里看到新字段或弃用项，改 `src/main/core.js` 并补测试。
 - **分享链接回归**：`test/run.js` 固定几条标准节点（特殊字符密码、IPv6、自签证书指纹、端口跳跃），用 Node 的 URL 和 `java.net.URI`（v2rayNG 的解析方式）各解析一遍。
-- **只用 sing-box 一个内核**，不切 Xray；不引入第三方面板脚本依赖。
+- **主内核是 sing-box**；只有 XHTTP 两个协议（VLESS-XHTTP-Reality / VLESS-XHTTP-TLS）用 Xray，没开就不装。Xray 收到的流量经本机 socks 交给 sing-box，路由、落地、WARP 只在 sing-box 里配一份。`xray.yml` 每天同步官方 Release（校验官方 SHA2-256），发布前用新 Xray 跑 `test/run.js`。不引入第三方面板脚本依赖。
 
 ---
 

@@ -75,6 +75,17 @@ jobs:
           Expand-Archive sb.zip -DestinationPath sbtmp
           Copy-Item "sbtmp/sing-box-$v-windows-amd64/*" resources/bin/
           Move-Item -Force resources/bin/LICENSE resources/bin/LICENSE-sing-box.txt
+          # XHTTP 节点本地测试用的 Windows 版 Xray：取官方最新正式版，校验官方 SHA2-256
+          $xr = Invoke-RestMethod -Headers @{ Authorization = "Bearer $env:GH_TOKEN" } https://api.github.com/repos/XTLS/Xray-core/releases/latest
+          $xu = "https://github.com/XTLS/Xray-core/releases/download/$($xr.tag_name)/Xray-windows-64.zip"
+          Invoke-WebRequest $xu -OutFile xr.zip
+          Invoke-WebRequest "$xu.dgst" -OutFile xr.dgst
+          $want = ((Get-Content xr.dgst | Where-Object { $_ -match '^SHA2-256=' }) -replace '^SHA2-256=\s*', '').Trim().ToLower()
+          $have = (Get-FileHash xr.zip -Algorithm SHA256).Hash.ToLower()
+          if (-not $want -or $want -ne $have) { throw "Xray-windows-64.zip 的 SHA2-256 对不上（官方 $want，下载 $have）" }
+          Expand-Archive xr.zip -DestinationPath xrtmp
+          Copy-Item xrtmp/xray.exe resources/bin/
+          Copy-Item xrtmp/LICENSE resources/bin/LICENSE-xray.txt
       - name: Set version and publish target
         shell: bash
         run: |

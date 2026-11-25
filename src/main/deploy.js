@@ -10,14 +10,52 @@ const { withSSH, shq } = require('./ssh');
 const DIR = core.REMOTE_DIR;
 const SB_BIN = '/usr/local/bin/nodedeck-sing-box';
 const AGENT_BIN = '/usr/local/bin/nodedeck-agent';
+const XRAY_BIN = '/usr/local/bin/nodedeck-xray';
 
 // 小内存机器的内存上限（Go 运行时的 GOMEMLIMIT）：流量高峰过后把多占的内存还给系统。
 // 实测 sing-box 空闲约 40MB，每个正在传数据的连接约 0.5–0.8MB；agent 约 10MB。
 // 2GB 以上的机器不设，按 Go 默认行为
 function memLimits(memMB) {
-  if (!memMB || memMB > 2048) return { sb: '', agent: '' };
-  return { sb: `${Math.max(128, Math.floor(memMB * 0.5))}MiB`, agent: '48MiB' };
+  if (!memMB || memMB > 2048) return { sb: '', agent: '', xr: '' };
+  return { sb: `${Math.max(128, Math.floor(memMB * 0.5))}MiB`, agent: '48MiB', xr: `${Math.max(96, Math.floor(memMB * 0.25))}MiB` };
 }
+
+// Xray（只在开了 XHTTP 协议时装）：xray.json 由 agent 生成，没有就不启动
+function xrayUnit(lim = {}) {
+  return `[Unit]
+Description=NodeDeck Xray (XHTTP)
+After=network-online.target nodedeck-singbox.service
+Wants=network-online.target
+ConditionPathExists=${DIR}/xray.json
+
+[Service]
+ExecStart=${XRAY_BIN} run -c ${DIR}/xray.json
+Restart=always
+RestartSec=3
+LimitNOFILE=1048576
+${lim.xr ? `Environment=GOMEMLIMIT=${lim.xr}
+` : ''}LogRateLimitIntervalSec=30s
+LogRateLimitBurst=200
+
+[Install]
+WantedBy=multi-user.target
+`;
+}
+
+const openrcXray = (lim = {}) => `#!/sbin/openrc-run
+${lim.xr ? `export GOMEMLIMIT=${lim.xr}\n` : ''}name="nodedeck-xray"
+description="NodeDeck Xray (XHTTP)"
+command="${XRAY_BIN}"
+command_args="run -c ${DIR}/xray.json"
+supervisor="supervise-daemon"
+respawn_delay=3
+respawn_max=0
+output_log="/var/log/nodedeck-xray.log"
+error_log="/var/log/nodedeck-xray.log"
+rc_ulimit="-n 1048576"
+depend() { need net; after nodedeck-singbox; }
+start_pre() { [ -f ${DIR}/xray.json ] || { eerror "没有 ${DIR}/xray.json"; return 1; }; }
+`;
 
 function sbUnit(lim = {}) {
   return `[Unit]
@@ -124,11 +162,14 @@ const SVC = {
     restartAgent: 'systemctl restart nodedeck-agent',
     restartSb: 'systemctl restart nodedeck-singbox',
     active: (n) => `systemctl is-active ${n} 2>/dev/null`,
-    logs: 'journalctl -u nodedeck-singbox -u nodedeck-agent -u nodedeck-cf -n 120 --no-pager',
+    logs: 'journalctl -u nodedeck-singbox -u nodedeck-agent -u nodedeck-cf -u nodedeck-xray -n 120 --no-pager',
+    xrOn: (unit) => `cat > /etc/systemd/system/nodedeck-xray.service <<'NDEOF'\n${unit}NDEOF\nsystemctl daemon-reload && systemctl enable nodedeck-xray >/dev/null 2>&1; true`,
+    xrOff: 'if [ -f /etc/systemd/system/nodedeck-xray.service ]; then systemctl disable --now nodedeck-xray >/dev/null 2>&1; rm -f /etc/systemd/system/nodedeck-xray.service; systemctl daemon-reload; fi; true',
+    xrUnitFile: '/etc/systemd/system/nodedeck-xray.service',
     cfOn: (unit) => `cat > /etc/systemd/system/nodedeck-cf.service <<'NDEOF'\n${unit}NDEOF\nsystemctl daemon-reload && systemctl enable nodedeck-cf >/dev/null 2>&1; systemctl restart nodedeck-cf`,
     cfOff: 'if [ -f /etc/systemd/system/nodedeck-cf.service ]; then systemctl disable --now nodedeck-cf >/dev/null 2>&1; rm -f /etc/systemd/system/nodedeck-cf.service; systemctl daemon-reload; fi; true',
-    remove: `systemctl disable --now nodedeck-agent nodedeck-singbox nodedeck-cf >/dev/null 2>&1 || true
-rm -f /etc/systemd/system/nodedeck-agent.service /etc/systemd/system/nodedeck-singbox.service /etc/systemd/system/nodedeck-cf.service
+    remove: `systemctl disable --now nodedeck-agent nodedeck-singbox nodedeck-cf nodedeck-xray >/dev/null 2>&1 || true
+rm -f /etc/systemd/system/nodedeck-agent.service /etc/systemd/system/nodedeck-singbox.service /etc/systemd/system/nodedeck-cf.service /etc/systemd/system/nodedeck-xray.service
 systemctl daemon-reload`,
   },
   openrc: {
@@ -136,17 +177,27 @@ systemctl daemon-reload`,
     restartAgent: 'rc-service nodedeck-agent restart',
     restartSb: 'rc-service nodedeck-singbox restart',
     active: (n) => `rc-service ${n} status >/dev/null 2>&1 && echo active || echo inactive`,
-    logs: 'tail -n 60 /var/log/nodedeck-singbox.log /var/log/nodedeck-agent.log /var/log/nodedeck-cf.log 2>/dev/null',
+    logs: 'tail -n 60 /var/log/nodedeck-singbox.log /var/log/nodedeck-agent.log /var/log/nodedeck-cf.log /var/log/nodedeck-xray.log 2>/dev/null',
+    xrOn: (unit) => `cat > /etc/init.d/nodedeck-xray <<'NDEOF'\n${unit}NDEOF\nchmod 755 /etc/init.d/nodedeck-xray; rc-update add nodedeck-xray default >/dev/null 2>&1; true`,
+    xrOff: 'if [ -f /etc/init.d/nodedeck-xray ]; then rc-service nodedeck-xray stop >/dev/null 2>&1; rc-update del nodedeck-xray default >/dev/null 2>&1; rm -f /etc/init.d/nodedeck-xray; fi; true',
+    xrUnitFile: '/etc/init.d/nodedeck-xray',
     cfOn: () => `cat > /etc/init.d/nodedeck-cf <<'NDEOF'\n${OPENRC_CF}NDEOF\nchmod 755 /etc/init.d/nodedeck-cf; rc-update add nodedeck-cf default >/dev/null 2>&1; rc-service nodedeck-cf restart`,
     cfOff: 'if [ -f /etc/init.d/nodedeck-cf ]; then rc-service nodedeck-cf stop >/dev/null 2>&1; rc-update del nodedeck-cf default >/dev/null 2>&1; rm -f /etc/init.d/nodedeck-cf; fi; true',
-    remove: `rc-service nodedeck-agent stop >/dev/null 2>&1; rc-service nodedeck-singbox stop >/dev/null 2>&1; rc-service nodedeck-cf stop >/dev/null 2>&1
-rc-update del nodedeck-agent default >/dev/null 2>&1; rc-update del nodedeck-singbox default >/dev/null 2>&1; rc-update del nodedeck-cf default >/dev/null 2>&1
-rm -f /etc/init.d/nodedeck-agent /etc/init.d/nodedeck-singbox /etc/init.d/nodedeck-cf /var/log/nodedeck-*.log`,
+    remove: `rc-service nodedeck-agent stop >/dev/null 2>&1; rc-service nodedeck-singbox stop >/dev/null 2>&1; rc-service nodedeck-cf stop >/dev/null 2>&1; rc-service nodedeck-xray stop >/dev/null 2>&1
+rc-update del nodedeck-agent default >/dev/null 2>&1; rc-update del nodedeck-singbox default >/dev/null 2>&1; rc-update del nodedeck-cf default >/dev/null 2>&1; rc-update del nodedeck-xray default >/dev/null 2>&1
+rm -f /etc/init.d/nodedeck-agent /etc/init.d/nodedeck-singbox /etc/init.d/nodedeck-cf /etc/init.d/nodedeck-xray /var/log/nodedeck-*.log`,
   },
 };
 function svcOf(server) { return SVC[server.initSystem] || SVC.systemd; }
 
 function singboxBase(state) { return String(state.settings?.singboxBase || '').replace(/\/+$/, ''); }
+// Xray 内核渠道：默认是同一仓库名为 xray 的 Release（xray.yml 每天同步官方版本）
+function xrayBase(state) {
+  const x = String(state.settings?.xrayBase || '').replace(/\/+$/, '');
+  if (x) return x;
+  const sb = singboxBase(state);
+  return /\/releases\/download\/singbox$/.test(sb) ? sb.replace(/singbox$/, 'xray') : '';
+}
 
 function agentConfig(state, server = {}) {
   const st = state.settings || {};
@@ -171,6 +222,7 @@ function agentConfig(state, server = {}) {
     singbox: SB_BIN,
     service: 'nodedeck-singbox',
     reality: realityAgentCfg(state, server),
+    xray: core.usesXray(server) ? { bin: XRAY_BIN, service: 'nodedeck-xray', statsApi: `127.0.0.1:${core.xrayPorts(state).api}`, manifest: xrayBase(state) ? `${xrayBase(state)}/manifest.json` : '' } : null,
     speedToken: server.speedToken || '',
     latencyProbe: !!st.latencyProbe, // 后台定时测三网延迟，默认关（省流量）
     // 订阅 HTTPS：给 VPS 的 IP 申请 Let's Encrypt 证书（6 天有效，agent 自动续）
@@ -181,7 +233,7 @@ function agentConfig(state, server = {}) {
 
 function realityAgentCfg(state, server) {
   const pc = server.protocols?.vlessReality;
-  if (!pc?.enabled) return null;
+  if (!core.realityOn(server)) return null;
   return {
     mode: state.settings?.realityPatrol || 'auto',
     sni: pc.sni,
@@ -433,7 +485,7 @@ modprobe tcp_bbr 2>/dev/null; sysctl -w net.core.default_qdisc=fq >/dev/null 2>&
     }
     // Reality 目标：新服务器自动挑（用户手动改过 SNI 的不动）
     const rp = server.protocols?.vlessReality;
-    if (rp?.enabled && rp.sniAuto && !rp.sniPickedAt) {
+    if (core.realityOn(server) && rp.sniAuto && !rp.sniPickedAt) {
       const pick = await pickRealityOn(ssh, server, log).catch((e) => { log('⚠ 挑选 Reality 目标出错：' + e.message); return null; });
       if (pick) {
         Object.assign(rp, { sni: pick.domain, sniSource: pick.source, sniPickedAt: Date.now(), sniCheck: pick.check });
@@ -456,6 +508,12 @@ modprobe tcp_bbr 2>/dev/null; sysctl -w net.core.default_qdisc=fq >/dev/null 2>&
     if (!st.singbox || !st.agent) {
       const j = await ssh.exec(svcOf(server).logs);
       throw new Error('服务未正常启动：\n' + j.stdout);
+    }
+    if (core.usesXray(server) && !st.xray) {
+      await new Promise((r) => setTimeout(r, 4000)); // agent 刚启动，xray.json 可能还没生成
+      const st2 = await status(ssh, server);
+      if (!st2.xray) log('⚠ Xray（XHTTP 协议）还没起来，其它协议不受影响。可以在「更多 → 查看日志」里看原因');
+      else Object.assign(st, st2);
     }
     log('部署完成 ✔');
     return st;
@@ -480,7 +538,7 @@ async function pushConfig(ssh, state, server, log = () => {}) {
   }
   // agent 巡检时自己换过 Reality 目标：以 VPS 上的为准，避免把它改回已经失效的旧目标
   const rp = server.protocols?.vlessReality;
-  if (rp?.enabled) {
+  if (core.realityOn(server)) {
     const o = (await ssh.exec(`cat ${DIR}/reality.json 2>/dev/null`)).stdout;
     try {
       const j = JSON.parse(o || '{}');
@@ -509,9 +567,47 @@ async function pushConfig(ssh, state, server, log = () => {}) {
   // 校验
   const r = await ssh.exec(`${SB_BIN} check -c ${DIR}/config.full.json`);
   if (r.code !== 0) throw new Error('sing-box 配置校验失败：' + (r.stderr || r.stdout));
+  await syncXray(ssh, state, server, log);
   await syncTunnel(ssh, server, log);
-  if (rp?.enabled) rp.sniDeployed = rp.sni;
+  if (core.realityOn(server)) rp.sniDeployed = rp.sni;
   log('配置已上传');
+}
+
+// Xray（XHTTP 协议）：开了就装内核、写服务和 xray.full.json（agent 过滤停用用户后生成 xray.json 并重启）；
+// 全关了就停掉服务、删掉内核和配置（省 35MB 磁盘）
+async function syncXray(ssh, state, server, log) {
+  const svc = svcOf(server);
+  const cfg = core.buildXrayConfig(state, server);
+  if (!cfg) {
+    const had = (await ssh.exec(`[ -f ${svc.xrUnitFile} ] || [ -f ${XRAY_BIN} ] && echo HAD`)).stdout.includes('HAD');
+    if (had) {
+      await ssh.exec(`${svc.xrOff}; rm -f ${XRAY_BIN} ${XRAY_BIN}.old ${XRAY_BIN}.bad ${XRAY_BIN}.new ${DIR}/xray.json ${DIR}/xray.full.json ${DIR}/xray.check.json`);
+      log('已关闭 XHTTP 协议，Xray 内核已移除');
+    }
+    return;
+  }
+  const ver = (await ssh.exec(`${XRAY_BIN} version 2>/dev/null | head -1`)).stdout.trim();
+  if (!/^Xray \d/.test(ver)) {
+    const base = xrayBase(state);
+    if (!base) throw new Error('没有设置 Xray 内核下载地址（设置 → 高级 → Xray 内核地址）');
+    log(`安装 Xray 内核（XHTTP 协议要用，${base}）…`);
+    const r = await ssh.exec(`${AGENT_BIN} install-xray -manifest ${shq(base + '/manifest.json')} -bin ${XRAY_BIN}`, { timeout: 300000 });
+    if (r.code !== 0) throw new Error('安装 Xray 失败：' + (r.stderr || r.stdout).trim());
+    log(r.stdout.trim() + '（已校验 sha256）');
+  }
+  const lim = memLimits(server.hw?.memMB);
+  const unit = server.initSystem === 'openrc' ? openrcXray(lim) : xrayUnit(lim);
+  const cur = (await ssh.exec(`cat ${svc.xrUnitFile} 2>/dev/null`)).stdout;
+  if (cur.trim() !== unit.trim()) await ssh.run(svc.xrOn(unit));
+  const body = JSON.stringify(cfg, null, 2);
+  await ssh.writeFile(`${DIR}/xray.full.json`, body);
+  // 正式证书可能还没申请下来（sing-box 启动后才去申请），那时跳过校验，agent 等证书到了再启动 Xray
+  const certs = core.usesAcme(server) && server.protocols.vlessXhttpTls?.enabled ? core.acmeCertFiles(server) : null;
+  const haveCert = !certs || (await ssh.exec(`[ -f ${shq(certs.cert)} ] && echo Y`)).stdout.includes('Y');
+  if (haveCert) {
+    const c = await ssh.exec(`${XRAY_BIN} run -test -c ${DIR}/xray.full.json`);
+    if (c.code !== 0) throw new Error('Xray 配置校验失败：' + (c.stdout + c.stderr).trim().split('\n').slice(-3).join(' | '));
+  } else log('XHTTP-TLS 要用的正式证书还在申请，拿到后会自动启动 Xray');
 }
 
 // Cloudflare 隧道：开了就写 cf.json 并（重）启 nodedeck-cf，关了就停掉删掉
@@ -541,6 +637,8 @@ async function status(ssh, server = {}) {
 echo SB=$(${svc.active('nodedeck-singbox')})
 echo AG=$(${svc.active('nodedeck-agent')})
 echo CF=$(${svc.active('nodedeck-cf')})
+echo XR=$(${svc.active('nodedeck-xray')})
+echo XRV=$(${XRAY_BIN} version 2>/dev/null | head -1 | awk '{print $2}')
 echo VER=$(${SB_BIN} version 2>/dev/null | head -1 | awk '{print $3}')
 echo AGV=$(${AGENT_BIN} version 2>/dev/null)
 echo LOAD=$(cut -d' ' -f1-3 /proc/loadavg)
@@ -560,7 +658,7 @@ echo IP6=$(ip -6 addr show scope global 2>/dev/null | awk '/inet6/{print $2}' | 
   const [memUsed, memTotal] = nums(kv.MEMI);
   const [diskUsed, diskTotal] = nums(kv.DISK);
   return {
-    singbox: kv.SB === 'active', agent: kv.AG === 'active', version: kv.VER || '', agentVersion: kv.AGV || '', cf: kv.CF === 'active', ipv6: kv.IP6 || '', load: kv.LOAD, mem: kv.MEM, uptime: kv.UP,
+    singbox: kv.SB === 'active', agent: kv.AG === 'active', version: kv.VER || '', agentVersion: kv.AGV || '', cf: kv.CF === 'active', xray: kv.XR === 'active', xrayVersion: kv.XRV || '', ipv6: kv.IP6 || '', load: kv.LOAD, mem: kv.MEM, uptime: kv.UP,
     // 给服务器列表画仪表用（MB）
     subCert: (() => { try { const j = JSON.parse(kv.SUBCERT || ''); return j && typeof j === 'object' && 'ok' in j ? j : null; } catch (_) { return null; } })(),
     memUsed: memUsed || 0, memTotal: memTotal || 0, diskUsed: diskUsed || 0, diskTotal: diskTotal || 0, cpus: Number(kv.CPUS) || 0, cpu: kv.CPU === '' || kv.CPU == null ? null : Number(kv.CPU), uptimeSec: Number(kv.UPS) || 0, at: Date.now(),
@@ -570,24 +668,28 @@ echo IP6=$(ip -6 addr show scope global 2>/dev/null | awk '/inet6/{print $2}' | 
 // 同步：推送配置；如果 agent 版本和本软件不一致（软件更新过），顺便升级 agent
 async function syncServer(state, server, { log = () => {}, resourcesDir, appVersion } = {}) {
   return withSSH(server, async (ssh) => {
-    await pushConfig(ssh, state, server, log);
-    await openFirewall(ssh, state, server);
     let restart = false;
-    const cfgText = JSON.stringify(agentConfig(state, server), null, 2);
-    const curCfg = (await ssh.exec(`cat ${DIR}/agent.json`)).stdout;
-    if (curCfg.trim() !== cfgText.trim()) { await ssh.writeFile(`${DIR}/agent.json`, cfgText); restart = true; }
     // 每次同步顺便刷新机器配置、服务文件（内存上限）和小机器优化
     const info = await detect(ssh);
     rememberHw(server, info);
     if (info.INIT === 'systemd' || info.INIT === 'openrc') server.initSystem = info.INIT;
-    if (await writeUnits(ssh, server)) { log('服务配置已更新（按内存调整）'); await ssh.run(`${svcOf(server).restartSb || 'true'}`); restart = true; }
-    await tuneSmallBox(ssh, state, server, info, log);
+    // 先换 agent 文件（正在跑的进程不受影响，最后再重启）：推配置时要用新 agent 的命令（比如安装 Xray）
     const agv = (await ssh.exec(`${AGENT_BIN} version`)).stdout.trim();
     if (resourcesDir && appVersion && agv !== appVersion) {
       log(`升级 agent ${agv || '?'} → ${appVersion}`);
       await ssh.writeGz(AGENT_BIN, agentGz(resourcesDir, info.ARCH));
       restart = true;
     }
+    try { await pushConfig(ssh, state, server, log); } catch (e) {
+      if (restart) await ssh.exec(svcOf(server).restartAgent); // 新 agent 文件已经换上了，别让旧进程一直跑
+      throw e;
+    }
+    await openFirewall(ssh, state, server);
+    const cfgText = JSON.stringify(agentConfig(state, server), null, 2);
+    const curCfg = (await ssh.exec(`cat ${DIR}/agent.json`)).stdout;
+    if (curCfg.trim() !== cfgText.trim()) { await ssh.writeFile(`${DIR}/agent.json`, cfgText); restart = true; }
+    if (await writeUnits(ssh, server)) { log('服务配置已更新（按内存调整）'); await ssh.run(`${svcOf(server).restartSb || 'true'}`); restart = true; }
+    await tuneSmallBox(ssh, state, server, info, log);
     await ensureDNS(ssh, log, false).catch(() => {});
     if (restart) {
       await ssh.run(svcOf(server).restartAgent);
@@ -609,7 +711,15 @@ async function updateSingbox(server) {
     let j = {};
     try { j = JSON.parse(r.stdout); } catch (_) { /* ignore */ }
     if (r.code !== 0) throw new Error(j.error || r.stderr || r.stdout);
-    return { message: j.message, status: await status(ssh, server) };
+    let message = 'sing-box：' + j.message;
+    // 开了 XHTTP 协议的顺便升级 Xray
+    if (core.usesXray(server)) {
+      const x = await ssh.exec(`${AGENT_BIN} update-xray -c ${DIR}/agent.json`, { timeout: 360000 });
+      let xj = {};
+      try { xj = JSON.parse(x.stdout); } catch (_) { /* ignore */ }
+      message += '\nXray：' + (x.code === 0 ? xj.message : '升级失败：' + (xj.error || x.stderr || x.stdout).trim());
+    }
+    return { message, status: await status(ssh, server) };
   });
 }
 
@@ -660,7 +770,7 @@ ${AGENT_BIN} dns-restore -c ${DIR}/agent.json >/dev/null 2>&1
 # 网络优化恢复成部署前的原值（有备份才会改）
 ${AGENT_BIN} net-restore -c ${DIR}/agent.json >/dev/null 2>&1; rm -f /etc/sysctl.d/99-nodedeck-net.conf /etc/modules-load.d/nodedeck-bbr.conf
 ${svcOf(server).remove}
-rm -f ${AGENT_BIN} ${SB_BIN} ${SB_BIN}.old ${SB_BIN}.bad
+rm -f ${AGENT_BIN} ${SB_BIN} ${SB_BIN}.old ${SB_BIN}.bad ${XRAY_BIN} ${XRAY_BIN}.old ${XRAY_BIN}.bad
 rm -rf ${DIR} /root/.nodedeck-bench
 # NodeDeck 加的 swap、日志限制、BBR 以外的系统改动一并撤销
 if grep -q '^/nodedeck.swap ' /etc/fstab 2>/dev/null; then swapoff /nodedeck.swap 2>/dev/null; sed -i '\#^/nodedeck.swap #d' /etc/fstab; rm -f /nodedeck.swap /etc/sysctl.d/99-nodedeck-swap.conf; fi
@@ -1176,7 +1286,7 @@ const CHECK_TTL = 24 * 3600e3;
 // 自动优选的目标在挑选时已经检测过，这里不管。
 async function gateRealityTarget(ssh, server, log, force) {
   const rp = server.protocols?.vlessReality;
-  if (!rp?.enabled || rp.sniAuto) return;
+  if (!core.realityOn(server) || rp.sniAuto) return;
   if (!force && rp.sniDeployed === rp.sni) return;
   const c = rp.sniCheck;
   if (c && c.where === 'vps' && c.domain === rp.sni && c.ok && Date.now() - c.at < CHECK_TTL) {

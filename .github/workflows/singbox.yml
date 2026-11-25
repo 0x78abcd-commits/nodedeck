@@ -28,8 +28,9 @@ permissions:
   contents: write
 
 env:
-  # 改这里的编译选项后，即使版本号没变也会自动重新构建
-  SB_TAGS: with_quic,with_utls,with_acme,with_v2ray_api,with_wireguard,with_cloudflared
+  # 改这里的编译选项后，即使版本号没变也会自动重新构建。
+  # with_gvisor：WARP 分流的 WireGuard 端点要用（1.14.4 少了它会报 gVisor is not included，WARP 开不了）
+  SB_TAGS: with_quic,with_utls,with_acme,with_v2ray_api,with_wireguard,with_cloudflared,with_gvisor
 
 concurrency:
   group: singbox-build

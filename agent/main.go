@@ -71,6 +71,8 @@ type Config struct {
 	Alerts       AlertCfg `json:"alerts"`
 	// 0.8.7 起：订阅走 HTTPS（IP 证书）
 	SubTLS *SubTLSCfg `json:"subTls"`
+	// 开了 XHTTP 协议才有：Xray 内核
+	Xray *XrayCfg `json:"xray"`
 }
 
 type User struct {
@@ -95,8 +97,10 @@ type Sub struct {
 	Name   string `json:"name"`
 	V2ray  string `json:"v2ray"`
 	Clash  string `json:"clash"`
-	Total  int64  `json:"total"`
-	Expire int64  `json:"expire"`
+	// 不含 XHTTP 节点的 Clash 配置（老版 Clash 内核用）；没有 XHTTP 节点时为空
+	ClashLegacy string `json:"clashLegacy"`
+	Total       int64  `json:"total"`
+	Expire      int64  `json:"expire"`
 	// 0.3.0 起
 	Singbox         string `json:"singbox"`
 	QR              string `json:"qr"`
@@ -126,6 +130,11 @@ type Agent struct {
 	st       AgentState
 	primed   bool // 启动后是否已完成第一次检查
 	metrics  *Metrics
+	// Xray（XHTTP 协议）
+	xrayApplied string // 已应用的 xray.json + 证书的摘要
+	xrayErr     string
+	xrayUpdate  UpdateState
+	xrayTried   time.Time
 }
 
 func (a *Agent) path(name string) string { return filepath.Join(a.cfg.DataDir, name) }
@@ -265,6 +274,11 @@ var grpcClient = func() *http.Client {
 
 // queryStats 调用 QueryStats(pattern="user>>>", reset=true)，返回自上次以来的增量
 func (a *Agent) queryStats() (map[string]int64, error) {
+	return queryStatsAt(a.cfg.StatsAPI, "/v2ray.core.app.stats.command.StatsService/QueryStats")
+}
+
+// queryStatsAt sing-box（v2ray_api）和 Xray 的统计接口消息格式一样，只是 gRPC 路径不同
+func queryStatsAt(addr, rpcPath string) (map[string]int64, error) {
 	var msg []byte
 	msg = pbVarint(msg, 1<<3|2)
 	msg = pbVarint(msg, uint64(len("user>>>")))
@@ -273,7 +287,7 @@ func (a *Agent) queryStats() (map[string]int64, error) {
 	frame := make([]byte, 5, 5+len(msg))
 	frame[1], frame[2], frame[3], frame[4] = byte(len(msg)>>24), byte(len(msg)>>16), byte(len(msg)>>8), byte(len(msg))
 	frame = append(frame, msg...)
-	req, _ := http.NewRequest("POST", "http://"+a.cfg.StatsAPI+"/v2ray.core.app.stats.command.StatsService/QueryStats", bytes.NewReader(frame))
+	req, _ := http.NewRequest("POST", "http://"+addr+rpcPath, bytes.NewReader(frame))
 	req.Header.Set("Content-Type", "application/grpc")
 	req.Header.Set("TE", "trailers")
 	resp, err := grpcClient.Do(req)
@@ -302,14 +316,25 @@ func (a *Agent) queryStats() (map[string]int64, error) {
 
 func (a *Agent) poll() {
 	stats, err := a.queryStats()
+	xstats, xerr := a.queryXrayStats()
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.xrayErr = ""
+	if xerr != nil {
+		a.xrayErr = "无法读取 Xray 统计: " + xerr.Error()
+	}
+	now := time.Now().Unix()
+	a.addStats(xstats, now)
 	if err != nil {
 		a.lastErr = "无法读取 sing-box 统计: " + err.Error()
 		return
 	}
 	a.lastErr = ""
-	now := time.Now().Unix()
+	a.addStats(stats, now)
+}
+
+// addStats 把一次统计增量记到各用户名下（调用方持有锁）
+func (a *Agent) addStats(stats map[string]int64, now int64) {
 	for name, v := range stats {
 		// user>>>ID>>>traffic>>>uplink|downlink
 		parts := strings.Split(name, ">>>")
@@ -405,8 +430,21 @@ func (a *Agent) reloadSingBox() error {
 	return nil
 }
 
-// apply 根据当前禁用集合生成 config.json；force=true 时无论是否变化都重载
+// apply 根据当前禁用集合生成 sing-box 的 config.json 和 Xray 的 xray.json；force=true 时 sing-box 无论是否变化都重载
 func (a *Agent) apply(force bool) error {
+	err := a.applySingbox(force)
+	if xerr := a.applyXray(); xerr != nil {
+		a.mu.Lock()
+		a.xrayErr = xerr.Error()
+		a.mu.Unlock()
+		if err == nil {
+			err = xerr
+		}
+	}
+	return err
+}
+
+func (a *Agent) applySingbox(force bool) error {
 	now := time.Now()
 	a.mu.Lock()
 	a.rollPeriods(now)
@@ -574,7 +612,7 @@ func (a *Agent) handleSub(w http.ResponseWriter, r *http.Request) {
 	switch format {
 	case "clash":
 		w.Header().Set("Content-Type", "text/yaml; charset=utf-8")
-		io.WriteString(w, s.Clash)
+		io.WriteString(w, clashFor(s, r.UserAgent()))
 	case "singbox":
 		if s.Singbox == "" {
 			http.Error(w, "该订阅还没有 sing-box 格式，请在 NodeDeck 里同步一次", http.StatusNotFound)
@@ -606,6 +644,7 @@ type statsResp struct {
 	Yesterday   DayStat          `json:"yesterday"`
 	// 0.6.0 起
 	Reality *RealityState `json:"reality,omitempty"`
+	Xray    *XrayStatus   `json:"xray,omitempty"`
 }
 
 func (a *Agent) handleAdmin(w http.ResponseWriter, r *http.Request) {
@@ -620,6 +659,7 @@ func (a *Agent) handleAdmin(w http.ResponseWriter, r *http.Request) {
 			rs := a.loadReality()
 			resp.Reality = &rs
 		}
+		resp.Xray = a.xrayStatus()
 		b, _ := json.Marshal(resp)
 		w.Write(b)
 	case "/admin/apply":
@@ -632,6 +672,14 @@ func (a *Agent) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 	case "/admin/update-singbox":
 		msg, err := a.updateSingbox()
+		if err != nil {
+			w.WriteHeader(500)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]string{"message": msg})
+	case "/admin/update-xray":
+		msg, err := a.updateXray()
 		if err != nil {
 			w.WriteHeader(500)
 			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
@@ -744,6 +792,9 @@ func run(cfgPath string) {
 	enforceT := time.NewTicker(15 * time.Second)
 	saveT := time.NewTicker(30 * time.Second)
 	a.update.Current = singboxVersion(a.cfg.SingBox)
+	if a.cfg.Xray != nil {
+		a.xrayUpdate.Current = xrayVersion(a.xrayBin())
+	}
 	go a.updateLoop()
 	go a.realityLoop()
 	log.Printf("NodeDeck agent %s 已启动，订阅端口 %s", version, a.cfg.SubListen)
@@ -822,7 +873,7 @@ func genCert(host, dir string) {
 func main() {
 	log.SetFlags(log.LstdFlags)
 	if len(os.Args) < 2 {
-		fmt.Println("用法: nodedeck-agent run|stats|metrics|apply|reset [user]|update-singbox|install-singbox|warp-register|scan-reality|apply-hops|notify-test|gencert|version  [-c /etc/nodedeck/agent.json]")
+		fmt.Println("用法: nodedeck-agent run|stats|metrics|apply|reset [user]|update-singbox|install-singbox|install-xray|update-xray|warp-register|scan-reality|apply-hops|notify-test|gencert|version  [-c /etc/nodedeck/agent.json]")
 		os.Exit(2)
 	}
 	cmd := os.Args[1]
@@ -874,6 +925,15 @@ func main() {
 		fmt.Println("sing-box", v)
 	case "update-singbox":
 		adminCall(*cfgPath, "/admin/update-singbox")
+	case "install-xray":
+		v, err := installXray(*manifest, *bin)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "安装 Xray 失败:", err)
+			os.Exit(1)
+		}
+		fmt.Println("Xray", v)
+	case "update-xray":
+		adminCall(*cfgPath, "/admin/update-xray")
 	case "notify-test":
 		adminCall(*cfgPath, "/admin/notify-test")
 	case "check-reality":
@@ -1073,4 +1133,28 @@ func singboxCompat(js, ua string) string {
 		return js
 	}
 	return string(b)
+}
+
+// clashFor 老版 Clash / mihomo（1.19.22 以前）不支持 XHTTP，按 UA 给它不含 XHTTP 节点的那份；
+// 看不出版本的客户端（Clash Verge、FlClash 等都带新内核）给完整的
+var mihomoVerRe = regexp.MustCompile(`(?i)(?:mihomo|clash\.meta|clash-meta|clashmeta)[ /v]*(\d+)\.(\d+)(?:\.(\d+))?`)
+
+func clashFor(s Sub, ua string) string {
+	if s.ClashLegacy == "" {
+		return s.Clash
+	}
+	if m := mihomoVerRe.FindStringSubmatch(ua); m != nil {
+		a, _ := strconv.Atoi(m[1])
+		b, _ := strconv.Atoi(m[2])
+		c, _ := strconv.Atoi(m[3])
+		if a == 1 && (b < 19 || (b == 19 && c < 22)) {
+			return s.ClashLegacy
+		}
+		return s.Clash
+	}
+	// 原版 Clash / Clash Premium（不是 Meta 内核）
+	if regexp.MustCompile(`(?i)^clash/|clashforwindows|clash for windows|clashx/`).MatchString(ua) && !strings.Contains(strings.ToLower(ua), "meta") {
+		return s.ClashLegacy
+	}
+	return s.Clash
 }

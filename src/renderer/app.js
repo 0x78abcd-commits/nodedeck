@@ -10,6 +10,8 @@ const PROTOS = [
   ['tuic', 'TUIC v5', 'udp'],
   ['anytls', 'AnyTLS', 'tcp'],
   ['shadowsocks', 'Shadowsocks-2022', 'tcp+udp'],
+  ['vlessXhttpReality', 'VLESS-XHTTP-Reality', 'tcp'],
+  ['vlessXhttpTls', 'VLESS-XHTTP-TLS', 'tcp'],
 ];
 const WARP_SITE_LABELS = { openai: 'ChatGPT / OpenAI', anthropic: 'Claude', google: 'Google / Gemini', netflix: 'Netflix', disney: 'Disney+', spotify: 'Spotify', tiktok: 'TikTok' };
 function randStr(n = 16) { const c = 'abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789'; let r = ''; const a = crypto.getRandomValues(new Uint8Array(n)); for (const x of a) r += c[x % c.length]; return r; }
@@ -227,7 +229,7 @@ async function viewDash(v) {
       box.append(h('div', { class: 'line-row ' + cls },
         h('div', { class: 'strip' }),
         h('div', { class: 'name' }, h('b', {}, s.name), h('span', { class: 'mono muted' }, s.host)),
-        h('div', {}, label, protos.length ? h('div', { class: 'proto-chips', title: protos.join('、') }, PROTOS.filter(([k]) => s.protocols?.[k]?.enabled).map(([k]) => h('span', { class: 'pchip' }, { vlessReality: 'Reality', trojan: 'Trojan', vmess: 'VMess', hysteria2: 'Hy2', tuic: 'TUIC', anytls: 'AnyTLS', shadowsocks: 'SS' }[k] || k))) : h('span', { class: 'cap' }, '没有开启协议')),
+        h('div', {}, label, protos.length ? h('div', { class: 'proto-chips', title: protos.join('、') }, PROTOS.filter(([k]) => s.protocols?.[k]?.enabled).map(([k]) => h('span', { class: 'pchip' }, { vlessReality: 'Reality', trojan: 'Trojan', vmess: 'VMess', hysteria2: 'Hy2', tuic: 'TUIC', anytls: 'AnyTLS', shadowsocks: 'SS', vlessXhttpReality: 'XHTTP-Reality', vlessXhttpTls: 'XHTTP-TLS' }[k] || k))) : h('span', { class: 'cap' }, '没有开启协议')),
         h('div', { class: 'hide-narrow' }, h('div', { class: 'num' }, today ? fmtBytes((today.up || 0) + (today.down || 0)) : '—'), h('div', { class: 'cap' }, '今日流量')),
         h('div', { class: 'hide-narrow' }, s.vpsExpireAt ? [h('div', { class: 'num' }, `${Math.max(0, Math.ceil((s.vpsExpireAt - Date.now()) / 86400000))} 天`), h('div', { class: 'cap' }, 'VPS 剩余')] : [h('div', { class: 'num muted' }, '—'), h('div', { class: 'cap' }, 'VPS 到期未填')]),
         h('div', { class: 'actions' },
@@ -249,7 +251,7 @@ function agentOutdated(s) {
 
 async function viewServers(v) {
   await reload();
-  v.append(h('div', { class: 'toolbar' }, h('div', {}, h('h1', {}, '服务器'), h('p', { class: 'sub' }, '通过 SSH 安装 sing-box 和 agent，一键部署 7 种协议')), h('div', { class: 'spacer' }),
+  v.append(h('div', { class: 'toolbar' }, h('div', {}, h('h1', {}, '服务器'), h('p', { class: 'sub' }, '通过 SSH 安装 sing-box 和 agent，一键部署 9 种协议（XHTTP 两种由 Xray 提供）')), h('div', { class: 'spacer' }),
     h('button', { onclick: (e) => busy(e.currentTarget, syncAll) }, '同步全部'),
     h('button', { class: 'primary', onclick: () => editServer() }, '+ 添加服务器')));
   if (!S.servers.length) { v.append(h('div', { class: 'card empty' }, '还没有服务器，点右上角添加')); return; }
@@ -276,11 +278,11 @@ async function viewServers(v) {
     const cb = h('input', { type: 'checkbox', checked: serverSel.has(s.id) });
     cb.onchange = () => { cb.checked ? serverSel.add(s.id) : serverSel.delete(s.id); render(); };
     const rs = s.realityState;
-    const realityTag = s.protocols?.vlessReality?.enabled && rs?.fails > 0 ? h('span', { class: 'tag warn', title: rs.lastErr || '' }, `Reality 目标异常 ×${rs.fails}`) : null;
+    const realityTag = core_reality(s) && rs?.fails > 0 ? h('span', { class: 'tag warn', title: rs.lastErr || '' }, `Reality 目标异常 ×${rs.fails}`) : null;
     const st = s.lastStatus;
     const status = !s.deployedAt ? h('span', { class: 'tag' }, '未部署') : st && st.singbox && st.agent ? h('span', { class: 'tag ok' }, '运行中') : h('span', { class: 'tag bad' }, '异常');
     // 协议 / 端口：竖着一行一个，名称左、端口右，前面的小点区分 TCP / UDP
-    const NETS = { vlessReality: 'tcp', trojan: 'tcp', vmess: 'tcp', anytls: 'tcp', hysteria2: 'udp', tuic: 'udp', shadowsocks: 'both' };
+    const NETS = { vlessReality: 'tcp', trojan: 'tcp', vmess: 'tcp', anytls: 'tcp', hysteria2: 'udp', tuic: 'udp', shadowsocks: 'both', vlessXhttpReality: 'tcp', vlessXhttpTls: 'tcp' };
     const protos = PROTOS.filter(([k]) => s.protocols?.[k]?.enabled).map(([k, l]) => h('div', { class: 'pl-row', title: { tcp: 'TCP', udp: 'UDP', both: 'TCP + UDP' }[NETS[k]] },
       h('i', { class: 'pl-dot ' + NETS[k] }), h('span', { class: 'pl-name' }, l), h('span', { class: 'pl-port mono' }, s.protocols[k].port)));
     const exit = s.exit?.type === 'landing' ? h('span', { class: 'tag blue' }, '落地: ' + (S.landings.find((l) => l.id === s.exit.landingId)?.name || '?')) : h('span', { class: 'tag' }, '直连');
@@ -288,8 +290,9 @@ async function viewServers(v) {
     const lamp = !s.deployedAt ? 'idle' : st && st.singbox && st.agent ? 'ok' : 'bad';
     tb.append(h('tr', { class: 'lamp-' + lamp },
       h('td', { style: { width: '28px' } }, cb),
-      h('td', {}, h('div', { class: 'srv-name' }, s.name), h('div', { class: 'muted mono', style: { wordBreak: 'normal', whiteSpace: 'nowrap', fontSize: '12px' } }, s.host), specChips(s), realityTag, s.role === 'relay' ? h('span', { class: 'tag blue' }, '中转机') : null, vpsExpireTag(s), core_cf(s) && s.deployedAt ? h('span', { class: 'tag ' + (s.lastStatus?.cf ? 'blue' : 'warn'), title: s.lastStatus?.cf ? '' : '隧道服务没在运行：检查令牌是否正确、VPS 能否连上 Cloudflare' }, s.lastStatus?.cf ? 'CF 隧道' : 'CF 隧道未连通') : null),
-      h('td', { class: 'st-cell' }, h('div', { class: 'st-top' }, status, st?.version ? h('span', { class: 'muted', style: { fontSize: '12px' } }, 'sing-box ' + st.version) : null, agentOutdated(s) ? h('span', { class: 'tag warn', title: '点「同步」自动升级' }, 'agent 待升级') : null), s.deployedAt ? serverMeters(s) : null),
+      h('td', {}, h('div', { class: 'srv-name' }, s.name), h('div', { class: 'muted mono', style: { wordBreak: 'normal', whiteSpace: 'nowrap', fontSize: '12px' } }, s.host), specChips(s), realityTag, s.role === 'relay' ? h('span', { class: 'tag blue' }, '中转机') : null, vpsExpireTag(s), core_cf(s) && s.deployedAt ? h('span', { class: 'tag ' + (s.lastStatus?.cf ? 'blue' : 'warn'), title: s.lastStatus?.cf ? '' : '隧道服务没在运行：检查令牌是否正确、VPS 能否连上 Cloudflare' }, s.lastStatus?.cf ? 'CF 隧道' : 'CF 隧道未连通') : null,
+        core_xray(s) && s.deployedAt && st && !st.xray ? h('span', { class: 'tag warn', title: 'XHTTP 协议由 Xray 提供，Xray 没在运行。点「同步」重试，或「更多 → 查看日志」看原因；其它协议不受影响' }, 'Xray 未运行') : null),
+      h('td', { class: 'st-cell' }, h('div', { class: 'st-top' }, status, st?.version ? h('span', { class: 'muted', style: { fontSize: '12px' }, title: st.xrayVersion ? 'Xray ' + st.xrayVersion : '' }, 'sing-box ' + st.version + (st.xrayVersion ? ' · Xray ' + st.xrayVersion : '')) : null, agentOutdated(s) ? h('span', { class: 'tag warn', title: '点「同步」自动升级' }, 'agent 待升级') : null), s.deployedAt ? serverMeters(s) : null),
       h('td', {}, protos.length ? h('div', { class: 'proto-list' }, protos) : h('span', { class: 'muted' }, '无'), fw ? h('span', { class: 'tag blue', style: { marginTop: '6px' } }, `转发 ${fw}`) : null),
       h('td', {}, exit),
       h('td', {}, h('div', { class: 'srv-actions' },
@@ -301,12 +304,12 @@ async function viewServers(v) {
         h('button', { class: 'small icon-more', title: '更多操作', onclick: (e) => menu(e.currentTarget, [
           s.deployedAt && { label: '监控面板', onClick: () => showMonitor(s) },
           s.deployedAt && { label: '网络优化（线路 / 测速 / BBR）', onClick: () => showNetLab(s) },
-          s.deployedAt && s.protocols?.vlessReality?.enabled && { label: 'Reality 目标质量', onClick: () => realityQuality(s) },
-          s.deployedAt && s.protocols?.vlessReality?.enabled && { label: '重新优选 Reality 目标', onClick: () => repickReality(s) },
+          s.deployedAt && core_reality(s) && { label: 'Reality 目标质量', onClick: () => realityQuality(s) },
+          s.deployedAt && core_reality(s) && { label: '重新优选 Reality 目标', onClick: () => repickReality(s) },
           s.deployedAt && { sep: true },
           s.deployedAt && { label: '刷新状态', onClick: async () => { await api.call('server:status', s.id); toast('已刷新', 'ok'); render(); } },
           s.deployedAt && { label: '查看日志', onClick: () => showLogs(s) },
-          s.deployedAt && { label: '升级 sing-box 内核', onClick: async () => { toast('正在检查内核更新…'); const m = await api.call('server:updateSingbox', s.id); toast(m, 'ok'); render(); } },
+          s.deployedAt && { label: core_xray(s) ? '升级内核（sing-box + Xray）' : '升级 sing-box 内核', onClick: async () => { toast('正在检查内核更新…'); const m = await api.call('server:updateSingbox', s.id); toast(m, 'ok'); render(); } },
           s.deployedAt && { label: '重新部署', onClick: () => deployServer(s) },
           { label: '一键换新（被墙时用）', onClick: () => rotateServer(s) },
           { label: '清理其他面板 / 程序', onClick: () => cleanOthers(s) },
@@ -542,6 +545,12 @@ async function editServer(orig, opts = {}) {
         field('端口跳跃范围（UDP）', els.hop, '客户端在这段端口里随机切换，抗封端口和 QoS'));
     }
     if (k === 'shadowsocks') extra.push(h('p', { class: 'muted', style: { fontSize: '12px', margin: 0 } }, '2022-blake3-aes-128-gcm，多用户。适合给中转、落地或老客户端用。'));
+    if (k === 'vlessXhttpReality' || k === 'vlessXhttpTls') {
+      els.path = I(pc.path || ''); extra.push(field('XHTTP 路径', h('div', { class: 'row' }, els.path, h('button', { class: 'small auto', onclick: () => { els.path.value = '/' + randStr(8).toLowerCase(); } }, '随机'))));
+      extra.push(h('p', { class: 'muted', style: { fontSize: '12px', margin: 0 } }, k === 'vlessXhttpReality'
+        ? '由 Xray 内核提供（勾上后部署 / 同步时自动安装）。和上面的 VLESS-Reality 共用 Reality 目标和密钥，目标在 VLESS-Reality 里设置。不能和 VLESS-Reality 用同一个端口。客户端：v2rayN / v2rayNG、Clash Verge（mihomo 1.19.22 以上）、Shadowrocket；sing-box 客户端不支持，订阅里会自动去掉。'
+        : '由 Xray 内核提供，走 HTTP/2 + TLS，用上面的自签证书（链接带证书指纹）；填了域名并开启正式证书时自动用正式证书。也可以套 CDN（需要正式证书）。sing-box 客户端不支持，订阅里会自动去掉。'));
+    }
     protoEls[k] = els;
     grid.append(h('div', { class: 'proto', 'data-proto': k }, h('div', { class: 'head' }, h('label', {}, en, ' ', h('b', {}, label)), h('span', { class: 'muted' }, netw.toUpperCase())), field('端口', pt), h('label', { class: 'muted', style: { fontSize: '12px', display: 'block', margin: '-4px 0 8px' }, title: '勾上后，部署后端口不通或一键换新时都不会自动换这个端口' }, fixed, ' 固定端口（不自动更换）'), extra));
   }
@@ -652,7 +661,7 @@ async function editServer(orig, opts = {}) {
       // 已部署的服务器换了固定 Reality 目标：先在 VPS 上检测，通过才保存（24 小时内通过的结果可沿用）
       const rp = ns.protocols?.vlessReality;
       const op = orig?.protocols?.vlessReality;
-      if (orig?.deployedAt && rp?.enabled && !rp.sniAuto && (rp.sni !== op?.sni || op?.sniAuto || !op?.enabled)) {
+      if (orig?.deployedAt && core_reality(ns) && !rp.sniAuto && (rp.sni !== op?.sni || op?.sniAuto || !core_reality(orig))) {
         const c = rp.sniCheck;
         if (!(c && c.where === 'vps' && c.domain === rp.sni && c.ok && Date.now() - c.at < 24 * 3600e3)) {
           toast(`正在 VPS 上检测 ${rp.sni} …`);
@@ -669,7 +678,7 @@ async function editServer(orig, opts = {}) {
       }
       await api.call('col:upsert', 'servers', ns);
       if (orig) markDirty();
-      if (orig?.deployedAt && rp?.enabled && rp.sniAuto && !orig.protocols?.vlessReality?.sniAuto) repickReality(ns); // 从固定改成自动：马上挑一次
+      if (orig?.deployedAt && core_reality(ns) && rp.sniAuto && !orig.protocols?.vlessReality?.sniAuto) repickReality(ns); // 从固定改成自动：马上挑一次
       await render();
     } },
   ] });
@@ -791,6 +800,9 @@ function sniBlocked(d) {
   return SNI_BLOCKED.some((b) => d === b || d.endsWith('.' + b));
 }
 
+// XHTTP 协议由 Xray 提供；XHTTP-Reality 和 VLESS-Reality 共用 Reality 目标和密钥
+function core_xray(s) { return !!(s.protocols?.vlessXhttpReality?.enabled || s.protocols?.vlessXhttpTls?.enabled); }
+function core_reality(s) { return !!(s.protocols?.vlessReality?.enabled || s.protocols?.vlessXhttpReality?.enabled); }
 function core_cf(s) { const t = s.cfTunnel; return t?.enabled && t.token && t.hostname && s.protocols?.vmess?.enabled; }
 function vpsExpireTag(s) {
   if (!s.vpsExpireAt) return null;
@@ -1957,6 +1969,7 @@ async function viewSettings(v) {
   const statsPort = h('input', { type: 'number', value: st.statsPort });
   const adminPort = h('input', { type: 'number', value: st.adminPort });
   const sbBase = h('input', { value: st.singboxBase });
+  const xrBase = h('input', { value: st.xrayBase || '', placeholder: '留空 = 和 sing-box 同一个仓库里名为 xray 的 Release' });
   const sbAuto = h('input', { type: 'checkbox', checked: st.singboxAutoUpdate !== false });
   const autoUp = h('input', { type: 'checkbox', checked: st.autoUpdate !== false });
   const mode = st.sshProxy && st.sshProxy !== 'auto' && st.sshProxy !== 'off' ? 'custom' : (st.sshProxy || 'auto');
@@ -2022,12 +2035,13 @@ async function viewSettings(v) {
       h('label', { class: 'f' }, subHttps, ' 订阅链接用 HTTPS（不需要域名：自动给每台 VPS 的 IP 申请 Let\'s Encrypt 证书，6 天有效、自动续。需要放行 TCP 80 端口做验证，NodeDeck 会自动开防火墙；服务商有安全组的话也要放行。填了订阅域名时用域名）'),
       field('时区', tz, '流量重置、日报、升级时间段都按这个时区计算'),
       field('sing-box 内核渠道', sbBase, '默认是你仓库里名为 singbox 的 Release，GitHub Actions 每天自动构建官方最新正式版'),
-      h('label', { class: 'f' }, sbAuto, ' VPS 自动升级 sing-box 内核（每 6 小时检查，升级前校验配置，失败自动回滚）'),
+      field('Xray 内核渠道（XHTTP 协议用）', xrBase, '只有开了 VLESS-XHTTP-Reality / VLESS-XHTTP-TLS 的服务器才会装 Xray。默认由 GitHub Actions 每天从官方同步（校验官方 SHA2-256）'),
+      h('label', { class: 'f' }, sbAuto, ' VPS 自动升级 sing-box 内核（开了 XHTTP 的也升级 Xray；每 6 小时检查，升级前校验配置，失败自动回滚）'),
       h('label', { class: 'f' }, uwOn, ' 只在指定时间段升级（避免白天断线）'),
       h('div', { class: 'row' }, field('从几点', uwStart), field('到几点', uwEnd)),
       h('label', { class: 'f' }, autoUp, ' 自动检查软件更新'),
       h('button', { class: 'primary', onclick: async () => {
-        await api.call('settings:set', { subPort: Number(subPort.value) || 2096, statsPort: Number(statsPort.value) || 9092, adminPort: Number(adminPort.value) || 9091, singboxBase: sbBase.value.trim(), singboxAutoUpdate: sbAuto.checked, autoUpdate: autoUp.checked,
+        await api.call('settings:set', { subPort: Number(subPort.value) || 2096, statsPort: Number(statsPort.value) || 9092, adminPort: Number(adminPort.value) || 9091, singboxBase: sbBase.value.trim(), xrayBase: xrBase.value.trim(), singboxAutoUpdate: sbAuto.checked, autoUpdate: autoUp.checked,
           subDomain: subDomain.value.trim(), subHttps: subHttps.checked, timezone: tz.value, upgradeWindow: { enabled: uwOn.checked, start: Number(uwStart.value) || 0, end: Number(uwEnd.value) || 0 } });
         toast('已保存，点「同步全部」后对各 VPS 生效（改了端口需要重新部署）', 'ok'); markDirty();
       } }, '保存')),

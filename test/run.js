@@ -189,3 +189,57 @@ console.log('agent users', JSON.stringify(core.buildAgentUsers(state, node)));
     else console.log('OK   run-server（启动 8 秒无错误、无弃用警告，规则集已下载）');
   });
 }
+
+// 0.8.8：Xray（VLESS-XHTTP-Reality / VLESS-XHTTP-TLS）。XRAY=/path/to/xray 时用真 Xray 校验
+{
+  const XR = process.env.XRAY || '';
+  const xs = core.newServer({ name: 'XH1', host: '1.2.3.9', certSha256: 'cd'.repeat(32) });
+  xs.protocols.vlessXhttpReality.enabled = true;
+  xs.protocols.vlessXhttpTls.enabled = true;
+  const xa = core.newServer({ name: 'XH-ACME', host: '1.2.3.10', domain: 'x.example.com', acme: true });
+  xs.protocols.vlessReality.enabled = false; // 只开 XHTTP-Reality 也要能用 Reality 目标
+  xa.protocols.vlessXhttpTls.enabled = true;
+  const stx = { ...state, servers: [xs, xa] };
+  const fail = (m) => { console.log('FAIL', m); process.exitCode = 1; };
+  if (!core.usesXray(xs) || !core.realityOn(xs)) fail('usesXray / realityOn');
+  const sb = core.buildServerConfig(stx, xs);
+  check('server-xray-bridge', sb);
+  const br = sb.inbounds.find((i) => i.tag === 'xray-in');
+  if (!br || br.listen !== '127.0.0.1' || br.type !== 'socks') fail('sing-box 缺少 Xray 本机入口');
+  if (core.buildServerConfig(state, node).inbounds.some((i) => i.tag === 'xray-in')) fail('没开 XHTTP 不应有 Xray 入口');
+  if (core.buildXrayConfig(state, node) !== null) fail('没开 XHTTP 应返回 null');
+  const xc = core.buildXrayConfig(stx, xs);
+  if (xc.inbounds.length !== 2 || xc.inbounds.some((i) => i.settings.clients.length !== stx.users.filter((u) => core.userHasServer(u, xs.id)).length)) fail('Xray 入站 / 用户数不对');
+  if (core.checkPortConflicts(stx, xs).length) fail('端口冲突：' + core.checkPortConflicts(stx, xs).join(','));
+  const ents = core.nodeEntries(stx, xs).filter((e) => core.isXray(e.protocol));
+  if (ents.length !== 2) fail('XHTTP 节点数 ' + ents.length);
+  for (const e of ents) {
+    if (core.clientOutbound(stx, e, owner) !== null) fail('sing-box 不支持 XHTTP，clientOutbound 应返回 null');
+    const l = core.shareLink(stx, e, owner);
+    const u = new URL(l);
+    if (u.searchParams.get('type') !== 'xhttp' || !u.searchParams.get('path')) fail('XHTTP 链接参数：' + l);
+    if (e.protocol === 'vlessXhttpReality' && (!u.searchParams.get('pbk') || u.searchParams.get('mode') !== 'stream-one')) fail('XHTTP-Reality 链接：' + l);
+    if (e.protocol === 'vlessXhttpTls' && u.searchParams.get('pcs') !== 'cd'.repeat(32)) fail('XHTTP-TLS 链接缺少证书指纹：' + l);
+    const cp = core.clashProxy(stx, e, owner);
+    if (cp.network !== 'xhttp' || !cp['xhttp-opts']?.path) fail('Clash XHTTP 节点');
+  }
+  const sbc = core.buildSingboxClient(stx, owner);
+  if (sbc.outbounds.some((o) => /XHTTP/.test(o.tag || ''))) fail('sing-box 订阅里不应有 XHTTP 节点');
+  check('singbox-client-xhttp', sbc);
+  const sub = core.buildSubscription(stx, owner);
+  if (!sub.clashLegacy || /xhttp/.test(sub.clashLegacy) || !/xhttp/.test(sub.clash)) fail('Clash 老版本备用配置');
+  if (core.buildSubscription(state, owner).clashLegacy) fail('没有 XHTTP 时不应生成 clashLegacy');
+  if (!core.acmeCertFiles(xa).cert.includes('x.example.com')) fail('ACME 证书路径');
+  if (!JSON.stringify(core.buildXrayConfig(stx, xa)).includes(core.acmeCertFiles(xa).cert)) fail('XHTTP-TLS 开了正式证书应读 ACME 证书');
+  if (XR) {
+    const xcheck = (name, cfg) => {
+      const f = path.join(os.tmpdir(), `nd-xray-${name}.json`);
+      fs.writeFileSync(f, JSON.stringify(cfg, null, 2).replaceAll('/etc/nodedeck/cert.pem', path.join(certDir, 'cert.pem')).replaceAll('/etc/nodedeck/key.pem', path.join(certDir, 'key.pem')));
+      try { execFileSync(XR, ['run', '-test', '-c', f], { stdio: 'pipe' }); console.log('OK  ', name); }
+      catch (e) { fail(name + ' ' + String(e.stdout || '') + String(e.stderr || e.message)); }
+    };
+    xcheck('xray-server', xc);
+    for (const e of ents) xcheck('xray-client-' + e.protocol, core.xrayTestConfig(core.xrayClientOutbound(stx, e, owner), 18090));
+  } else console.log('SKIP xray-run-test（没设 XRAY）');
+  if (process.exitCode !== 1) console.log('OK   xhttp');
+}

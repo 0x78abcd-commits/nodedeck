@@ -22,6 +22,8 @@ let updater;
 
 const resourcesDir = app.isPackaged ? process.resourcesPath : path.join(__dirname, '..', '..', 'resources');
 const singboxPath = path.join(resourcesDir, 'bin', process.platform === 'win32' ? 'sing-box.exe' : 'sing-box');
+// XHTTP 节点本地测试用（sing-box 不支持 XHTTP）
+const xrayPath = path.join(resourcesDir, 'bin', process.platform === 'win32' ? 'xray.exe' : 'xray');
 
 // 服务端 sing-box 内核渠道：本仓库名为 singbox 的 Release（由 singbox.yml 每天自动更新）
 function defaultSingboxBase() {
@@ -83,6 +85,12 @@ function testEntryFor(userId = 'owner') {
   return (entry) => {
     const s = state();
     const user = s.users.find((u) => u.id === userId) || s.users.find((u) => u.id === 'owner');
+    if (core.isXray(entry.protocol)) {
+      if (!fs.existsSync(xrayPath)) return Promise.resolve({ ok: false, error: '找不到内置 Xray：' + xrayPath + '（XHTTP 节点要用 Xray 测试）' });
+      let outbound;
+      try { outbound = core.xrayClientOutbound(s, entry, user); } catch (e) { return Promise.resolve({ ok: false, error: e.message }); }
+      return nodetest.testOutbound({ xrayPath, outbound, fetchVia });
+    }
     return nodetest.testOutbound({ singboxPath, outbound: core.clientOutbound(s, entry, user), fetchVia });
   };
 }
@@ -171,7 +179,7 @@ async function refreshUsage() {
         if (st.reality) {
           srv.realityState = st.reality;
           const rp = srv.protocols?.vlessReality;
-          if (rp?.enabled && st.reality.override && st.reality.from === rp.sni) {
+          if (core.realityOn(srv) && st.reality.override && st.reality.from === rp.sni) {
             Object.assign(rp, { sni: st.reality.override, sniSource: 'patrol', sniPickedAt: (st.reality.changedAt || 0) * 1000, sniCheck: { domain: st.reality.override, ok: true, at: (st.reality.changedAt || 0) * 1000, where: 'vps', via: 'patrol' } });
             realityAdopted.push(srv.id);
           }
@@ -205,7 +213,7 @@ async function refreshUsage() {
 // 本机连不通、海外能通，连续两次判定为被墙后：notify 只提醒；auto 自动一键换新（6 小时内最多一次），换完复测
 const blockState = {};
 function mainTcpPort(srv) {
-  for (const k of ['vlessReality', 'trojan', 'anytls', 'vmess', 'shadowsocks']) if (srv.protocols?.[k]?.enabled) return { key: k, port: Number(srv.protocols[k].port) };
+  for (const k of ['vlessReality', 'trojan', 'anytls', 'vmess', 'vlessXhttpReality', 'vlessXhttpTls', 'shadowsocks']) if (srv.protocols?.[k]?.enabled) return { key: k, port: Number(srv.protocols[k].port) };
   return null;
 }
 async function notifyAll(srv, text) {
@@ -302,7 +310,7 @@ function handle(name, fn) {
 }
 
 function registerIpc() {
-  handle('app:info', () => ({ version: app.getVersion(), packaged: app.isPackaged, portable: !!process.env.PORTABLE_EXECUTABLE_DIR, repo: publish.owner ? `${publish.owner}/${publish.repo}` : '', singbox: fs.existsSync(singboxPath), dataDir: app.getPath('userData'), realityTargets: core.REALITY_FALLBACKS }));
+  handle('app:info', () => ({ version: app.getVersion(), packaged: app.isPackaged, portable: !!process.env.PORTABLE_EXECUTABLE_DIR, repo: publish.owner ? `${publish.owner}/${publish.repo}` : '', singbox: fs.existsSync(singboxPath), xray: fs.existsSync(xrayPath), dataDir: app.getPath('userData'), realityTargets: core.REALITY_FALLBACKS }));
   handle('state:get', () => state());
   handle('col:upsert', (col, item) => store.upsert(col, item));
   handle('col:remove', (col, id) => store.remove(col, id));
@@ -417,7 +425,7 @@ function registerIpc() {
         if (action === 'rotate') store.upsert('servers', core.rotateServer(state(), srv).server);
         else if (action === 'routing') store.upsert('servers', { id, routing: { ...(srv.routing || {}), ...arg } });
         else if (action === 'realitySni') {
-          if (!srv.protocols?.vlessReality?.enabled) { fail.push(`${srv.name}：没开 Reality`); continue; }
+          if (!core.realityOn(srv)) { fail.push(`${srv.name}：没开 Reality`); continue; }
           if (arg === '__auto__') {
             const pick = srv.deployedAt ? await deploy.pickReality(srv) : null;
             if (!pick) throw new Error('没找到合适的目标');

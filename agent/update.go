@@ -285,6 +285,16 @@ func (a *Agent) updateLoop() {
 				a.notifyOnce("sb-ok:"+a.update.Current, "⬆️ sing-box "+msg)
 			}
 			a.mu.Unlock()
+			if a.cfg.Xray != nil && a.cfg.Xray.Manifest != "" {
+				msg, err := a.updateXray()
+				a.mu.Lock()
+				if err != nil {
+					a.notifyOnce("xr-err:"+a.xrayUpdate.Latest+":"+err.Error(), "⚠️ Xray 自动升级没有完成："+err.Error())
+				} else if strings.Contains(msg, "升级到") {
+					a.notifyOnce("xr-ok:"+a.xrayUpdate.Current, "⬆️ "+msg)
+				}
+				a.mu.Unlock()
+			}
 		}
 		time.Sleep(30 * time.Minute)
 	}

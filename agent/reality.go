@@ -320,6 +320,16 @@ func (a *Agent) switchReality(old, nd string) error {
 		}
 		found = true
 	}
+	// XHTTP-Reality（Xray）和 VLESS-Reality 共用目标，一起换
+	xp := a.path("xray.full.json")
+	xb, xerr := os.ReadFile(xp)
+	var xout []byte
+	if xerr == nil {
+		if o, ok := switchXrayReality(xb, nd); ok {
+			xout = o
+			found = true
+		}
+	}
 	if !found {
 		return fmt.Errorf("配置里没有 Reality 入站")
 	}
@@ -329,8 +339,17 @@ func (a *Agent) switchReality(old, nd string) error {
 	if err := writeFileAtomic(p, out, 0600); err != nil {
 		return err
 	}
+	if xout != nil {
+		if err := writeFileAtomic(xp, xout, 0600); err != nil {
+			_ = writeFileAtomic(p, b, 0600)
+			return err
+		}
+	}
 	if err := a.apply(true); err != nil {
 		_ = writeFileAtomic(p, b, 0600) // 校验不过就还原
+		if xout != nil {
+			_ = writeFileAtomic(xp, xb, 0600)
+		}
 		_ = a.apply(true)
 		return err
 	}
@@ -352,6 +371,7 @@ func (a *Agent) rewriteSubs(old, nd string) {
 	for tok, s := range a.subs {
 		s.V2ray = rewriteV2ray(s.V2ray, pk, old, nd)
 		s.Clash = rewriteLines(s.Clash, pk, old, nd)
+		s.ClashLegacy = rewriteLines(s.ClashLegacy, pk, old, nd)
 		s.Singbox = rewriteSingbox(s.Singbox, pk, nd)
 		a.subs[tok] = s
 	}
@@ -425,4 +445,31 @@ func pickRealityCmd(selfIP, candidates string) {
 	}
 	b, _ := json.Marshal(res)
 	fmt.Println(string(b))
+}
+
+// switchXrayReality 把 Xray 配置里 Reality 入站的目标换成 nd；没有 Reality 入站返回 false
+func switchXrayReality(b []byte, nd string) ([]byte, bool) {
+	var cfg map[string]any
+	if json.Unmarshal(b, &cfg) != nil {
+		return nil, false
+	}
+	found := false
+	ins, _ := cfg["inbounds"].([]any)
+	for _, x := range ins {
+		in, _ := x.(map[string]any)
+		ss, _ := in["streamSettings"].(map[string]any)
+		rs, _ := ss["realitySettings"].(map[string]any)
+		if rs == nil {
+			continue
+		}
+		rs["target"] = nd + ":443"
+		delete(rs, "dest")
+		rs["serverNames"] = []any{nd}
+		found = true
+	}
+	if !found {
+		return nil, false
+	}
+	out, err := json.MarshalIndent(cfg, "", "  ")
+	return out, err == nil
 }
