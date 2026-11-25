@@ -2,16 +2,30 @@
 
 ## 跟踪清单
 
-`.github/workflows/upstream-watch.yml` 每周一检查下面这些仓库的正式版，有新版就开 Issue（标签 `upstream-*`）。
+`.github/workflows/upstream-watch.yml` 每周一检查下面这些仓库，有新版本（脚本类仓库看新提交）就开 Issue（标签 `upstream-*`）。
 
 | 优先级 | 仓库 | 跟什么 | 为什么 |
 |---|---|---|---|
 | P0 | SagerNet/sing-box | Release、配置字段、弃用项 | 唯一内核，协议和配置格式以它为准 |
-| P0 | XTLS/Xray-core | Reality / Vision / 新传输 | Reality 的源头，抗封锁思路常先出现在这里（只借鉴，不换内核） |
+| P0 | XTLS/Xray-core | Release、XHTTP 参数、弃用项 | VLESS-XHTTP-Reality / VLESS-XHTTP-TLS 用 Xray 内核跑；Reality 的源头 |
 | P1 | apernet/hysteria | Hysteria2 规范、URI 参数 | 分享链接要跟上（如 pinSHA256） |
 | P1 | tuic-protocol/tuic | TUIC v5 变更 | 已支持 TUIC |
 | P1 | 2dust/v2rayNG、2dust/v2rayN | 客户端兼容、导入问题 | 用户最多，链接必须能导入（例：2026-08 起移除 allowInsecure，自签证书要带证书指纹） |
+| P1 | cloudflare/cloudflared | Release、隧道协议、弃用通知 | Cloudflare 隧道用 sing-box 内置的 cloudflared，官方协议变化会影响连接 |
+| P1 | LloydAsp/NodeQuality | 主分支提交 | 社区测试直接运行它的脚本，交互选项、报告链接格式变了要跟着改 |
+| P1 | ibsgss/TcpQuality | 主分支提交 | 同上 |
 | P2 | MetaCubeX/mihomo | Clash 订阅字段 | 已出 Clash 订阅 |
+| P2 | xykt/NetQuality | 主分支提交 | 三网回程、BGP、国际互联检测脚本，可以加进社区测试（AGPL，只调用脚本） |
+| P2 | ClickDevTech/CELERITY-panel | Tag | 同类面板（MIT）：Xray XHTTP、级联中转、负载均衡、外部探针 |
+| P2 | acidmiku/z_panel | 主分支提交 | 同类面板：SSH 安全加固、多节点管理（没有开源许可证，只参考功能，不复制代码） |
+
+不跟踪的（2026-11-25 评估）：
+
+- MetaCubeX/meta-rules-dat：规则数据每天自动发布，跟踪只会刷屏；NodeDeck 用的是 SagerNet 的 sing-geosite / sing-geoip 规则集，sing-box 自己每 7 天更新一次
+- acmesh-official/acme.sh：NodeDeck 不用它，域名证书由 sing-box 内置 ACME 申请，订阅的 IP 证书由 agent 自己申请
+- docker/compose：只在「清理其他程序」的一键恢复里用到 `docker compose up -d`，接口很稳定
+- prometheus/prometheus：NodeDeck 的监控由 agent 采集、桌面端画图，不打算引入 Prometheus
+- Teminuosi/tms-client：2026-11-25 起停止跟踪
 
 ## 自动化与原则
 

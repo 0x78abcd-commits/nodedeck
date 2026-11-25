@@ -20,19 +20,27 @@ jobs:
       max-parallel: 2
       matrix:
         include:
-          - { upstream: SagerNet/sing-box,       label: upstream-singbox,  short: sing-box,  pre: false, why: '内核：协议、配置字段、弃用项（以它为准）' }
-          - { upstream: XTLS/Xray-core,          label: upstream-xray,     short: Xray,      pre: false, why: 'Reality / Vision / 抗封锁新思路（不换内核，只借鉴）' }
-          - { upstream: apernet/hysteria,        label: upstream-hysteria, short: Hysteria,  pre: false, why: 'Hysteria2 协议规范、分享链接参数' }
-          - { upstream: tuic-protocol/tuic,      label: upstream-tuic,     short: TUIC,      pre: false, why: 'TUIC v5 变更' }
-          - { upstream: 2dust/v2rayNG,           label: upstream-v2rayng,  short: v2rayNG,   pre: false, why: '安卓客户端兼容、链接导入（如 allowInsecure 被移除）' }
-          - { upstream: 2dust/v2rayN,            label: upstream-v2rayn,   short: v2rayN,    pre: false, why: 'Windows 客户端兼容' }
-          - { upstream: MetaCubeX/mihomo,        label: upstream-mihomo,   short: mihomo,    pre: false, why: 'Clash Meta 订阅字段' }
+          # mode：releases（默认，看正式发布）/ tags（只有 tag 没有 Release 的）/ commits（脚本类仓库，看主分支提交）
+          - { upstream: SagerNet/sing-box,            label: upstream-singbox,     short: sing-box,     mode: releases, pre: false, why: '内核：协议、配置字段、弃用项（以它为准）' }
+          - { upstream: XTLS/Xray-core,               label: upstream-xray,        short: Xray,         mode: releases, pre: false, why: '内核：VLESS-XHTTP-Reality / VLESS-XHTTP-TLS 用 Xray 跑，XHTTP 参数和弃用项以它为准' }
+          - { upstream: apernet/hysteria,             label: upstream-hysteria,    short: Hysteria,     mode: releases, pre: false, why: 'Hysteria2 协议规范、分享链接参数' }
+          - { upstream: tuic-protocol/tuic,           label: upstream-tuic,        short: TUIC,         mode: releases, pre: false, why: 'TUIC v5 变更' }
+          - { upstream: cloudflare/cloudflared,       label: upstream-cloudflared, short: cloudflared,  mode: releases, pre: false, why: 'Cloudflare 隧道：连接协议、版本兼容、弃用通知（NodeDeck 的隧道用 sing-box 内置的 cloudflared）' }
+          - { upstream: 2dust/v2rayNG,                label: upstream-v2rayng,     short: v2rayNG,      mode: releases, pre: false, why: '安卓客户端兼容、链接导入（如 allowInsecure 被移除）' }
+          - { upstream: 2dust/v2rayN,                 label: upstream-v2rayn,      short: v2rayN,       mode: releases, pre: false, why: 'Windows 客户端兼容' }
+          - { upstream: MetaCubeX/mihomo,             label: upstream-mihomo,      short: mihomo,       mode: releases, pre: false, why: 'Clash Meta 订阅字段' }
+          - { upstream: LloydAsp/NodeQuality,         label: upstream-nodequality, short: NodeQuality,  mode: commits,  pre: false, why: '社区测试直接运行它的脚本：交互选项或报告链接格式变了，NodeDeck 要跟着改' }
+          - { upstream: ibsgss/TcpQuality,            label: upstream-tcpquality,  short: TcpQuality,   mode: commits,  pre: false, why: '社区测试直接运行它的脚本：参数或报告链接格式变了要跟着改' }
+          - { upstream: xykt/NetQuality,              label: upstream-netquality,  short: NetQuality,   mode: commits,  pre: false, why: '三网回程、BGP、国际互联检测脚本，可以加进社区测试（AGPL，只调用脚本，不复制代码）' }
+          - { upstream: ClickDevTech/CELERITY-panel,  label: upstream-celerity,    short: CELERITY,     mode: tags,     pre: false, why: '同类面板（MIT）：Xray XHTTP、级联中转、负载均衡、外部探针的做法可以参考' }
+          - { upstream: acidmiku/z_panel,             label: upstream-zpanel,      short: Z Panel,      mode: commits,  pre: false, why: '同类面板：SSH 安全加固、多节点管理的思路（没有开源许可证，只参考功能，不复制代码）' }
     env:
       GH_TOKEN: ${{ github.token }}
       UPSTREAM: ${{ matrix.upstream }}
       LABEL: ${{ matrix.label }}
       SHORT: ${{ matrix.short }}
       PRE: ${{ matrix.pre }}
+      MODE: ${{ matrix.mode }}
       WHY: ${{ matrix.why }}
     steps:
       - name: 检查新版本并开 Issue
@@ -45,7 +53,17 @@ jobs:
                  --jq '.[0].body // ""' | grep -oP '(?<=<!-- last: )[^ ]+' || true)
           echo "上次提醒到：${LAST:-无}"
 
-          gh api "repos/$UPSTREAM/releases?per_page=30" > releases.json
+          # 统一成 [{tag_name, published_at, body, html_url}]，从新到旧
+          case "${MODE:-releases}" in
+            commits)
+              gh api "repos/$UPSTREAM/commits?per_page=30" \
+                --jq '[.[] | {tag_name: .sha[0:7], published_at: .commit.committer.date, body: .commit.message, html_url: .html_url, draft: false, prerelease: false}]' > releases.json ;;
+            tags)
+              gh api "repos/$UPSTREAM/tags?per_page=30" \
+                --jq '[.[] | {tag_name: .name, published_at: "", body: ("https://github.com/'"$UPSTREAM"'/releases/tag/" + .name), html_url: "", draft: false, prerelease: false}]' > releases.json ;;
+            *)
+              gh api "repos/$UPSTREAM/releases?per_page=30" > releases.json ;;
+          esac
           # 从新到旧取，遇到上次的版本就停；第一次运行只取最新一个，避免刷屏
           jq -r --arg last "$LAST" --argjson pre "$PRE" '
             [ .[] | select(.draft|not) | select($pre or (.prerelease|not)) ] as $r
@@ -61,15 +79,15 @@ jobs:
           OLDEST=$(tail -1 new.txt | base64 -d | jq -r .tag_name)
           COUNT=$(wc -l < new.txt)
           {
-            echo "[$UPSTREAM](https://github.com/$UPSTREAM/releases) 发布了 $COUNT 个新版本。"
+            if [ "$MODE" = commits ]; then echo "[$UPSTREAM](https://github.com/$UPSTREAM/commits) 有 $COUNT 个新提交。"; else echo "[$UPSTREAM](https://github.com/$UPSTREAM/releases) 发布了 $COUNT 个新版本。"; fi
             echo
             echo "**为什么跟踪**：$WHY"
             echo
-            echo "处理方式：内核自动升级不用管；新协议字段、配置格式、分享链接参数的变化需要改代码，测试通过后再合入（每周的定时跟进会自动处理）。"
+            echo "处理方式：内核自动升级不用管；新协议字段、配置格式、分享链接参数、测试脚本的变化需要改代码，测试通过后再合入（需要跟进时在 Claude 对话里说一声）。"
             echo
             while read -r line; do
               r=$(echo "$line" | base64 -d)
-              echo "## $(echo "$r" | jq -r .tag_name)（$(echo "$r" | jq -r '.published_at[:10]')）"
+              echo "## $(echo "$r" | jq -r .tag_name)（$(echo "$r" | jq -r '(.published_at // "")[:10]')）"
               echo
               echo "$r" | jq -r '(.body // "（无说明）") | if length > 4000 then .[:4000] + "\n\n…（太长已截断，看原文）" else . end'
               echo
