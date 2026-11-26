@@ -151,16 +151,18 @@ function viaProxy(proxyPort, targetPort, ms = 10000) {
     fs.writeFileSync(path.join(dir, 'mh-full.yaml'), core.buildSubscription(state, owner).clash);
     try { execFileSync(MH, ['-t', '-d', home, '-f', path.join(dir, 'mh-full.yaml')], { stdio: 'pipe', timeout: 180000 }); console.log('OK   mihomo   完整 Clash 订阅通过 mihomo -t 校验'); }
     catch (e) { failed++; console.log('FAIL mihomo   完整 Clash 订阅校验不过：' + String(e.stdout || '') + String(e.stderr || e.message).slice(-600)); }
+    let mhDebug = true; // 第一个失败的打印完整日志
     for (const e of entries) {
       const px = core.clashProxy(state, e, owner);
       if (!px) continue;
       const port = await freePort();
       const cfgFile = path.join(dir, `mh-${port}.yaml`);
-      const yaml = [`mixed-port: ${port}`, 'allow-lan: false', 'mode: rule', 'log-level: warning', 'ipv6: false', 'proxies:', '  - ' + JSON.stringify(px), 'rules:', `  - MATCH,${JSON.stringify(px.name)}`, ''].join('\n');
+      const yaml = [`mixed-port: ${port}`, 'allow-lan: false', 'mode: rule', `log-level: ${mhDebug ? 'debug' : 'warning'}`, 'ipv6: false', 'find-process-mode: off', 'geo-auto-update: false', 'proxies:', '  - ' + JSON.stringify(px), 'rules:', `  - MATCH,${JSON.stringify(px.name)}`, ''].join('\n');
       fs.writeFileSync(cfgFile, yaml);
       const p = run(MH, ['-d', home, '-f', cfgFile], 'mihomo');
       const up = await waitPort(port, 30000);
-      let err = up ? await viaProxy(port, webPort) : 'mihomo 没起来：' + p.log.slice(-400);
+      let err = up ? await viaProxy(port, webPort) : 'mihomo 没起来';
+      if (!up && mhDebug) { console.log('---- mihomo 日志 ----\n' + p.log.slice(-3000) + '\n---- 配置 ----\n' + yaml); mhDebug = false; }
       if (err && up) { await sleep(800); err = await viaProxy(port, webPort); }
       record('mihomo', e, err ? err + (p.log ? ' | ' + p.log.trim().split('\n').slice(-2).join(' | ').slice(0, 300) : '') : '');
       stop(p);
