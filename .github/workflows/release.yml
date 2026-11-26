@@ -16,6 +16,33 @@ permissions:
   contents: write
 
 jobs:
+  # 定发版用的提交。GitHub 不允许 Actions 自带的令牌在「改了 .github/workflows 的提交」上建 tag / Release
+  # （0.8.7 就因此失败）。遇到这种情况先在 main 上推一个空提交（内容完全一样），在空提交上发版。
+  target:
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.t.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - id: t
+        run: |
+          SHA="$GITHUB_SHA"
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && git diff --name-only HEAD~1 HEAD | grep -q '^\.github/workflows/'; then
+            echo "最新提交改了工作流文件，推一个空提交再发版"
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit --allow-empty -m "发版 v${{ github.event.inputs.version }}（空提交：上一个提交改了工作流，GitHub 不允许直接在它上面建 Release）"
+            if ! git push origin "HEAD:$GITHUB_REF_NAME"; then
+              echo "::error::推空提交失败（$GITHUB_REF_NAME 在发版期间有了新提交？）。重新运行发版即可"
+              exit 1
+            fi
+            SHA=$(git rev-parse HEAD)
+          fi
+          echo "发版提交：$SHA"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
   # 确保服务端 sing-box 内核已发布（已是最新则直接跳过）
   singbox:
     uses: ./.github/workflows/singbox.yml
@@ -49,7 +76,7 @@ jobs:
           path: out/*
 
   windows:
-    needs: [singbox, linux-binaries]
+    needs: [target, singbox, linux-binaries]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -113,5 +140,5 @@ jobs:
             gh release upload "v$VERSION" "${FILES[@]}" --clobber
             gh release edit "v$VERSION" --notes-file notes.md
           else
-            gh release create "v$VERSION" "${FILES[@]}" --title "NodeDeck $VERSION" --notes-file notes.md --target "$GITHUB_SHA"
+            gh release create "v$VERSION" "${FILES[@]}" --title "NodeDeck $VERSION" --notes-file notes.md --target "${{ needs.target.outputs.sha }}"
           fi
