@@ -1,6 +1,6 @@
 package main
 
-// 补货提醒（内置轻量版）：定时打开商品页，按文字规则判断有货 / 缺货，状态变了就发 Telegram。
+// 补货提醒（内置轻量版）：定时打开商品页，按文字规则判断有货 / 缺货，状态变了就发通知（Telegram / 微信）。
 //   - 规则：gone = 页面上「缺货文字」消失算有货（最常用，如 Out of Stock / 缺货）
 //           appear = 页面上出现「有货文字」算有货（如 Order Now / 立即购买）
 //           regex = 正则能匹配算有货
@@ -248,8 +248,8 @@ func (a *Agent) stockOnce(w StockWatch) {
 	a.saveStock()
 	if msg != "" {
 		log.Printf("补货提醒：%s", strings.SplitN(msg, "\n", 2)[0])
-		if a.tgEnabled() {
-			if err := a.sendTG("【补货提醒】" + msg); err != nil {
+		if a.notifyOn() {
+			if err := a.sendAll("【补货提醒】" + msg); err != nil {
 				log.Printf("发送补货提醒失败: %v", err)
 			}
 		}

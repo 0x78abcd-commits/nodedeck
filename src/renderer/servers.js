@@ -343,7 +343,7 @@ async function editServer(orig, opts = {}) {
     h('div', { class: 'row' }, field('名称', name), field('地址', host)),
     h('div', { class: 'row' }, field('SSH 端口', port), field('用户名', user), field('认证方式', auth)),
     pwdBox, keyBox, hostKeyBox,
-    h('div', { class: 'row' }, field('角色', role), field('出口', exit), field('VPS 到期日（可选）', vpsExp, '到期前 7 天和 1 天会 Telegram 提醒续费')),
+    h('div', { class: 'row' }, field('角色', role), field('出口', exit), field('VPS 到期日（可选）', vpsExp, '到期前 7 天和 1 天会发通知提醒续费')),
     h('div', { class: 'row' }, field('每月流量额度 GB（可选）', quotaIn, '探针网页上显示用量进度'), field('分组（可选）', groupIn, '探针网页可以按分组筛选，例如「日本」「备用」')),
     field('自签证书域名（Trojan / Hy2 / TUIC / AnyTLS 的 SNI）', sniBox),
     h('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', margin: '14px 0 8px' } }, h('h4', { style: { margin: 0 } }, '协议'), h('div', { class: 'spacer' }), tpl), grid,

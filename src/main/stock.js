@@ -53,7 +53,10 @@ async function test(server, w) {
 
 // ---------- changedetection.io ----------
 const CD = { name: 'nodedeck-cd', browser: 'nodedeck-cd-browser', net: 'nodedeck-cd', vol: 'nodedeck-cd-data', port: 5000,
-  image: 'ghcr.io/dgtlmoon/changedetection.io:latest', imageHub: 'dgtlmoon/changedetection.io:latest', browserImage: 'dgtlmoon/sockpuppetbrowser:latest' };
+  image: 'ghcr.io/dgtlmoon/changedetection.io:latest', imageHub: 'dgtlmoon/changedetection.io:latest', browserImage: 'dgtlmoon/sockpuppetbrowser:latest',
+  // 精简模式：个人盯几个商品用不着 10 个并发、详细日志、AI 功能和超长截图；再给容器设内存上限，超了 Docker 会自动重启它
+  mem: '320m', browserMem: '800m' };
+const LOGS = '--log-opt max-size=2m --log-opt max-file=2';
 
 function cdInstallScript({ browser, port = CD.port }) {
   return `set -e
@@ -72,9 +75,13 @@ docker pull -q $IMG >/dev/null 2>&1 || { IMG=${CD.imageHub}; docker pull -q $IMG
 docker rm -f ${CD.name} ${CD.browser} >/dev/null 2>&1 || true
 ${browser ? `echo "下载 Chrome 浏览器镜像（约 500MB）…"
 docker pull -q ${CD.browserImage} >/dev/null
-docker run -d --name ${CD.browser} --restart unless-stopped --network ${CD.net} --cap-add SYS_ADMIN \\
-  -e SCREEN_WIDTH=1920 -e SCREEN_HEIGHT=1024 -e SCREEN_DEPTH=16 -e MAX_CONCURRENT_CHROME_PROCESSES=2 ${CD.browserImage} >/dev/null` : ''}
-docker run -d --name ${CD.name} --restart unless-stopped --network ${CD.net} \\
+docker run -d --name ${CD.browser} --restart unless-stopped --network ${CD.net} --cap-add SYS_ADMIN ${LOGS} \\
+  --memory ${CD.browserMem} --memory-swap ${CD.browserMem} \\
+  -e SCREEN_WIDTH=1280 -e SCREEN_HEIGHT=1024 -e SCREEN_DEPTH=16 -e MAX_CONCURRENT_CHROME_PROCESSES=1 ${CD.browserImage} >/dev/null` : ''}
+docker run -d --name ${CD.name} --restart unless-stopped --network ${CD.net} ${LOGS} \\
+  --memory ${CD.mem} --memory-swap ${CD.mem} \\
+  -e NODEDECK_LEAN=1 -e FETCH_WORKERS=${browser ? 1 : 2} -e LOGGER_LEVEL=WARNING -e DISABLE_VERSION_CHECK=true -e LLM_FEATURES_DISABLED=true \\
+  -e MALLOC_ARENA_MAX=2 -e SCREENSHOT_MAX_HEIGHT=8000 \\
   -p 127.0.0.1:${port}:5000 -v ${CD.vol}:/datastore ${browser ? `-e PLAYWRIGHT_DRIVER_URL=ws://${CD.browser}:3000 ` : ''}$IMG >/dev/null
 for i in $(seq 1 30); do
   if (curl -fs -o /dev/null http://127.0.0.1:${port}/ || wget -q -O /dev/null http://127.0.0.1:${port}/) 2>/dev/null; then echo "changedetection.io 已启动"; exit 0; fi
@@ -95,11 +102,12 @@ async function cdStatusOn(ssh) {
   const r = await ssh.exec(`command -v docker >/dev/null 2>&1 || { echo NODOCKER; exit 0; }
 A=$(docker inspect -f '{{.State.Status}}' ${CD.name} 2>/dev/null | head -1); echo "\${A:-MISSING}"
 B=$(docker inspect -f '{{.State.Status}}' ${CD.browser} 2>/dev/null | head -1); echo "\${B:-MISSING}"
+docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' ${CD.name} 2>/dev/null | grep -q '^NODEDECK_LEAN=1' && echo LEAN || echo FULL
 N=""; [ -n "$A" ] && N="${CD.name}"; [ -n "$B" ] && N="$N ${CD.browser}"
 [ -n "$N" ] && docker stats --no-stream --format '{{.MemUsage}}' $N 2>/dev/null | tr '\\n' ';'; echo`);
   const lines = r.stdout.trim().split('\n');
   if (lines[0] === 'NODOCKER') return { installed: false, docker: false };
-  return { installed: lines[0] !== 'MISSING', running: lines[0] === 'running', state: lines[0], browser: !!lines[1] && lines[1] !== 'MISSING', browserRunning: lines[1] === 'running', mem: lines[2] || '', docker: true };
+  return { installed: lines[0] !== 'MISSING', running: lines[0] === 'running', state: lines[0], browser: !!lines[1] && lines[1] !== 'MISSING', browserRunning: lines[1] === 'running', lean: lines[2] === 'LEAN', mem: lines[3] || '', docker: true };
 }
 
 const cdStatus = (server) => withSSH(server, cdStatusOn);
@@ -144,10 +152,4 @@ function closeTunnel(id) {
 }
 function closeAll() { for (const id of [...tunnels.keys()]) closeTunnel(id); }
 
-// changedetection.io 里填的 Telegram 通知地址（Apprise 格式）
-function tgNotifyUrl(state) {
-  const tg = state.settings?.telegram || {};
-  return tg.enabled && tg.botToken && tg.chatId ? `tgram://${tg.botToken}/${tg.chatId}` : '';
-}
-
-module.exports = { MODES, cfg, stockServer, newWatch, validWatch, agentCfg, test, cdInstall, cdStatus, cdUninstall, cdTunnel, closeTunnel, closeAll, tgNotifyUrl, cdInstallScript, AGENT_BIN };
+module.exports = { MODES, cfg, stockServer, newWatch, validWatch, agentCfg, test, cdInstall, cdStatus, cdUninstall, cdTunnel, closeTunnel, closeAll, cdInstallScript, AGENT_BIN };

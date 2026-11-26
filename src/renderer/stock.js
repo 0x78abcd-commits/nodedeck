@@ -25,9 +25,9 @@ async function viewStock(v) {
   const deployed = S.servers.filter((x) => x.deployedAt);
   const builtinOn = (info.watches || []).length > 0 || !!info.serverId;
   const cdOn = !!info.cd?.serverId;
-  v.append(h('h1', {}, '补货提醒'), h('p', { class: 'sub' }, '盯着商品页，补货了就发 Telegram'));
+  v.append(h('h1', {}, '补货提醒'), h('p', { class: 'sub' }, '盯着商品页，补货了就发通知（Telegram / 微信）'));
   if (!deployed.length) { v.append(h('div', { class: 'card' }, h('p', { class: 'muted' }, '先部署一台服务器：检查商品页、装 changedetection.io 都在你的 VPS 上进行。'))); return; }
-  if (!info.tgOn) v.append(h('div', { class: 'card', style: { borderColor: 'var(--warn)' } }, h('b', {}, '还没开 Telegram 通知'), h('p', { class: 'muted', style: { margin: '4px 0 0' } }, '补货消息靠 Telegram 发，先在「设置 → Telegram 通知」里填好机器人。'), h('button', { class: 'small', onclick: () => go('settings') }, '去设置')));
+  if (!info.notifyOn) v.append(h('div', { class: 'card', style: { borderColor: 'var(--warn)' } }, h('b', {}, '还没配通知渠道'), h('p', { class: 'muted', style: { margin: '4px 0 0' } }, '补货消息要发到 Telegram 或微信，先在「设置 → 通知」里填好一个（微信用 PushPlus 最省事）。'), h('button', { class: 'small', onclick: () => go('settings') }, '去设置')));
   if (!builtinOn && !cdOn) { v.append(stockChooser(deployed)); return; }
   if (builtinOn) v.append(stockBuiltinCard(info, deployed));
   if (cdOn) v.append(await stockCdCard(info));
@@ -86,7 +86,7 @@ function stockBuiltinCard(info, deployed) {
       h('button', { class: 'small primary auto', onclick: () => stockEditWatch(null) }, '+ 添加商品')),
     rows.length ? h('table', {}, h('thead', {}, h('tr', {}, ['商品', '判断规则', '间隔', '状态', ''].map((x) => h('th', {}, x)))), h('tbody', {}, rows))
       : h('p', { class: 'muted' }, '还没有要盯的商品，点「添加商品」。'),
-    h('p', { class: 'muted', style: { fontSize: '12px' } }, '补货、又卖完时各发一条 Telegram；第一次检查就有货也会发一条。打不开或被拦时只记错误，不会误报补货。'));
+    h('p', { class: 'muted', style: { fontSize: '12px' } }, '补货、又卖完时各发一条通知；第一次检查就有货也会发一条。打不开或被拦时只记错误，不会误报补货。'));
   return card;
 }
 
@@ -144,7 +144,7 @@ function cdInstallModal(deployed, preset) {
   srv.value = preset || deployed.slice().sort((a, b) => (b.hw?.memMB || 0) - (a.hw?.memMB || 0))[0].id;
   const browser = h('input', { type: 'checkbox' });
   const memNote = h('small', { class: 'muted' });
-  const syncNote = () => { const m = S.servers.find((x) => x.id === srv.value)?.hw?.memMB || 0; memNote.textContent = browser.checked ? (m && m < 1800 ? `⚠ 这台只有 ${m}MB 内存，带浏览器可能不够（建议 2G 以上）` : '浏览器多占约 500MB 内存，同时最多开 2 个页面') : '不带浏览器约占 100–200MB 内存'; };
+  const syncNote = () => { const m = S.servers.find((x) => x.id === srv.value)?.hw?.memMB || 0; memNote.textContent = browser.checked ? (m && m < 1500 ? `⚠ 这台只有 ${m}MB 内存，带浏览器可能不够（建议 2G 以上）` : '浏览器平时只占几十 MB，打开页面时每个约 200–500MB；同时只开 1 个页面，最多用到 800MB') : '精简模式：实测约 100MB 内存（限制最多 320MB，超了自动重启）'; };
   srv.onchange = syncNote; browser.onchange = syncNote; syncNote();
   const logBox = h('pre', { class: 'term hidden', style: { maxHeight: '220px' } });
   const body = h('div', {},
@@ -171,7 +171,8 @@ async function stockCdCard(info) {
   const stLine = h('span', { class: 'muted' }, '读取状态中…');
   const showStatus = (st) => {
     stLine.replaceChildren(!st.installed ? h('span', { class: 'tag warn' }, '没装（可能被删了）') : h('span', { class: 'tag ' + (st.running ? 'ok' : 'warn') }, st.running ? '运行中' : '没在运行：' + st.state),
-      st.installed ? ` 装在 ${srv.name}${st.browser ? ' · 带浏览器' + (st.browserRunning ? '' : '（浏览器没在运行）') : ''}${st.mem ? ' · 内存 ' + st.mem.split(';').filter(Boolean).map((x) => x.split('/')[0].trim()).join(' + ') : ''}` : '');
+      st.installed ? ` 装在 ${srv.name}${st.browser ? ' · 带浏览器' + (st.browserRunning ? '' : '（浏览器没在运行）') : ''}${st.mem ? ' · 内存 ' + st.mem.split(';').filter(Boolean).map((x) => x.split('/')[0].trim()).join(' + ') : ''}` : '',
+      st.installed && !st.lean ? h('span', {}, ' ', h('button', { class: 'small', title: '少开并发、关掉详细日志和 AI 功能、限制内存上限；监控列表和历史都保留', onclick: (e) => busy(e.currentTarget, async () => { showStatus(await api.call('cd:install', srv.id, { browser: st.browser })); toast('已改成精简模式，数据都在', 'ok'); }) }, '改成精简模式（省内存）')) : '');
   };
   api.call('cd:status', srv.id).then(showStatus).catch((e) => stLine.replaceChildren(h('span', { class: 'tag warn' }, '读不到状态'), ' ', e.message));
   card.append(h('div', {}, stLine),
@@ -186,11 +187,12 @@ async function stockCdCard(info) {
         if (ok) busy(b, async () => { await api.call('cd:uninstall', srv.id, { keepData: keep.checked }); toast('已卸载', 'ok'); render(); });
       } }, '卸载')),
     h('div', { style: { marginTop: '12px' } },
-      h('b', {}, '收 Telegram 通知'),
-      info.tgUrl
-        ? h('div', {}, h('p', { class: 'muted', style: { margin: '4px 0' } }, '在 changedetection.io 的「SETTINGS → Notifications」里粘贴下面这个地址（Apprise 格式，含你的机器人 Token，别发给别人）：'),
-          h('div', { class: 'row' }, h('input', { value: info.tgUrl, readonly: true, class: 'mono' }), h('button', { class: 'auto', onclick: () => copy(info.tgUrl) }, '复制')))
-        : h('p', { class: 'muted', style: { margin: '4px 0' } }, '先在「设置 → Telegram 通知」里填好机器人，这里会给出可以直接粘贴的通知地址。'),
+      h('b', {}, '收通知'),
+      info.notifyUrls.length
+        ? h('div', {}, h('p', { class: 'muted', style: { margin: '4px 0' } }, '在 changedetection.io 的「SETTINGS → Notifications」里粘贴下面的地址（Apprise 格式，含你的密钥，别发给别人；要多个渠道就一行一个都贴上）：'),
+          ...info.notifyUrls.map((u) => h('div', { class: 'row', style: { alignItems: 'center' } }, h('span', { class: 'muted', style: { flex: '0 0 72px' } }, u.label), h('input', { value: u.url, readonly: true, class: 'mono' }), h('button', { class: 'auto', onclick: () => copy(u.url) }, '复制'))),
+          info.notifyUrls.length > 1 ? h('button', { class: 'small', onclick: () => copy(info.notifyUrls.map((u) => u.url).join('\n')) }, '全部复制') : null)
+        : h('p', { class: 'muted', style: { margin: '4px 0' } }, '先在「设置 → 通知」里填好 Telegram 或微信（PushPlus / Server 酱），这里会给出可以直接粘贴的通知地址。'),
       h('p', { class: 'muted', style: { fontSize: '12px' } }, '添加商品时，Processor 选「Re-stock & Price detection」就是补货检测，还能设价格低于多少时提醒；要看 JavaScript 页面，Fetch method 选 Chrome（安装时勾了浏览器才有）。')));
   return card;
 }

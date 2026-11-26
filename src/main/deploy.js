@@ -6,6 +6,7 @@ const crypto = require('crypto');
 const core = require('./core');
 const probe = require('./probe');
 const stockMod = require('./stock');
+const notify = require('./notify');
 const tools = require('./tools');
 const { withSSH, shq } = require('./ssh');
 const { DIR, SB_BIN, AGENT_BIN, XRAY_BIN, memLimits, xrayUnit, openrcXray, sbUnit, agentUnit, openrcSb, CF_UNIT, openrcAgent, svcOf, agentJSON } = require('./units');
@@ -36,7 +37,9 @@ function agentConfig(state, server = {}) {
     serverName: server.name || '',
     timezone: st.timezone || 'Asia/Shanghai',
     upgradeWindow: win,
-    telegram: tg.enabled ? { botToken: tg.botToken || '', chatId: String(tg.chatId || ''), daily: tg.daily !== false, dailyHour: Number(tg.dailyHour ?? 9), warnDays: Number(tg.warnDays ?? 3), warnPercent: Number(tg.warnPercent ?? 90), ...(tg.apiBase ? { apiBase: tg.apiBase } : {}) } : {},
+    // 日报、到期 / 流量提醒的开关存在 telegram 里（老版本只有 Telegram），开了任何一个渠道都生效
+    telegram: notify.anyOn(st) ? { botToken: notify.tgOn(st) ? tg.botToken : '', chatId: notify.tgOn(st) ? String(tg.chatId) : '', daily: tg.daily !== false, dailyHour: Number(tg.dailyHour ?? 9), warnDays: Number(tg.warnDays ?? 3), warnPercent: Number(tg.warnPercent ?? 90), ...(tg.apiBase ? { apiBase: tg.apiBase } : {}) } : {},
+    wechat: notify.wechat(st),
     singboxManifest: `${singboxBase(state)}/manifest.json`,
     singboxAutoUpdate: st.singboxAutoUpdate !== false,
     statsApi: `127.0.0.1:${st.statsPort || 9092}`,

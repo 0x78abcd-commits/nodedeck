@@ -9,6 +9,7 @@ const netlab = require('./netlab');
 const nodetest = require('./nodetest');
 const diagnose = require('./diagnose');
 const links = require('./links');
+const notify = require('./notify');
 const proxy = require('./proxy');
 const probe = require('./probe');
 const stock = require('./stock');
@@ -248,7 +249,7 @@ function mainTcpPort(srv) {
 }
 async function notifyAll(srv, text) {
   send('toast', { text: `${srv.name}：${text}`, level: 'warn' });
-  if (state().settings.telegram?.enabled) { try { await deploy.adminNotify(srv, text); } catch (_) { /* VPS 连不上就算了 */ } }
+  if (notify.anyOn(state().settings)) { try { await deploy.adminNotify(srv, text); } catch (_) { /* VPS 连不上就算了 */ } }
 }
 async function blockWatchTick() {
   const mode = state().settings.blockWatch || 'off'; // 默认关
@@ -351,7 +352,7 @@ function registerIpc() {
     const c = stock.cfg(st);
     const srv = stock.stockServer(st);
     return { serverId: c.serverId || '', serverName: srv?.name || '', watches: c.watches || [], status: srv?.lastStatus?.stock || {}, statusAt: srv?.lastStatus?.at || 0,
-      agentOld: !!(srv && srv.lastStatus && !('stock' in srv.lastStatus)), cd: st.settings.cd || {}, tgUrl: stock.tgNotifyUrl(st), tgOn: !!st.settings.telegram?.enabled, modes: stock.MODES };
+      agentOld: !!(srv && srv.lastStatus && !('stock' in srv.lastStatus)), cd: st.settings.cd || {}, notifyUrls: notify.appriseUrls(st.settings), notifyOn: notify.anyOn(st.settings), channels: notify.channels(st.settings), modes: stock.MODES };
   };
   handle('stock:info', stockInfo);
   handle('stock:newWatch', () => stock.newWatch());

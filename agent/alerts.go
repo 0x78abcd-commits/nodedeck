@@ -1,6 +1,6 @@
 package main
 
-// 运维告警（Telegram）：sing-box 挂了（先自动拉起）、磁盘快满、CPU 持续过高、三网延迟明显变差
+// 运维告警（Telegram / 微信）：sing-box 挂了（先自动拉起）、磁盘快满、CPU 持续过高、三网延迟明显变差
 import (
 	"fmt"
 	"os"
@@ -98,7 +98,7 @@ func avgLat(s Sample) (float64, bool) {
 
 // checkAlerts 每分钟调用一次（在 metricsLoop 里）
 func (a *Agent) checkAlerts(now time.Time) {
-	if !a.tgEnabled() || a.cfg.Alerts.Off {
+	if !a.notifyOn() || a.cfg.Alerts.Off {
 		return
 	}
 	c := a.alertCfg()

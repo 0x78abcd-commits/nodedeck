@@ -57,6 +57,7 @@ type Config struct {
 	Timezone      string         `json:"timezone"`
 	ServerName    string         `json:"serverName"`
 	Telegram      TelegramConfig `json:"telegram"`
+	Wechat        WechatConfig   `json:"wechat"`
 	UDPHops       []UDPHop       `json:"udpHops"`
 	// 0.5.0 起
 	Init           string            `json:"init"` // systemd（默认）或 openrc
@@ -716,7 +717,7 @@ func (a *Agent) handleAdmin(w http.ResponseWriter, r *http.Request) {
 	case "/admin/metrics":
 		json.NewEncoder(w).Encode(a.metricsFor(r.URL.Query().Get("range")))
 	case "/admin/notify-test":
-		err := a.sendTG(fmt.Sprintf("【%s】✅ NodeDeck 通知测试成功", a.serverName()))
+		err := a.sendAll(fmt.Sprintf("【%s】✅ NodeDeck 通知测试成功", a.serverName()))
 		if err != nil {
 			w.WriteHeader(500)
 			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
@@ -724,13 +725,13 @@ func (a *Agent) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		}
 		json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 	case "/admin/notify":
-		// desktop 发来的通知（如被墙检测结果），由 VPS 代发 Telegram
+		// desktop 发来的通知（如被墙检测结果），由 VPS 代发到 Telegram / 微信
 		text := r.URL.Query().Get("text")
 		if text == "" {
 			http.Error(w, "缺少 text", 400)
 			return
 		}
-		if err := a.sendTG(fmt.Sprintf("【%s】%s", a.serverName(), text)); err != nil {
+		if err := a.sendAll(fmt.Sprintf("【%s】%s", a.serverName(), text)); err != nil {
 			w.WriteHeader(500)
 			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 			return

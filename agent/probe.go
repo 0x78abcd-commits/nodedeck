@@ -3,7 +3,7 @@ package main
 // 探针（只读）：
 //   - 每台 VPS 的 agent 在订阅端口提供 /probe/data（要带只读密钥），返回实时 CPU / 网速、监控曲线、本月流量
 //   - 选为主控的那台定时拉所有机器的数据，在订阅端口 /p/<口令>/ 出一个网页，手机浏览器就能看
-//   - 主控发现某台连不上（1 分钟没回应）就发 Telegram，恢复后再发一次
+//   - 主控发现某台连不上（1 分钟没回应）就发通知（Telegram / 微信），恢复后再发一次
 //   - 只读：没有远程命令、终端、文件管理；网页和接口里都不出现 IP
 import (
 	"crypto/subtle"
@@ -32,7 +32,7 @@ type ProbeCfg struct {
 type ProbeHost struct {
 	Token string      `json:"token"` // 网页口令（链接里的随机路径）
 	Title string      `json:"title"`
-	Alert bool        `json:"alert"` // 离线 / 恢复发 Telegram
+	Alert bool        `json:"alert"` // 离线 / 恢复发通知
 	Peers []ProbePeer `json:"peers"`
 }
 
@@ -265,10 +265,10 @@ func (a *Agent) probeRound() {
 }
 
 func (a *Agent) probeNotify(text string) {
-	if !a.tgEnabled() {
+	if !a.notifyOn() {
 		return
 	}
-	if err := a.sendTG("【探针】" + text); err != nil {
+	if err := a.sendAll("【探针】" + text); err != nil {
 		log.Printf("发送探针告警失败: %v", err)
 	}
 }

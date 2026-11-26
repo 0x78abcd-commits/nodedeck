@@ -8,7 +8,7 @@ Windows 桌面软件：**填 VPS → 一键部署全套协议 → 分配给用�
 | 协议 | VLESS-Reality（部署时自动挑同网段邻居做目标，定期巡检自动换）、Trojan、VMess-WS、Hysteria2（混淆 + 端口跳跃）、TUIC v5、AnyTLS、Shadowsocks-2022、VLESS-XHTTP-Reality / VLESS-XHTTP-TLS（Xray 内核，开了才装）；三种一键模板；IPv6 线路；Cloudflare 隧道（IP 被墙也能用，可配优选地址） |
 | 路由 | 屏蔽 BT / 广告 / 回国流量，指定网站走 Cloudflare WARP |
 | 节点 | 分享链接、二维码、本地测试（延迟 + 出口 IP + 是否机房 IP） |
-| 用户 | 多用户、按线路分配、流量上限和定期重置、到期时间或首次使用后 N 天、在用状态、批量操作；订阅自动识别 v2rayN / Clash Meta / sing-box / Shadowrocket，浏览器打开是订阅信息页；临时订阅链接；自签证书自动带指纹（新版 v2rayNG 可直接用）；Telegram 通知和运维告警 |
+| 用户 | 多用户、按线路分配、流量上限和定期重置、到期时间或首次使用后 N 天、在用状态、批量操作；订阅自动识别 v2rayN / Clash Meta / sing-box / Shadowrocket，浏览器打开是订阅信息页；临时订阅链接；自签证书自动带指纹（新版 v2rayNG 可直接用）；Telegram / 微信（PushPlus、Server 酱）通知和运维告警 |
 | 落地 | 住宅 SOCKS5 / HTTP 或机场节点（链接 / 订阅导入）做出口，分组管理，一键切换 |
 | 中转 / 隧道 | 用另一台 VPS 做端口转发；目标是节点协议时订阅里自动多一条「经中转」线路；也可以转发任意地址 |
 | 网络优化 | 检测内核 / BBR / 队列 / 网卡，有依据地调整并可一键恢复；回程和去程线路识别（CN2 GIA、9929、CMI 等）；三网延迟、丢包、抖动和晚高峰对比；电脑到 VPS 的 TCP 测速和 UDP 丢包测试、Hysteria2 / TUIC 建议；BBR 和 CUBIC 对比；一键运行 NodeQuality、TcpQuality |
@@ -19,11 +19,11 @@ Windows 桌面软件：**填 VPS → 一键部署全套协议 → 分配给用�
 
 ## 探针网页
 
-「设置 → 探针网页」里选一台服务器当主控：它每 5 秒从各台 VPS 的 agent 读一次 CPU、内存、磁盘、网速、本月流量（只读接口，带密钥），在订阅端口上出一个网页 `https://IP:订阅端口/p/<随机口令>/`，手机浏览器就能看。某台 1 分钟没回应会发 Telegram，恢复后再发一次。网页里不显示 IP，没有任何远程操作功能。
+「设置 → 探针网页」里选一台服务器当主控：它每 5 秒从各台 VPS 的 agent 读一次 CPU、内存、磁盘、网速、本月流量（只读接口，带密钥），在订阅端口上出一个网页 `https://IP:订阅端口/p/<随机口令>/`，手机浏览器就能看。某台 1 分钟没回应会发通知（Telegram / 微信），恢复后再发一次。网页里不显示 IP，没有任何远程操作功能。
 
 ## 补货提醒
 
-「补货提醒」页面有两种方式：内置提醒（agent 定时打开商品页按文字判断，变了发 Telegram，不用装东西）和一键安装 changedetection.io（Docker，可带 Chrome 看 JavaScript 页面，只监听 VPS 本机，经 SSH 隧道打开管理界面）。
+「补货提醒」页面有两种方式：内置提醒（agent 定时打开商品页按文字判断，变了发通知，不用装东西）和一键安装 changedetection.io（Docker 精简模式，约 100MB 内存；可带 Chrome 看 JavaScript 页面；只监听 VPS 本机，经 SSH 隧道打开管理界面）。
 
 ## 工作原理
 

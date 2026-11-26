@@ -3,6 +3,7 @@
 // 某台 1 分钟连不上就发 Telegram，恢复后再发一次。网页和接口里不出现 IP，没有任何远程操作功能。
 const crypto = require('crypto');
 const core = require('./core');
+const notify = require('./notify');
 
 const rand = (n = 24) => crypto.randomBytes(n).toString('base64url');
 
@@ -78,7 +79,7 @@ function info(state) {
     url: url(state),
     https: !!(h && core.subCertOk(state, h)),
     stale: !!(probeOn(state) && h.probeSig !== hostSig(state)),
-    tgOn: !!state.settings?.telegram?.enabled,
+    notifyOn: notify.anyOn(state.settings), channels: notify.channels(state.settings),
     peers: peers(state).map((x) => ({ id: x.id, name: x.name, ...(byId[x.id] ? { online: byId[x.id].online, error: byId[x.id].error || '' } : {}) })),
   };
 }

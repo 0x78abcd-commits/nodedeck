@@ -51,7 +51,7 @@ func (a *Agent) sendTG(text string) error {
 
 // notifyOnce 同一个 key 只发一次（调用方需持有 a.mu，发送在后台进行）
 func (a *Agent) notifyOnce(key, text string) {
-	if !a.tgEnabled() {
+	if !a.notifyOn() {
 		return
 	}
 	if _, done := a.st.Warned[key]; done {
@@ -61,8 +61,8 @@ func (a *Agent) notifyOnce(key, text string) {
 	a.dirty = true
 	msg := fmt.Sprintf("【%s】%s", a.serverName(), text)
 	go func() {
-		if err := a.sendTG(msg); err != nil {
-			log.Printf("发送 Telegram 通知失败: %v", err)
+		if err := a.sendAll(msg); err != nil {
+			log.Printf("发送通知失败: %v", err)
 		}
 	}()
 }
@@ -92,7 +92,7 @@ var reasonText = map[string]string{"disabled": "已被停用", "expired": "已�
 
 // checkNotices 在每次检查时调用（调用方需持有 a.mu）
 func (a *Agent) checkNotices(now time.Time, prev, cur map[string]string) {
-	if !a.tgEnabled() {
+	if !a.notifyOn() {
 		a.primed = true
 		return
 	}
@@ -142,7 +142,7 @@ func (a *Agent) checkNotices(now time.Time, prev, cur map[string]string) {
 		}
 		msg := fmt.Sprintf("【%s】%s", a.serverName(), text)
 		go func() {
-			if err := a.sendTG(msg); err != nil {
+			if err := a.sendAll(msg); err != nil {
 				log.Printf("发送日报失败: %v", err)
 			}
 		}()
