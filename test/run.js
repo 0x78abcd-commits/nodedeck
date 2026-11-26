@@ -244,3 +244,17 @@ console.log('agent users', JSON.stringify(core.buildAgentUsers(state, node)));
   } else console.log('SKIP xray-run-test（没设 XRAY）');
   if (process.exitCode !== 1) console.log('OK   xhttp');
 }
+
+// 端口转发由 agent 做：sing-box 配置里不再有转发入站，agent 配置里有规则（节点目标一个、自定义可多个）
+{
+  const st = { settings: {}, users: [], landings: [], servers: [
+    { id: 'r', name: 'R', host: '9.9.9.9', protocols: {} },
+    { id: 'n', name: 'N', host: '2001:db8::5', protocols: { trojan: { enabled: true, port: 2083 } } }], forwards: [
+    { id: 'f1', relayServerId: 'r', listenPort: 30001, target: { type: 'node', serverId: 'n', protocol: 'trojan' } },
+    { id: 'f2', relayServerId: 'r', listenPort: 30002, target: { type: 'custom', host: 'a.com', port: 1, network: 'udp', targets: ['a.com:1', 'b.com:2'] }, strategy: 'roundrobin', allow: ['1.1.1.1'] },
+    { id: 'f3', relayServerId: 'r', listenPort: 30003, enabled: false, target: { type: 'custom', host: 'c.com', port: 3 } }] };
+  const fw = core.agentForwards(st, st.servers[0]);
+  const ok = fw.length === 2 && fw[0].targets[0] === '[2001:db8::5]:2083' && fw[0].network === 'tcp' && fw[1].targets.length === 2 && fw[1].strategy === 'roundrobin' && fw[1].network === 'udp';
+  const noInbound = !(core.buildServerConfig(st, st.servers[0]).inbounds || []).some((i) => String(i.tag || '').startsWith('fwd-'));
+  if (ok && noInbound) console.log('OK   forwards-agent'); else { console.log('FAIL forwards-agent', JSON.stringify(fw)); process.exitCode = 1; }
+}

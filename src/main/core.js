@@ -285,20 +285,7 @@ function buildServerConfig(state, server, opts = {}) {
   // Xray（XHTTP 协议）收到的流量从这里进 sing-box：只监听本机，后面的路由规则、落地、WARP 都照常
   if (usesXray(server)) inbounds.push({ type: 'socks', tag: 'xray-in', listen: '127.0.0.1', listen_port: xrayPorts(state).bridge });
 
-  // 本机作为中转：端口转发
-  const forwards = (state.forwards || []).filter((f) => f.relayServerId === server.id && f.enabled !== false);
-  const fwdTags = [];
-  for (const f of forwards) {
-    const target = resolveForwardTarget(state, f);
-    if (!target) continue;
-    const ib = {
-      type: 'direct', tag: 'fwd-' + f.id, listen, listen_port: Number(f.listenPort),
-      override_address: target.host, override_port: Number(target.port),
-    };
-    if (target.network === 'tcp' || target.network === 'udp') ib.network = target.network;
-    inbounds.push(ib);
-    fwdTags.push(ib.tag);
-  }
+  // 本机作为中转的端口转发由 agent 做（0.9.3 起；见 agentForwards），不再占 sing-box 的入站
 
   // 出站：直连或经住宅落地；流量统计由 V2Ray API 按用户计数（需要 with_v2ray_api 构建）
   const outbounds = [{ type: 'direct', tag: 'direct' }];
@@ -308,7 +295,6 @@ function buildServerConfig(state, server, opts = {}) {
   const finalTag = landing ? 'exit' : 'direct';
 
   const rules = [{ action: 'sniff' }];
-  if (fwdTags.length) rules.push({ inbound: fwdTags, outbound: 'direct' });
   rules.push({ ip_is_private: true, action: 'reject' });
 
   // 路由规则：屏蔽 BT / 广告 / 回国流量，指定网站走 WARP
@@ -428,6 +414,26 @@ function resolveForwardTarget(state, f) {
   }
   if (!t.host || !t.port) return null;
   return { host: t.host, port: t.port, network: t.network || '' };
+}
+
+// 这台作为中转时要做的转发（给 agent）：节点协议目标只有一个；自定义目标可以填多个（主备 / 轮询）
+function forwardTargets(f) {
+  const t = f.target || {};
+  const list = Array.isArray(t.targets) && t.targets.length ? t.targets : t.host && t.port ? [`${t.host}:${t.port}`] : [];
+  return list.map((x) => String(x).trim()).filter(Boolean).map((x) => (/^\[|^[^:]+:\d+$/.test(x) ? x : x.includes(':') && /:\d+$/.test(x) ? `[${x.replace(/:(\d+)$/, '')}]:${x.match(/:(\d+)$/)[1]}` : x));
+}
+function agentForwards(state, server) {
+  const out = [];
+  for (const f of state.forwards || []) {
+    if (f.relayServerId !== server.id || f.enabled === false) continue;
+    const t = resolveForwardTarget(state, f);
+    if (!t) continue;
+    const targets = f.target?.type === 'node' ? [`${String(t.host).includes(':') ? `[${t.host}]` : t.host}:${t.port}`] : forwardTargets(f);
+    if (!targets.length) continue;
+    const net = t.network === 'both' ? '' : t.network || '';
+    out.push({ id: f.id, name: f.name || '', listen: Number(f.listenPort), network: net, targets, strategy: f.strategy === 'roundrobin' ? 'roundrobin' : 'failover', allow: (f.allow || []).filter(Boolean) });
+  }
+  return out;
 }
 
 // ---------- 指纹、端口、隧道、跳跃端口（服务端配置和订阅都要用） ----------
@@ -554,7 +560,7 @@ function rotateServer(state, server) {
 }
 
 module.exports = {
-  subTlsWanted, cfTunnelOf, fpOf, FINGERPRINTS, PREFERRED_TCP_PORTS, hopRange, PROTOCOLS, REMOTE_DIR, CONN_LOG, XRAY_ACCESS_LOG, onlineTrackOn, GB, randId, randHex, randPassword, uuid, realityKeypair, defaultProtocols, newServer, newUser, userStatus, userExpireAt, userUsedBytes, userHasServer, usersForServer, buildServerConfig, XRAY_KEYS, isXray, usesXray, realityOn, xrayPorts, buildXrayConfig, acmeCertFiles, xhttpPath, netsOf, serverPorts, checkPortConflicts, resolveForwardTarget, landingOutbound, pickFreePort, rotateServer, ensureProtocols, ssUserKey, pickPreferredPort, usesAcme, tlsSniFor, WARP_SITES,
+  subTlsWanted, cfTunnelOf, fpOf, FINGERPRINTS, PREFERRED_TCP_PORTS, hopRange, PROTOCOLS, REMOTE_DIR, agentForwards, forwardTargets, CONN_LOG, XRAY_ACCESS_LOG, onlineTrackOn, GB, randId, randHex, randPassword, uuid, realityKeypair, defaultProtocols, newServer, newUser, userStatus, userExpireAt, userUsedBytes, userHasServer, usersForServer, buildServerConfig, XRAY_KEYS, isXray, usesXray, realityOn, xrayPorts, buildXrayConfig, acmeCertFiles, xhttpPath, netsOf, serverPorts, checkPortConflicts, resolveForwardTarget, landingOutbound, pickFreePort, rotateServer, ensureProtocols, ssUserKey, pickPreferredPort, usesAcme, tlsSniFor, WARP_SITES,
   // 内部共用（订阅模块要用）
   SS_METHOD,
 };

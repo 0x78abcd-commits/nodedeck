@@ -79,8 +79,10 @@ type Config struct {
 	// 补货提醒（内置轻量版）：只在选中的那台上有
 	Stock *StockCfg `json:"stock"`
 	// 0.9.2 起：sing-box 连接日志 / Xray 访问日志的路径，用来统计每个用户在用的设备（来源 IP）；空 = 不统计
-	ConnLog       string `json:"connLog,omitempty"`
-	XrayAccessLog string `json:"xrayAccessLog,omitempty"`
+	ConnLog string `json:"connLog,omitempty"`
+	// 0.9.3 起：端口转发（中转）由 agent 做
+	Forwards      []FwdRule `json:"forwards,omitempty"`
+	XrayAccessLog string    `json:"xrayAccessLog,omitempty"`
 }
 
 type User struct {
@@ -149,6 +151,7 @@ type Agent struct {
 	// 补货提醒
 	stock  *stockStore
 	online *onlineTracker
+	fwd    *fwdManager
 }
 
 func (a *Agent) path(name string) string { return filepath.Join(a.cfg.DataDir, name) }
@@ -714,7 +717,16 @@ func (a *Agent) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		if st := a.stockStatus(); st != nil {
 			out["stock"] = st
 		}
+		if a.fwd != nil && len(a.cfg.Forwards) > 0 {
+			out["forwards"] = a.fwd.status()
+		}
 		json.NewEncoder(w).Encode(out)
+	case "/admin/fwd-reset":
+		if a.fwd != nil {
+			a.fwd.reset(r.URL.Query().Get("id"))
+			a.fwd.save()
+		}
+		json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 	case "/admin/update-xray":
 		msg, err := a.updateXray()
 		if err != nil {
@@ -823,6 +835,7 @@ func run(cfgPath string) {
 		log.Fatal(srv.Serve(ln))
 	}()
 
+	a.fwd = newFwdManager(a.path("forwards.json"))
 	adm := http.NewServeMux()
 	adm.HandleFunc("/admin/", a.handleAdmin)
 	go func() { log.Fatal(http.ListenAndServe(a.cfg.AdminListen, adm)) }()
@@ -840,6 +853,7 @@ func run(cfgPath string) {
 	go a.realityLoop()
 	go a.probeLoop()
 	go a.onlineLoop()
+	go a.forwardLoop()
 	go a.stockLoop()
 	log.Printf("NodeDeck agent %s 已启动，订阅端口 %s", version, a.cfg.SubListen)
 	for {
@@ -864,6 +878,7 @@ func run(cfgPath string) {
 			a.mu.Unlock()
 			a.saveTraffic()
 			a.saveMetrics()
+			a.fwd.save()
 			return
 		}
 	}
@@ -989,6 +1004,8 @@ func main() {
 		adminCall(*cfgPath, "/admin/extra")
 	case "notify-test":
 		adminCall(*cfgPath, "/admin/notify-test")
+	case "fwd-reset":
+		adminCall(*cfgPath, "/admin/fwd-reset?id="+url.QueryEscape(fs.Arg(0)))
 	case "check-reality":
 		checkRealityCmd(*domains)
 	case "net-info":

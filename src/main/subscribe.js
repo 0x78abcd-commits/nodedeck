@@ -33,7 +33,7 @@ function nodeEntries(state, server) {
   for (const { host, suffix } of serverHosts(server)) {
     for (const key of Object.keys(PROTOCOLS)) {
       if (!p[key]?.enabled) continue;
-      out.push({ serverId: server.id, protocol: key, host, port: Number(p[key].port), label: `${server.name}-${PROTOCOLS[key].label}${suffix}` });
+      out.push({ serverId: server.id, protocol: key, host, port: Number(p[key].port), label: p[key].name ? `${p[key].name}${suffix}` : `${server.name}-${PROTOCOLS[key].label}${suffix}`, custom: !!p[key].name });
     }
   }
   for (const f of state.forwards || []) {
@@ -43,7 +43,7 @@ function nodeEntries(state, server) {
     if (!relay) continue;
     out.push({
       serverId: server.id, protocol: f.target.protocol, host: relay.host, port: Number(f.listenPort),
-      label: `${server.name}-${PROTOCOLS[f.target.protocol].label}-经${relay.name}`, via: relay.id,
+      label: f.nodeName || `${server.name}-${PROTOCOLS[f.target.protocol].label}-经${relay.name}`, via: relay.id,
     });
   }
   const cft = cfTunnelOf(server);

@@ -418,3 +418,49 @@ td.nowrap, .nowrap { white-space: nowrap; }
 .toolbar:has(> div > h1) { flex-wrap: nowrap; align-items: flex-start; }
 .toolbar:has(> div > h1) > button { flex: none; margin-top: 10px; }
 .toolbar:has(> div > h1) > .spacer { flex: 0 0 8px; }
+
+/* 节点页：延迟 / 速度 / 出口三格 */
+.table-scroll { overflow-x: auto; }
+.nt-table { table-layout: fixed; width: 100%; min-width: 1040px; }
+.nt-table td { vertical-align: middle; }
+.nt-table th:nth-child(1) { width: 20%; }
+.nt-table th:nth-child(2) { width: 84px; }
+.nt-table th:nth-child(3), .nt-table th:nth-child(4) { width: 96px; }
+.nt-table th:nth-child(5) { width: 128px; }
+.nt-table th:nth-child(7) { width: 268px; }
+.nt-name b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nt-sub { font-size: 12px; display: flex; gap: 6px; align-items: center; margin-top: 2px; }
+.nt-sub .tag { margin: 0; }
+.nt-host { font-size: 11px; max-width: 140px; overflow: hidden; text-overflow: ellipsis; }
+.nt-cell { width: 92px; white-space: nowrap; }
+.nt-cell .tag { margin: 0; }
+.nt-btn { min-width: 40px; }
+.nt-again { cursor: pointer; }
+.nt-again:hover { filter: brightness(.94); text-decoration: underline dotted; }
+.nt-num { font-variant-numeric: tabular-nums; font-weight: 600; }
+.nt-num small { font-weight: 400; color: var(--muted); }
+.nt-exit { display: inline-flex; gap: 6px; align-items: center; max-width: 150px; }
+.nt-exit > span:nth-child(2) { overflow: hidden; text-overflow: ellipsis; }
+.nt-cc { font-family: var(--font-mono); font-size: 11px; font-weight: 600; padding: 1px 5px; border-radius: 4px; background: var(--panel2); border: 1px solid var(--line); }
+.nt-link { overflow: hidden; }
+.nt-link .mono { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--muted); cursor: copy; }
+.nt-link .mono:hover { color: var(--text); }
+
+/* 端口转发 */
+.fw-off td { opacity: .55; }
+.fw-off td:last-child, .fw-off td:nth-last-child(2) { opacity: 1; }
+.fw-sub { font-size: 12px; margin-top: 2px; }
+.fw-port { cursor: copy; font-size: 13px; font-weight: 600; }
+.fw-targets { display: grid; gap: 2px; }
+.fw-t { display: flex; align-items: center; gap: 6px; font-size: 12.5px; white-space: nowrap; }
+.fw-t .mono { word-break: normal; }
+.fw-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); flex: none; }
+.fw-dot.ok { background: var(--ok); }
+.fw-dot.bad { background: var(--danger); }
+.fw-err { color: var(--danger); font-size: 12px; }
+.fw-meta { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 4px; font-size: 12px; }
+.fw-meta .tag { margin: 0; }
+.fw-toggle { min-width: 64px; }
+.fw-toggle.on { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, var(--line)); }
+details.fw-adv { margin: 4px 0 12px; }
+details.fw-adv summary { cursor: pointer; color: var(--muted); font-size: 13px; margin-bottom: 8px; }

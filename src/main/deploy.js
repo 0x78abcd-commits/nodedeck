@@ -40,6 +40,7 @@ function agentConfig(state, server = {}) {
     // 日报、到期 / 流量提醒的开关存在 telegram 里（老版本只有 Telegram），开了任何一个渠道都生效
     telegram: notify.anyOn(st) ? { botToken: notify.tgOn(st) ? tg.botToken : '', chatId: notify.tgOn(st) ? String(tg.chatId) : '', daily: tg.daily !== false, dailyHour: Number(tg.dailyHour ?? 9), warnDays: Number(tg.warnDays ?? 3), warnPercent: Number(tg.warnPercent ?? 90), ...(tg.apiBase ? { apiBase: tg.apiBase } : {}) } : {},
     wechat: notify.wechat(st),
+    forwards: core.agentForwards(state, server),
     ...(core.onlineTrackOn(state) ? { connLog: core.CONN_LOG, xrayAccessLog: core.XRAY_ACCESS_LOG } : {}),
     singboxManifest: `${singboxBase(state)}/manifest.json`,
     singboxAutoUpdate: st.singboxAutoUpdate !== false,
@@ -568,6 +569,19 @@ async function scanReality(server) {
   });
 }
 
+// 端口转发的状态（流量、连接数、目标通不通）：读中转机 agent 的 extra
+async function fwdStatus(server) {
+  return withSSH(server, async (ssh) => {
+    const r = await ssh.exec(`${AGENT_BIN} extra -c ${DIR}/agent.json`);
+    let j = {};
+    try { j = JSON.parse(r.stdout); } catch (_) { throw new Error((r.stdout + r.stderr).trim().slice(-200) || '读不到 agent 状态'); }
+    return j.forwards || {};
+  });
+}
+async function fwdReset(server, id) {
+  return withSSH(server, (ssh) => ssh.exec(`${AGENT_BIN} fwd-reset -c ${DIR}/agent.json ${shq(id)}`));
+}
+
 async function notifyTest(server) {
   return withSSH(server, async (ssh) => {
     const r = await ssh.exec(`${AGENT_BIN} notify-test -c ${DIR}/agent.json`);
@@ -731,4 +745,4 @@ async function gateRealityTarget(ssh, server, log, force) {
   log(`✔ Reality 目标 ${rp.sni} 检测通过（TLS 1.3、HTTP/2、X25519、证书有效，${r.ms} ms）`);
 }
 
-module.exports = { ...cleanup, ...bench, withCC, swapSize, memLimits, writeUnits, tuneSmallBox, rememberHw, pickReality, adminNotify, realityCheck, deployServer, syncServer, updateSingbox, serverSelfCheck, notifyTest, fetchMetrics, scanReality, serverStatus, fetchStats, resetTraffic, serverLogs, uninstall, testSSH, remoteTlsCheck, agentConfig };
+module.exports = { ...cleanup, ...bench, withCC, swapSize, memLimits, writeUnits, tuneSmallBox, rememberHw, pickReality, adminNotify, realityCheck, deployServer, syncServer, updateSingbox, serverSelfCheck, notifyTest, fwdStatus, fwdReset, fetchMetrics, scanReality, serverStatus, fetchStats, resetTraffic, serverLogs, uninstall, testSSH, remoteTlsCheck, agentConfig };

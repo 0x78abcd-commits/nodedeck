@@ -42,7 +42,7 @@ const PAGES = [
   ['nodes', NAV_ICONS.nodes, '节点'],
   ['users', NAV_ICONS.users, '用户'],
   ['landings', NAV_ICONS.landings, '落地'],
-  ['forwards', NAV_ICONS.forwards, '中转 / 隧道'],
+  ['forwards', NAV_ICONS.forwards, '端口转发'],
   ['stock', NAV_ICONS.stock, '补货提醒'],
   ['tools', NAV_ICONS.tools, '工具箱'],
   ['settings', NAV_ICONS.settings, '设置'],
@@ -221,7 +221,7 @@ async function viewDash(v) {
         h('li', {}, '在「节点」里复制链接或扫码，点「测试」看延迟和出口 IP'),
         h('li', {}, '在「用户」里创建用户，设置流量和到期时间，把订阅地址发给对方'),
         h('li', {}, '需要住宅 IP 出口：在「落地」添加，再在服务器设置里选出口'),
-        h('li', {}, '节点被墙：一键换新，或在「中转 / 隧道」用另一台 VPS 转发')),
+        h('li', {}, '节点被墙：一键换新，或在「端口转发」用另一台 VPS 转发')),
       h('button', { class: 'primary', onclick: () => editServer() }, '添加第一台服务器')));
   } else {
     const box = h('div', { class: 'lines' }, h('div', { class: 'lines-head' }, h('h3', {}, '线路'), h('div', { class: 'spacer' }), h('a', { href: '#', onclick: (e) => { e.preventDefault(); go('servers'); } }, '管理服务器')));

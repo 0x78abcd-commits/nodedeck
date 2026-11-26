@@ -84,17 +84,32 @@ async function sshProxies(server) {
   return proxy.localCandidates(pac);
 }
 
-function testEntryFor(userId = 'owner') {
+// 测速地址：优先用节点所在 VPS 自己的测速接口（不依赖第三方，部分节点会拦 Cloudflare 测速），没有测速口令时用 Cloudflare
+function speedUrlsFor(s, entry) {
+  const srv = s.servers.find((x) => x.id === entry.serverId);
+  const out = [];
+  if (srv?.speedToken && srv.host) out.push(`http://${srv.host.includes(':') ? `[${srv.host}]` : srv.host}:${Number(s.settings?.subPort || 2096)}/nd-speed/down?t=${encodeURIComponent(srv.speedToken)}&bytes=${256 << 20}`);
+  out.push('https://speed.cloudflare.com/__down?bytes=100000000');
+  return out;
+}
+
+// 节点在本机跑起来要用的内核和出站配置
+function entryRunner(s, entry, user) {
+  if (core.isXray(entry.protocol)) {
+    if (!fs.existsSync(xrayPath)) throw new Error('找不到内置 Xray：' + xrayPath + '（XHTTP 节点要用 Xray 测试）');
+    return { xrayPath, outbound: core.xrayClientOutbound(s, entry, user) };
+  }
+  if (!fs.existsSync(singboxPath)) throw new Error('找不到内置 sing-box：' + singboxPath);
+  return { singboxPath, outbound: core.clientOutbound(s, entry, user) };
+}
+
+function testEntryFor(userId = 'owner', want) {
   return (entry) => {
     const s = state();
     const user = s.users.find((u) => u.id === userId) || s.users.find((u) => u.id === 'owner');
-    if (core.isXray(entry.protocol)) {
-      if (!fs.existsSync(xrayPath)) return Promise.resolve({ ok: false, error: '找不到内置 Xray：' + xrayPath + '（XHTTP 节点要用 Xray 测试）' });
-      let outbound;
-      try { outbound = core.xrayClientOutbound(s, entry, user); } catch (e) { return Promise.resolve({ ok: false, error: e.message }); }
-      return nodetest.testOutbound({ xrayPath, outbound, fetchVia });
-    }
-    return nodetest.testOutbound({ singboxPath, outbound: core.clientOutbound(s, entry, user), fetchVia });
+    let run;
+    try { run = entryRunner(s, entry, user); } catch (e) { return Promise.resolve({ ok: false, error: e.message }); }
+    return nodetest.testOutbound({ ...run, fetchVia, want, speedUrls: want?.speed ? speedUrlsFor(s, entry) : [] });
   };
 }
 
@@ -351,6 +366,22 @@ function registerIpc() {
   handle('state:get', () => state());
   handle('col:upsert', (col, item) => store.upsert(col, item));
   handle('col:remove', (col, id) => store.remove(col, id));
+  // 端口转发：各台中转机上每条规则的流量、连接数、目标探测结果
+  handle('fwd:status', async () => {
+    const s = state();
+    const relays = [...new Set((s.forwards || []).map((f) => f.relayServerId))].map((id) => s.servers.find((x) => x.id === id)).filter((x) => x?.deployedAt);
+    const out = {}; const errors = {};
+    await Promise.all(relays.map(async (srv) => {
+      try { Object.assign(out, await deploy.fwdStatus(srv)); } catch (e) { errors[srv.id] = e.message; }
+    }));
+    return { rules: out, errors, at: Date.now() };
+  });
+  handle('fwd:reset', async (id) => {
+    const f = (state().forwards || []).find((x) => x.id === id);
+    if (!f) throw new Error('转发不存在');
+    await deploy.fwdReset(getServer(f.relayServerId), id);
+    return true;
+  });
   handle('settings:set', (patch) => { store.setSettings(patch); return state().settings; });
   // 补货提醒
   const stockInfo = () => {
@@ -429,11 +460,44 @@ function registerIpc() {
       entries: core.nodeEntries(s, srv).map((e) => ({ ...e, link: core.shareLink(s, e, owner) })),
     }));
   });
-  handle('node:test', async (entry, userId = 'owner') => {
-    if (!fs.existsSync(singboxPath)) throw new Error('找不到内置 sing-box：' + singboxPath);
+  // want：{ latency, exit, speed }，默认测延迟和出口
+  handle('node:test', async (entry, userId = 'owner', want) => {
+    // 测速优先走节点所在 VPS 自己的测速接口：第一次要先把测速口令同步上去（只做一次）
+    const srv = want?.speed && getServer(entry.serverId);
+    if (srv && srv.deployedAt && !srv.speedToken) {
+      store.upsert('servers', { id: srv.id, speedToken: core.randId(32) });
+      try { await syncOne(srv.id, () => {}); } catch (_) { /* 同步不上就用 Cloudflare 测 */ }
+    }
+    return testEntryFor(userId, want || { latency: true, exit: true })(entry);
+  });
+  // 用这个节点打开一个浏览器窗口（独立会话、走本地代理），关窗口就停
+  handle('node:browse', async (entry, url) => {
     const s = state();
-    const user = s.users.find((u) => u.id === userId) || s.users.find((u) => u.id === 'owner');
-    return testEntryFor(user.id)(entry);
+    const user = s.users.find((u) => u.id === 'owner');
+    const lp = await nodetest.startLocalProxy(entryRunner(s, entry, user));
+    const ses = session.fromPartition(`nodedeck-browse-${lp.port}`);
+    await ses.setProxy({ proxyRules: `http://127.0.0.1:${lp.port}`, proxyBypassRules: '<-loopback>' });
+    const win = new BrowserWindow({ width: 1180, height: 820, title: `经节点浏览 · ${entry.label}`, autoHideMenuBar: true, webPreferences: { session: ses, sandbox: true, contextIsolation: true, nodeIntegration: false } });
+    win.on('page-title-updated', (e) => e.preventDefault());
+    win.on('closed', () => { lp.stop(); ses.clearStorageData().catch(() => {}); });
+    win.webContents.setWindowOpenHandler(({ url: u }) => { win.loadURL(u); return { action: 'deny' }; });
+    win.loadURL(url || 'https://ip.sb/');
+    return true;
+  });
+  // 节点改名：普通入口存在协议设置里，经中转的存在那条转发里；留空恢复默认名
+  handle('node:rename', async (entry, name) => {
+    const s = state();
+    name = String(name || '').trim().slice(0, 40);
+    if (entry.via) {
+      const f = (s.forwards || []).find((x) => x.relayServerId === entry.via && Number(x.listenPort) === Number(entry.port) && x.target?.serverId === entry.serverId);
+      if (!f) throw new Error('没找到这条转发');
+      store.upsert('forwards', { id: f.id, nodeName: name });
+      return true;
+    }
+    const srv = s.servers.find((x) => x.id === entry.serverId);
+    if (!srv?.protocols?.[entry.protocol]) throw new Error('这个入口不能改名');
+    store.upsert('servers', { id: srv.id, protocols: { ...srv.protocols, [entry.protocol]: { ...srv.protocols[entry.protocol], name } } });
+    return true;
   });
   handle('landing:test', async (id) => {
     if (!fs.existsSync(singboxPath)) throw new Error('找不到内置 sing-box：' + singboxPath);

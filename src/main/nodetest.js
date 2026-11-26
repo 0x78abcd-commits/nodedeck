@@ -48,9 +48,39 @@ function explainError(msg, stderr, outbound) {
   return out;
 }
 
+// 经代理下载测速：最多 secs 秒，跳过第 1 秒（TCP 慢启动），返回 Mbps。urls 依次试，第一个能下的为准
+async function speedVia(fetchVia, port, urls, secs = 8) {
+  let lastErr = '';
+  for (const url of urls) {
+    try {
+      const t0 = Date.now();
+      const r = await fetchVia(port, url, (secs + 8) * 1000);
+      if (!r.ok) { lastErr = 'HTTP ' + r.status; continue; }
+      const reader = r.body.getReader();
+      let bytes = 0; let mark = 0; let markBytes = 0; let first = 0;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const now = Date.now();
+        if (!first) first = now;
+        bytes += value.length;
+        if (!mark && now - first >= 1000) { mark = now; markBytes = bytes; }
+        if (now - first >= secs * 1000) { reader.cancel().catch(() => {}); break; }
+      }
+      const end = Date.now();
+      const useBytes = mark ? bytes - markBytes : bytes;
+      const useMs = mark ? end - mark : end - (first || t0);
+      if (bytes < 64 * 1024 || useMs <= 0) { lastErr = '下载的数据太少'; continue; }
+      return { mbps: (useBytes * 8) / useMs / 1000, bytes, source: new URL(url).hostname };
+    } catch (e) { lastErr = e.message; }
+  }
+  return { error: lastErr || '测速失败' };
+}
+
 // fetchVia(proxyPort, url, timeoutMs) => Response，由主进程注入（使用 Electron 独立 session + 代理）
 // xrayPath 给了就用 Xray 跑（XHTTP 节点，outbound 是 Xray 格式），否则用 sing-box
-async function testOutbound({ singboxPath, xrayPath, outbound, fetchVia }) {
+// want：要测哪几项（延迟 / 出口 IP / 速度），一次启动内核全部测完
+async function testOutbound({ singboxPath, xrayPath, outbound, fetchVia, want = { latency: true, exit: true }, speedUrls = [] }) {
   if (!outbound) return { ok: false, error: '这个协议不支持本地测试' };
   const port = await freePort();
   const cfgFile = path.join(os.tmpdir(), `nodedeck-test-${port}.json`);
@@ -63,28 +93,46 @@ async function testOutbound({ singboxPath, xrayPath, outbound, fetchVia }) {
   try {
     const ready = await Promise.race([waitPort(port), exited.then(() => false)]);
     if (!ready) throw new Error(`本地 ${xrayPath ? 'Xray' : 'sing-box'} 启动失败：` + stderr.trim().slice(-500));
-    const result = { ok: false, latency: null, ip: null, error: '' };
-    // 延迟：取两次中较小值（第一次包含握手）
+    const result = { ok: false, latency: null, ip: null, error: '', at: Date.now() };
+    // 延迟（真连接延迟，和 v2rayN / mihomo 一样请求 generate_204）：测两次取较小值，第一次含握手
     const lat = [];
     for (let i = 0; i < 2; i++) {
       const t0 = Date.now();
-      const r = await fetchVia(port, 'https://www.gstatic.com/generate_204', 8000);
+      const r = await fetchVia(port, process.env.ND_LATENCY_URL || 'https://www.gstatic.com/generate_204', 8000); // 环境变量仅测试用
       if (r.status !== 204 && r.status !== 200) throw new Error('HTTP ' + r.status);
       lat.push(Date.now() - t0);
     }
     result.latency = Math.min(...lat);
-    try {
-      const r = await fetchVia(port, 'http://ip-api.com/json/?fields=query,country,city,isp,as,hosting,proxy,mobile&lang=zh-CN', 8000);
-      result.ip = await r.json();
-    } catch (e) { result.ipError = e.message; }
     result.ok = true;
+    if (want.exit) {
+      try {
+        const r = await fetchVia(port, 'http://ip-api.com/json/?fields=query,country,countryCode,city,isp,as,hosting,proxy,mobile&lang=zh-CN', 8000);
+        result.ip = await r.json();
+      } catch (e) { result.ipError = e.message; }
+    }
+    if (want.speed) result.speed = await speedVia(fetchVia, port, speedUrls);
     return result;
   } catch (e) {
-    return { ok: false, error: explainError(e.message || String(e), stderr, outbound) };
+    return { ok: false, error: explainError(e.message || String(e), stderr, outbound), at: Date.now() };
   } finally {
     proc.kill();
     setTimeout(() => fs.rm(cfgFile, { force: true }, () => {}), 1000);
   }
 }
 
-module.exports = { testOutbound, freePort, lastSingboxError };
+// 打开一个走这个节点的浏览器窗口：返回本地代理端口和停止函数（关窗口时调用）
+async function startLocalProxy({ singboxPath, xrayPath, outbound }) {
+  const port = await freePort();
+  const cfgFile = path.join(os.tmpdir(), `nodedeck-browse-${port}.json`);
+  fs.writeFileSync(cfgFile, JSON.stringify(xrayPath ? core.xrayTestConfig(outbound, port) : core.clientTestConfig(outbound, port)));
+  let stderr = '';
+  const proc = spawn(xrayPath || singboxPath, ['run', '-c', cfgFile], { windowsHide: true });
+  proc.stderr.on('data', (d) => { stderr += d.toString(); });
+  const exited = new Promise((r) => proc.once('exit', r));
+  const ready = await Promise.race([waitPort(port), exited.then(() => false)]);
+  const stop = () => { proc.kill(); setTimeout(() => fs.rm(cfgFile, { force: true }, () => {}), 1000); };
+  if (!ready) { stop(); throw new Error('本地内核启动失败：' + stderr.trim().slice(-300)); }
+  return { port, stop };
+}
+
+module.exports = { testOutbound, startLocalProxy, speedVia, freePort, lastSingboxError };

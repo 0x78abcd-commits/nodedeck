@@ -7,10 +7,10 @@ Windows 桌面软件：**填 VPS → 一键部署全套协议 → 分配给用�
 | 服务器 | 批量操作；被墙巡检（默认关，可开成只提醒或自动换新）；SSH 一键安装 sing-box + agent，自签或 Let's Encrypt 证书、BBR、防火墙放行；支持 Debian / Ubuntu / CentOS（systemd）和 Alpine（OpenRC），x86-64 / ARM64 / ARMv7 / x86；一键体检、被墙检测、一键换新；监控面板（CPU、内存、网速、三网延迟、本月流量、VPS 到期提醒） |
 | 协议 | VLESS-Reality（部署时自动挑同网段邻居做目标，定期巡检自动换）、Trojan、VMess-WS、Hysteria2（混淆 + 端口跳跃）、TUIC v5、AnyTLS、Shadowsocks-2022、VLESS-XHTTP-Reality / VLESS-XHTTP-TLS（Xray 内核，开了才装）；三种一键模板；IPv6 线路；Cloudflare 隧道（IP 被墙也能用，可配优选地址） |
 | 路由 | 屏蔽 BT / 广告 / 回国流量，指定网站走 Cloudflare WARP |
-| 节点 | 分享链接、二维码、本地测试（延迟 + 出口 IP + 是否机房 IP） |
+| 节点 | 分享链接、二维码；每个入口单独测延迟 / 速度 / 出口，或一键测整台 / 全部（真连接延迟、经节点下载测速、出口 IP 和是否机房 IP）；经节点打开浏览器；节点改名 |
 | 用户 | 多用户、按线路分配、流量上限和定期重置、到期时间或首次使用后 N 天、在用设备数（最近 10 分钟的来源 IP）、批量操作；订阅自动识别 v2rayN / Clash Meta / sing-box / Shadowrocket，浏览器打开是订阅信息页；临时订阅链接；自签证书自动带指纹（新版 v2rayNG 可直接用）；Telegram / 微信（PushPlus、Server 酱）通知和运维告警 |
 | 落地 | 住宅 SOCKS5 / HTTP 或机场节点（链接 / 订阅导入）做出口，分组管理，一键切换 |
-| 中转 / 隧道 | 用另一台 VPS 做端口转发；目标是节点协议时订阅里自动多一条「经中转」线路；也可以转发任意地址 |
+| 端口转发 | 用另一台 VPS 做中转：TCP + UDP，目标是节点协议时订阅里自动多一条「经中转」线路；也可以转发任意地址，多个目标主备 / 轮询、目标探测、按规则统计流量和连接数、来源 IP 白名单、批量添加 |
 | 网络优化 | 检测内核 / BBR / 队列 / 网卡，有依据地调整并可一键恢复；回程和去程线路识别（CN2 GIA、9929、CMI 等）；三网延迟、丢包、抖动和晚高峰对比；电脑到 VPS 的 TCP 测速和 UDP 丢包测试、Hysteria2 / TUIC 建议；BBR 和 CUBIC 对比；一键运行 NodeQuality、TcpQuality |
 | 工具箱 | IP 画像、端口检测、DNS、路由追踪、被墙检测、Reality 目标检测和同网段扫描、SOCKS5 转二维码 |
 | 更新 | 软件自动更新；VPS 上的 sing-box 内核由 agent 每天检查、校验后自动升级（失败自动回滚），可限定升级时间段 |
@@ -129,4 +129,5 @@ test/                 run.js 配置检查；e2e.js 真流量测试
 - exe 没有代码签名，第一次运行 Windows SmartScreen 可能拦截，点「更多信息 → 仍要运行」。
 - Trojan / Hysteria2 / TUIC / AnyTLS 用的是自签证书，客户端链接里已经带了「跳过证书验证」。
 - sing-box 以 GPL-3.0 许可证发布，作为独立程序随附，未做修改。
+- 端口转发的多目标主备 / 轮询、目标探测、按规则统计参考 [realm](https://github.com/zhboner/realm) 和 [gost](https://github.com/go-gost/gost) 这类转发工具（只参考做法，代码是自己写的）；节点测速参考 v2rayN / subs-check 的做法（真连接延迟请求 generate_204，经节点下载测速）。
 - 回程线路判断（各骨干网的地址段和按先后顺序判断的规则）参考 [oneclickvirt/backtrace](https://github.com/oneclickvirt/backtrace)（Apache-2.0）；在用设备统计的做法参考 3x-ui 的 IP 限制（读代理内核的连接日志）。

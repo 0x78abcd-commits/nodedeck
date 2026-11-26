@@ -3,35 +3,132 @@
 // 由 index.html 按顺序加载：ui.js → app.js → servers.js → netopt.js → nodes.js → users.js → landings.js → toolbox.js → stock.js → settings.js（最后一个启动界面）
 
 // ---------- 节点 ----------
+// 测试结果按入口记住（重新进页面、切页面都还在；存在本机浏览器存储里，重启软件也在）
+const nodeKey = (e) => [e.serverId, e.protocol, e.host, e.port, e.via || ''].join('|');
+let NODE_RES = {};
+try { NODE_RES = JSON.parse(localStorage.getItem('nodeResults') || '{}'); } catch (_) { NODE_RES = {}; }
+const saveNodeRes = () => { try { localStorage.setItem('nodeResults', JSON.stringify(NODE_RES)); } catch (_) { /* 存不了就算了 */ } };
+
+const latClass = (ms) => (ms < 250 ? 'ok' : ms < 600 ? 'blue' : 'warn');
+
+// 一个入口的三格：延迟 / 速度 / 出口。没测过显示「测」按钮，测过显示结果（点结果重测）
+function nodeCells(e) {
+  const cells = { lat: h('td', { class: 'nt-cell' }), speed: h('td', { class: 'nt-cell' }), exit: h('td', { class: 'nt-cell' }) };
+  const test = async (kind) => {
+    const r0 = NODE_RES[nodeKey(e)] || {};
+    for (const k of kind === 'speed' ? ['speed'] : kind === 'exit' ? ['exit'] : ['lat']) cells[k].replaceChildren(h('span', { class: 'spin' }));
+    const r = await api.call('node:test', e, 'owner', { latency: true, exit: kind === 'exit', speed: kind === 'speed' });
+    const res = { ...r0, at: Date.now() };
+    res.lat = r.ok ? { ms: r.latency } : { error: r.error };
+    if (kind === 'exit') res.exit = r.ok ? (r.ip ? { ip: r.ip } : { error: r.ipError || '查不到' }) : { error: '不通' };
+    if (kind === 'speed') res.speed = r.ok ? r.speed : { error: '不通' };
+    NODE_RES[nodeKey(e)] = res; saveNodeRes();
+    draw();
+    return res;
+  };
+  const btn = (kind) => h('button', { class: 'small nt-btn', title: { lat: '测延迟（经这个节点请求 generate_204，取两次里较快的）', speed: '测速（经这个节点下载 8 秒）', exit: '查出口 IP' }[kind], onclick: (ev) => busy(ev.currentTarget, () => test(kind)) }, '测');
+  const again = (kind, el) => { el.classList.add('nt-again'); el.title = (el.title ? el.title + '\n' : '') + '点击重测'; el.onclick = () => { el.onclick = null; test(kind); }; return el; };
+  function draw() {
+    const r = NODE_RES[nodeKey(e)] || {};
+    cells.lat.replaceChildren(!r.lat ? btn('lat') : r.lat.error
+      ? again('lat', h('span', { class: 'tag bad', title: r.lat.error }, '不通'))
+      : again('lat', h('span', { class: 'tag ' + latClass(r.lat.ms) }, `${r.lat.ms} ms`)));
+    cells.speed.replaceChildren(!r.speed ? btn('speed') : r.speed.error
+      ? again('speed', r.speed.error === '不通' ? h('span', { class: 'muted', title: '节点不通，测不了速度' }, '—') : h('span', { class: 'tag bad', title: r.speed.error }, '失败'))
+      : again('speed', h('span', { class: 'nt-num', title: `测速来源：${r.speed.source || ''}` }, r.speed.mbps >= 100 ? r.speed.mbps.toFixed(0) : r.speed.mbps.toFixed(1), h('small', {}, ' Mbps'))));
+    const ip = r.exit?.ip;
+    cells.exit.replaceChildren(!r.exit ? btn('exit') : r.exit.error
+      ? again('exit', r.exit.error === '不通' ? h('span', { class: 'muted', title: '节点不通，查不了出口' }, '—') : h('span', { class: 'tag bad', title: r.exit.error }, '查不到'))
+      : again('exit', h('span', { class: 'nt-exit', title: [ip.query, ip.country, ip.city, ip.isp, ip.hosting ? '机房 IP' : '非机房 IP'].filter(Boolean).join(' · ') },
+        ip.countryCode ? h('span', { class: 'nt-cc' }, ip.countryCode) : null, h('span', {}, ip.country || ip.query), ip.hosting ? null : h('span', { class: 'tag ok' }, '住宅'))));
+  }
+  draw();
+  return { cells, test, draw };
+}
+
+// 一组入口一起测：延迟和出口并发（最多 4 个），速度一个一个测（同时测会互相抢带宽）
+async function testMany(rows, kinds, btn, label) {
+  const old = btn.textContent;
+  btn.disabled = true;
+  try {
+    let done = 0;
+    const total = rows.length * kinds.length;
+    const tick = () => { btn.textContent = `${label} ${done}/${total}`; };
+    tick();
+    for (const kind of kinds) {
+      const queue = rows.slice();
+      const width = kind === 'speed' ? 1 : 4;
+      await Promise.all(Array.from({ length: Math.min(width, queue.length) }, async () => {
+        while (queue.length) { const r = queue.shift(); try { await r.test(kind); } catch (_) { /* 单个失败不影响其它 */ } done++; tick(); }
+      }));
+    }
+  } finally { btn.textContent = old; btn.disabled = false; }
+}
+
 async function viewNodes(v) {
   await reload();
-  v.append(h('h1', {}, '节点'), h('p', { class: 'sub' }, '这里显示的是默认用户的链接（自用）。给别人用请在「用户」里创建并发订阅。'));
   const groups = await api.call('nodes:list');
+  const allRows = [];
+  const topBtns = h('div', { class: 'actions' });
+  v.append(h('div', { class: 'toolbar' }, h('div', {}, h('h1', {}, '节点'), h('p', { class: 'sub' }, '默认用户（自用）的链接。延迟、速度、出口都是从这台电脑经节点实测的；给别人用请在「用户」里创建并发订阅。')), h('div', { class: 'spacer' }), topBtns));
   if (!groups.length) { v.append(emptyState('还没有节点', '节点在服务器部署好之后自动生成。', h('button', { class: 'primary', onclick: () => go('servers') }, '去添加服务器'))); return; }
   for (const g of groups) {
     const tb = h('tbody');
+    const rows = [];
     for (const e of g.entries) {
-      const res = h('td', { class: 'muted' }, '—');
+      const row = nodeCells(e);
+      rows.push(row); allRows.push(row);
+      const pname = PROTO_LABEL[e.protocol] || e.protocol;
+      const showName = e.label.startsWith(g.server.name + '-') ? e.label.slice(g.server.name.length + 1) : e.label;
       tb.append(h('tr', {},
-        h('td', { class: 'nowrap' }, h('b', {}, PROTO_LABEL[e.protocol]), e.via ? h('div', {}, h('span', { class: 'tag blue' }, '经 ' + serverName(e.via))) : null),
-        h('td', { class: 'mono nowrap', style: { fontSize: '12.5px' } }, `${e.host}:${e.port}`),
-        res,
+        h('td', { class: 'nt-name' }, h('b', { title: e.label }, showName), h('div', { class: 'muted nt-sub' }, showName === pname ? null : pname, e.via ? h('span', { class: 'tag blue' }, '经 ' + serverName(e.via)) : null, e.cf ? h('span', { class: 'tag blue' }, 'CF') : null)),
+        h('td', { class: 'mono nowrap nt-port', title: `${e.host}:${e.port}` }, e.host !== g.server.host ? h('div', { class: 'muted nt-host' }, e.host) : null, String(e.port)),
+        row.cells.lat, row.cells.speed, row.cells.exit,
+        h('td', { class: 'nt-link' }, h('span', { class: 'mono', title: '点击复制', onclick: () => copy(e.link) }, e.link)),
         h('td', { class: 'nowrap' }, h('div', { class: 'actions nowrap' },
           h('button', { class: 'small', onclick: () => copy(e.link) }, '复制'),
           h('button', { class: 'small', onclick: () => showQr(e.label, e.link) }, '二维码'),
-          h('button', { class: 'small primary', onclick: (ev) => busy(ev.currentTarget, () => testEntry(e, res)) }, '测试'),
-          h('button', { class: 'small', onclick: (ev) => { const b = ev.currentTarget; menu(b, [{ label: '编辑', onClick: () => editEntry(e) }, { sep: true }, { label: '删除', danger: true, onClick: () => removeEntry(e, b) }]); } }, '更多 ▾')))));
+          h('button', { class: 'small', title: '开一个经这个节点上网的浏览器窗口，看看网站能不能打开、显示的地区对不对', onclick: (ev) => busy(ev.currentTarget, () => api.call('node:browse', e)) }, '浏览器'),
+          h('button', { class: 'small', onclick: (ev) => { const b = ev.currentTarget; menu(b, [e.cf ? null : { label: '改名', onClick: () => renameEntry(e) }, { label: '编辑', onClick: () => editEntry(e) }, { sep: true }, { label: '删除', danger: true, onClick: () => removeEntry(e, b) }]); } }, '更多 ▾')))));
     }
-    v.append(h('div', { class: 'card' },
-      h('div', { class: 'toolbar' }, h('h3', { style: { margin: 0 } }, g.server.name), h('span', { class: 'muted mono' }, g.server.host), g.server.deployedAt ? null : h('span', { class: 'tag warn' }, '未部署'), h('div', { class: 'spacer' }),
-        h('button', { class: 'small', onclick: () => copy(g.entries.map((e) => e.link).join('\n')) }, '复制全部')),
-      g.entries.length ? h('table', {}, h('thead', {}, h('tr', {}, ['协议', '入口', '测试结果', '操作'].map((t) => h('th', {}, t)))), tb) : h('div', { class: 'muted' }, '没有启用的协议')));
+    const latBtn = h('button', { class: 'small' }, '一键测延迟');
+    const spBtn = h('button', { class: 'small' }, '一键测速');
+    latBtn.onclick = () => testMany(rows, ['lat'], latBtn, '测延迟');
+    spBtn.onclick = () => testMany(rows, ['speed'], spBtn, '测速');
+    const srv = S.servers.find((x) => x.id === g.server.id);
+    v.append(h('div', { class: 'card nt-card' },
+      h('div', { class: 'toolbar' }, h('h3', { style: { margin: 0 } }, g.server.name), h('span', { class: 'muted mono' }, g.server.host), g.server.deployedAt ? null : h('span', { class: 'tag warn' }, '未部署'), h('span', { class: 'muted' }, `${g.entries.length} 个入口`), h('div', { class: 'spacer' }),
+        g.entries.length ? h('div', { class: 'actions' },
+          srv?.deployedAt ? h('button', { class: 'small', title: '一步步检查 SSH、服务、端口、是否被墙、节点真连', onclick: () => diagnoseServer(srv) }, '一键体检') : null,
+          latBtn, spBtn,
+          h('button', { class: 'small', onclick: () => copy(g.entries.map((e) => e.link).join('\n')) }, '复制全部')) : null),
+      g.entries.length ? h('div', { class: 'table-scroll' }, h('table', { class: 'nt-table' }, h('thead', {}, h('tr', {}, ['名称 / 协议', '端口', '延迟', '速度', '出口', '链接', ''].map((t) => h('th', {}, t)))), tb)) : h('div', { class: 'muted' }, '没有启用的协议')));
+  }
+  if (allRows.length) {
+    const a = h('button', {}, '全部测延迟');
+    const b = h('button', {}, '全部测出口');
+    a.onclick = () => testMany(allRows, ['lat'], a, '测延迟');
+    b.onclick = () => testMany(allRows, ['exit'], b, '测出口');
+    a.className = 'primary';
+    topBtns.append(b, a);
   }
 }
 
-// 节点页的「编辑」：普通入口打开服务器编辑并定位到这个协议；经中转的入口去「中转 / 隧道」改
+async function renameEntry(e) {
+  const inp = h('input', { value: e.custom || e.via ? e.label : '', placeholder: e.label, maxlength: 40 });
+  modal({ title: '节点改名', body: h('div', {}, field('名称', inp, '订阅里显示的名字。留空恢复默认（服务器名-协议）。改完同步后用户刷新订阅生效')), buttons: [{ label: '取消' }, { label: '保存', class: 'primary', onClick: async () => {
+    await api.call('node:rename', e, inp.value);
+    const srvId = e.via || e.serverId;
+    const srv = S.servers.find((x) => x.id === srvId);
+    markDirty(); // 订阅内容在各台服务器上都有一份
+    if (srv?.deployedAt) { toast('已改名，正在同步…'); try { await api.call('server:sync', srvId); toast('已改名。其它服务器上的订阅点「同步全部」后更新', 'ok'); } catch (err) { toast('已改名，同步失败：' + err.message, 'err'); } } else toast('已改名', 'ok');
+    render();
+  } }] });
+}
+
+// 节点页的「编辑」：普通入口打开服务器编辑并定位到这个协议；经中转的入口去「端口转发」改
 function editEntry(e) {
-  if (e.via) { go('forwards'); toast('经中转的入口在「中转 / 隧道」里修改'); return; }
+  if (e.via) { go('forwards'); toast('经中转的入口在「端口转发」里修改'); return; }
   const s = S.servers.find((x) => x.id === e.serverId);
   if (!s) return;
   editServer(s, { focus: e.cf ? 'cf' : e.protocol });
@@ -45,7 +142,7 @@ async function removeEntry(e, btn) {
   let msg; let apply; let syncId = s.deployedAt ? s.id : null;
   if (e.via) {
     const f = (S.forwards || []).find((x) => x.relayServerId === e.via && Number(x.listenPort) === Number(e.port) && x.target?.serverId === s.id);
-    if (!f) { toast('没找到这条转发，去「中转 / 隧道」里看看', 'err'); return; }
+    if (!f) { toast('没找到这条转发，去「端口转发」里看看', 'err'); return; }
     const relay = S.servers.find((x) => x.id === e.via);
     msg = `删除经「${relay?.name || '中转'}」转发的 ${pname} 入口（${e.host}:${e.port}）？\n\n只删这条转发，${s.name} 上的 ${pname} 本身不受影响。`;
     apply = () => api.call('col:remove', 'forwards', f.id);
