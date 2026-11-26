@@ -10,6 +10,7 @@ const nodetest = require('./nodetest');
 const diagnose = require('./diagnose');
 const links = require('./links');
 const proxy = require('./proxy');
+const probe = require('./probe');
 const { setProxyProvider, setHostKeySaver } = require('./ssh');
 const { Store } = require('./store');
 const { Updater, publish } = require('./updater');
@@ -98,10 +99,38 @@ function testEntryFor(userId = 'owner') {
 function appVersionForAgent() { return app.isPackaged ? app.getVersion() : ''; }
 
 async function syncOne(id, log) {
+  await beforePush(id);
+  const sig = probe.hostSig(state());
   const st = await deploy.syncServer(state(), getServer(id), { log, resourcesDir, appVersion: appVersionForAgent() });
-  store.upsert('servers', { id, lastStatus: st, syncedAt: Date.now() });
+  store.upsert('servers', { id, lastStatus: st, syncedAt: Date.now(), ...(probe.probeOn(state()) && id === state().settings.probe.hostId ? { probeSig: sig } : {}) });
   watchSubCert(id);
+  afterPush(id);
   return st;
+}
+
+// 推配置前：探针开着就补齐密钥；还没查过地区的查一下（探针网页显示旗帜用，查不到不影响）
+async function beforePush(id) {
+  if (probe.ensureKeys(state())) store.save();
+  const s = getServer(id);
+  if (s && !s.geo?.cc && probe.probeOn(state())) {
+    try {
+      const j = await tools.ipInfo(sysFetch, String(s.host).replace(/^\[|\]$/g, ''));
+      if (j.countryCode) store.upsert('servers', { id, geo: { cc: j.countryCode, country: j.country || '' } });
+    } catch (_) { /* ignore */ }
+  }
+}
+
+// 推完配置后：主控上的机器列表过期了（加了 / 删了 / 改名服务器），过几秒在后台同步一下主控
+let probeHostTimer = null;
+function afterPush(id) {
+  const st = state();
+  if (!probe.probeOn(st)) return;
+  const hostId = st.settings.probe.hostId;
+  if (id === hostId || probe.hostOf(st)?.probeSig === probe.hostSig(st)) return;
+  clearTimeout(probeHostTimer);
+  probeHostTimer = setTimeout(async () => {
+    try { await syncOne(hostId, () => {}); } catch (e) { send('toast', { text: '探针主控同步失败：' + e.message, level: 'err' }); }
+  }, 3000);
 }
 
 // 订阅 HTTPS 证书是 agent 重启后在后台申请的（十几秒到一两分钟）：同步完过一会儿再读一次状态，
@@ -315,6 +344,24 @@ function registerIpc() {
   handle('col:upsert', (col, item) => store.upsert(col, item));
   handle('col:remove', (col, id) => store.remove(col, id));
   handle('settings:set', (patch) => { store.setSettings(patch); return state().settings; });
+  // 探针网页
+  handle('probe:info', () => probe.info(state()));
+  handle('probe:save', async (p) => {
+    const cur = state().settings.probe || {};
+    const next = { ...cur, ...p };
+    if (p.newLink) { next.token = ''; delete next.newLink; }
+    store.setSettings({ probe: next });
+    probe.ensureKeys(state());
+    store.save();
+    // 开 / 关、换主控要同步所有机器（密钥、接口开关）；只改标题、告警、隐藏、换链接只需同步主控
+    const all = cur.enabled !== next.enabled || cur.hostId !== next.hostId;
+    const ids = state().servers.filter((x) => x.deployedAt && (all || x.id === next.hostId || x.id === cur.hostId)).map((x) => x.id);
+    const results = [];
+    for (const id of ids) {
+      try { await syncOne(id, () => {}); results.push({ id, name: getServer(id).name, ok: true }); } catch (e) { results.push({ id, name: getServer(id).name, ok: false, error: e.message }); }
+    }
+    return { results, info: probe.info(state()) };
+  });
   handle('new:server', (fields) => core.newServer(fields));
   handle('new:user', (fields) => core.newUser(fields));
   handle('new:reality', () => core.realityKeypair());
@@ -356,10 +403,12 @@ function registerIpc() {
   // 服务器
   handle('server:testSsh', (srv) => deploy.testSSH(srv));
   handle('server:deploy', async (id) => {
+    await beforePush(id);
     const srv = getServer(id);
     const log = taskLogger('deploy:' + id);
     const st = await deploy.deployServer(state(), srv, { resourcesDir, log });
     store.upsert('servers', { id, deployedAt: Date.now(), lastStatus: st });
+    afterPush(id);
     let portChanges = [];
     log('§ports');
     try { portChanges = await autoFixPorts(id, log); } catch (e) { log('端口自测出错：' + e.message); }

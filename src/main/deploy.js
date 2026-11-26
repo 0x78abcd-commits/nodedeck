@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const core = require('./core');
+const probe = require('./probe');
 const tools = require('./tools');
 const { withSSH, shq } = require('./ssh');
 
@@ -227,6 +228,7 @@ function agentConfig(state, server = {}) {
     latencyProbe: !!st.latencyProbe, // 后台定时测三网延迟，默认关（省流量）
     // 订阅 HTTPS：给 VPS 的 IP 申请 Let's Encrypt 证书（6 天有效，agent 自动续）
     subTls: core.subTlsWanted(state) ? { enabled: true, host: String(server.host || '').replace(/^\[|\]$/g, '') } : null,
+    probe: probe.agentCfg(state, server), // 探针：只读接口密钥；主控还带网页口令和机器列表
     alerts: { off: st.alerts?.enabled === false, diskPct: Number(st.alerts?.diskPct) || 0, cpuPct: Number(st.alerts?.cpuPct) || 0, latencyMs: Number(st.alerts?.latencyMs) || 0 },
   };
 }

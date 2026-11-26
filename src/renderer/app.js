@@ -463,6 +463,8 @@ async function editServer(orig, opts = {}) {
   const syncWarp = () => warpBox.classList.toggle('hidden', !warpOn.checked);
   warpOn.onchange = syncWarp; syncWarp();
 
+  const quotaIn = I(s.quotaGB || '', { type: 'number', min: 0, placeholder: '不填 = 不显示' });
+  const groupIn = I(s.group || '', { placeholder: '不填 = 不分组' });
   const vpsExp = I(s.vpsExpireAt ? new Date(s.vpsExpireAt - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10) : '', { type: 'date' });
   const cft = s.cfTunnel || {};
   const cfOn = h('input', { type: 'checkbox', checked: !!cft.enabled });
@@ -550,6 +552,8 @@ async function editServer(orig, opts = {}) {
       extra.push(h('p', { class: 'muted', style: { fontSize: '12px', margin: 0 } }, k === 'vlessXhttpReality'
         ? '由 Xray 内核提供（勾上后部署 / 同步时自动安装）。和上面的 VLESS-Reality 共用 Reality 目标和密钥，目标在 VLESS-Reality 里设置。不能和 VLESS-Reality 用同一个端口。客户端：v2rayN / v2rayNG、Clash Verge（mihomo 1.19.22 以上）、Shadowrocket；sing-box 客户端不支持，订阅里会自动去掉。'
         : '由 Xray 内核提供，走 HTTP/2 + TLS，用上面的自签证书（链接带证书指纹）；填了域名并开启正式证书时自动用正式证书。也可以套 CDN（需要正式证书）。sing-box 客户端不支持，订阅里会自动去掉。'));
+      const mem = orig?.hw?.memMB;
+      if (mem && mem < 1024) extra.push(h('p', { style: { fontSize: '12px', margin: 0, color: 'var(--warn)' } }, `⚠ 这台机器只有 ${mem}MB 内存。开了 XHTTP 会多跑一个 Xray 内核（空载约 30–60MB，连接多时更多），和 sing-box 一起可能内存紧张；建议只开一个 XHTTP 协议，或加 swap（「更多 → 小机器优化」）。`));
     }
     protoEls[k] = els;
     grid.append(h('div', { class: 'proto', 'data-proto': k }, h('div', { class: 'head' }, h('label', {}, en, ' ', h('b', {}, label)), h('span', { class: 'muted' }, netw.toUpperCase())), field('端口', pt), h('label', { class: 'muted', style: { fontSize: '12px', display: 'block', margin: '-4px 0 8px' }, title: '勾上后，部署后端口不通或一键换新时都不会自动换这个端口' }, fixed, ' 固定端口（不自动更换）'), extra));
@@ -581,6 +585,7 @@ async function editServer(orig, opts = {}) {
     h('div', { class: 'row' }, field('SSH 端口', port), field('用户名', user), field('认证方式', auth)),
     pwdBox, keyBox, hostKeyBox,
     h('div', { class: 'row' }, field('角色', role), field('出口', exit), field('VPS 到期日（可选）', vpsExp, '到期前 7 天和 1 天会 Telegram 提醒续费')),
+    h('div', { class: 'row' }, field('每月流量额度 GB（可选）', quotaIn, '探针网页上显示用量进度'), field('分组（可选）', groupIn, '探针网页可以按分组筛选，例如「日本」「备用」')),
     field('自签证书域名（Trojan / Hy2 / TUIC / AnyTLS 的 SNI）', sniBox),
     h('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', margin: '14px 0 8px' } }, h('h4', { style: { margin: 0 } }, '协议'), h('div', { class: 'spacer' }), tpl), grid,
     h('h4', {}, '正式证书（可选）'),
@@ -644,6 +649,8 @@ async function editServer(orig, opts = {}) {
       }
     }
     s.vpsExpireAt = vpsExp.value ? new Date(vpsExp.value + 'T23:59:59').getTime() : 0;
+    s.quotaGB = Math.max(0, Number(quotaIn.value) || 0);
+    s.group = groupIn.value.trim().slice(0, 20);
     s.cfTunnel = { enabled: cfOn.checked, token: cfToken.value.trim(), hostname: cfHost.value.trim().replace(/^https?:\/\//, '').replace(/\/.*$/, ''), cdnHosts: cfCdn.value.split(/[\s,]+/).map((x) => x.trim()).filter(Boolean) };
     if (cfOn.checked) {
       if (!s.cfTunnel.token || !s.cfTunnel.hostname) throw new Error('开启 Cloudflare 隧道需要填令牌和域名');
@@ -658,6 +665,10 @@ async function editServer(orig, opts = {}) {
     { label: '取消' },
     { label: '保存', class: 'primary', onClick: async () => {
       const ns = collect();
+      const mem = orig?.hw?.memMB;
+      if (mem && mem < 1024 && core_xray(ns) && !core_xray(orig)) {
+        if (!(await confirmBox(`这台机器只有 ${mem}MB 内存，开 XHTTP 会多跑一个 Xray 内核，和 sing-box 一起可能内存紧张、被系统杀进程。还要开吗？`))) return false;
+      }
       // 已部署的服务器换了固定 Reality 目标：先在 VPS 上检测，通过才保存（24 小时内通过的结果可沿用）
       const rp = ns.protocols?.vlessReality;
       const op = orig?.protocols?.vlessReality;
@@ -1444,9 +1455,9 @@ async function testEntry(e, cell) {
   testResultView(cell, await api.call('node:test', e, 'owner'));
 }
 
-async function showQr(title, text) {
+async function showQr(title, text, hint) {
   const src = await api.call('qr', text);
-  modal({ title, body: h('div', { style: { textAlign: 'center' } }, h('img', { class: 'qr qr-big', src }), h('p', { class: 'mono', style: { wordBreak: 'break-all', fontSize: '12px' } }, text), h('p', { class: 'muted', style: { fontSize: '12px' } }, '扫不出来时：点「复制」，在手机 v2rayNG 右上角「+」里选「从剪贴板导入」。请用较新版 v2rayNG/ NekoBox / Clash Meta / Hiddify；Hysteria2、TUIC 太旧的客户端会导入失败或被过滤')), buttons: [{ label: '复制', onClick: () => copy(text) }, { label: '关闭' }] });
+  modal({ title, body: h('div', { style: { textAlign: 'center' } }, h('img', { class: 'qr qr-big', src }), h('p', { class: 'mono', style: { wordBreak: 'break-all', fontSize: '12px' } }, text), h('p', { class: 'muted', style: { fontSize: '12px' } }, hint || '扫不出来时：点「复制」，在手机 v2rayNG 右上角「+」里选「从剪贴板导入」。请用较新版 v2rayNG/ NekoBox / Clash Meta / Hiddify；Hysteria2、TUIC 太旧的客户端会导入失败或被过滤')), buttons: [{ label: '复制', onClick: () => copy(text) }, { label: '关闭' }] });
 }
 
 // ---------- 用户 ----------
@@ -1962,6 +1973,52 @@ function updateCard() {
   return card;
 }
 
+// 探针网页：主控 VPS 在订阅端口出一个只读状态页
+function probeCard() {
+  const card = h('div', { class: 'card' }, h('h3', {}, '探针网页'), h('p', { class: 'muted' }, '加载中…'));
+  const draw = (info) => {
+    const p = S.settings.probe || {};
+    const deployed = S.servers.filter((x) => x.deployedAt);
+    const on = h('input', { type: 'checkbox', checked: !!p.enabled });
+    const host = h('select', {}, deployed.map((x) => h('option', { value: x.id }, x.name)));
+    host.value = p.hostId || deployed[0]?.id || '';
+    const title = h('input', { value: p.title || '服务器状态', maxlength: 40 });
+    const alert = h('input', { type: 'checkbox', checked: p.alert !== false });
+    const hidden = new Set(p.hidden || []);
+    const shows = deployed.map((x) => { const c = h('input', { type: 'checkbox', checked: !hidden.has(x.id) }); c.dataset.id = x.id; return h('label', { class: 'chip', style: { cursor: 'pointer' } }, c, ' ', x.name); });
+    const collect = () => ({ enabled: on.checked, hostId: host.value, title: title.value.trim() || '服务器状态', alert: alert.checked, hidden: shows.map((l) => l.querySelector('input')).filter((c) => !c.checked).map((c) => c.dataset.id) });
+    const save = (extra = {}) => async (e) => busy(e.currentTarget, async () => {
+      if (on.checked && !host.value) throw new Error('先部署一台服务器当主控');
+      const r = await api.call('probe:save', { ...collect(), ...extra });
+      await reload();
+      const bad = r.results.filter((x) => !x.ok);
+      toast(bad.length ? `已保存，但这些服务器同步失败：${bad.map((x) => `${x.name}（${x.error}）`).join('；')}` : (r.info.on ? '探针已更新' : '已关闭探针'), bad.length ? 'err' : 'ok');
+      draw(r.info);
+    });
+    const peerRows = (info.peers || []).map((x) => h('span', { class: 'tag ' + (x.online === undefined ? '' : x.online ? 'ok' : 'bad'), title: x.error || '' }, x.name + (x.online === false ? '：连不上' : '')));
+    card.replaceChildren(h('h3', {}, '探针网页'),
+      h('p', { class: 'muted' }, '选一台服务器当主控，它会每 5 秒收集所有服务器的 CPU、内存、磁盘、网速、本月流量和到期时间，在订阅端口上出一个网页，手机浏览器打开就能看。只读：网页里不显示 IP，也没有任何远程操作功能。'),
+      h('label', { class: 'f' }, on, ' 开启'),
+      h('div', { class: 'row' }, field('主控服务器', host, '这台要一直开着；它自己宕机时没法发告警'), field('网页标题', title)),
+      h('label', { class: 'f' }, alert, ' 服务器离线 1 分钟 / 恢复时发 Telegram', info.tgOn ? null : h('small', { class: 'muted' }, '（先在下面开启 Telegram 通知）')),
+      field('网页上显示的服务器', h('div', { class: 'chips', style: { flexWrap: 'wrap' } }, shows.length ? shows : h('span', { class: 'muted' }, '还没有已部署的服务器'))),
+      info.on ? h('div', { style: { margin: '10px 0' } },
+        h('div', { class: 'mono', style: { wordBreak: 'break-all', fontSize: '12px' } }, info.url),
+        !info.https ? h('div', { class: 'muted', style: { fontSize: '12px' } }, '主控的订阅 HTTPS 证书还没申请下来，链接暂时是 http（证书好了以后链接自动变成 https，要重新复制）') : null,
+        info.stale ? h('div', { style: { fontSize: '12px', color: 'var(--warn)' } }, '服务器有增减或改名，主控上的列表还没更新，点「保存并同步」') : null,
+        peerRows.length ? h('div', { class: 'chips', style: { flexWrap: 'wrap', marginTop: '6px' } }, peerRows) : null,
+        !S.settings.latencyProbe ? h('div', { class: 'muted', style: { fontSize: '12px', marginTop: '4px' } }, '想在探针里看三网延迟：在「巡检与告警」里打开「后台记录三网延迟」') : null) : null,
+      h('div', { class: 'actions' },
+        h('button', { class: 'primary', onclick: save() }, '保存并同步'),
+        info.on ? h('button', { onclick: () => api.call('open:external', info.url) }, '打开') : null,
+        info.on ? h('button', { onclick: () => copy(info.url) }, '复制链接') : null,
+        info.on ? h('button', { onclick: () => showQr('探针网页', info.url, '用手机相机或浏览器扫码打开') }, '二维码') : null,
+        info.on ? h('button', { onclick: async (e) => { const b = e.currentTarget; if (await confirmBox('换一个新链接？旧链接马上失效，发给别人的要重新发。')) save({ newLink: true })({ currentTarget: b }); } }, '换个链接') : null));
+  };
+  api.call('probe:info').then(draw).catch((e) => card.replaceChildren(h('h3', {}, '探针网页'), h('p', { class: 'muted' }, e.message)));
+  return card;
+}
+
 async function viewSettings(v) {
   await reload();
   const st = S.settings;
@@ -2056,6 +2113,7 @@ async function viewSettings(v) {
           h('button', { class: 'primary', onclick: async () => { await saveTg(); toast('已保存，点「同步全部」后各服务器生效', 'ok'); markDirty(); } }, '保存'),
           tgServer.options.length ? tgServer : null,
           tgServer.options.length ? h('button', { onclick: (e) => busy(e.currentTarget, async () => { await saveTg(); await api.call('server:sync', tgServer.value); await api.call('telegram:test', tgServer.value); toast('测试消息已发送，去 Telegram 看看', 'ok'); }) }, '从这台服务器发测试消息') : h('span', { class: 'muted' }, '部署服务器后可以发测试消息'))),
+      probeCard(),
       h('div', { class: 'card' }, h('h3', {}, 'SSH 连接'),
         field('经本机代理连接 VPS', proxyMode, '国内直连 VPS 的 SSH 常被干扰；自动模式下直连失败会改走代理（密码错误不会重试）'), proxyRow,
         h('div', { class: 'actions' },

@@ -975,7 +975,7 @@ function rotateServer(state, server) {
 }
 
 module.exports = {
-  PROTOCOLS, REMOTE_DIR, GB,
+  PROTOCOLS, REMOTE_DIR, GB, hostForUri, subBase,
   randId, randHex, randPassword, uuid, realityKeypair, defaultProtocols,
   newServer, newUser, userStatus, userExpireAt, homeServerId, subscriptionUrls, buildSingboxClient, uniqueEntries, userUsedBytes, userHasServer, usersForServer,
   buildServerConfig, nodeEntries, shareLink, clashProxy, clientOutbound, clientTestConfig,

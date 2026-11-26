@@ -73,6 +73,8 @@ type Config struct {
 	SubTLS *SubTLSCfg `json:"subTls"`
 	// 开了 XHTTP 协议才有：Xray 内核
 	Xray *XrayCfg `json:"xray"`
+	// 探针：所有机器都有只读密钥，主控还有网页口令和要拉的机器列表
+	Probe *ProbeCfg `json:"probe"`
 }
 
 type User struct {
@@ -135,6 +137,9 @@ type Agent struct {
 	xrayErr     string
 	xrayUpdate  UpdateState
 	xrayTried   time.Time
+	// 探针
+	live liveSampler
+	hub  *probeHub
 }
 
 func (a *Agent) path(name string) string { return filepath.Join(a.cfg.DataDir, name) }
@@ -645,6 +650,7 @@ type statsResp struct {
 	// 0.6.0 起
 	Reality *RealityState `json:"reality,omitempty"`
 	Xray    *XrayStatus   `json:"xray,omitempty"`
+	Probe   any           `json:"probe,omitempty"`
 }
 
 func (a *Agent) handleAdmin(w http.ResponseWriter, r *http.Request) {
@@ -660,6 +666,9 @@ func (a *Agent) handleAdmin(w http.ResponseWriter, r *http.Request) {
 			resp.Reality = &rs
 		}
 		resp.Xray = a.xrayStatus()
+		if p := a.probeStatus(); p != nil {
+			resp.Probe = p
+		}
 		b, _ := json.Marshal(resp)
 		w.Write(b)
 	case "/admin/apply":
@@ -757,6 +766,8 @@ func run(cfgPath string) {
 	pub := http.NewServeMux()
 	pub.HandleFunc("/sub/", a.handleSub)
 	pub.HandleFunc("/nd-speed/", a.handleSpeed)
+	pub.HandleFunc("/probe/data", a.handleProbeData)
+	pub.HandleFunc("/p/", a.handleProbePage)
 	go a.udpEcho()
 	pub.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { http.NotFound(w, r) })
 	go func() {
@@ -797,6 +808,7 @@ func run(cfgPath string) {
 	}
 	go a.updateLoop()
 	go a.realityLoop()
+	go a.probeLoop()
 	log.Printf("NodeDeck agent %s 已启动，订阅端口 %s", version, a.cfg.SubListen)
 	for {
 		select {
