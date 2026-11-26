@@ -106,12 +106,7 @@ async function testOutbound({ singboxPath, xrayPath, outbound, fetchVia, want = 
     result.ok = true;
     if (want.exit) {
       // 出口 IP 由节点所在的 VPS 自己报（请求经节点发回这台 VPS，它看到的来源就是出口），不经第三方
-      if (exitUrl === 'ip-api') { // 落地（别人的代理）没有自己的 VPS 可问，只能查第三方
-        try {
-          const r = await fetchVia(port, 'http://ip-api.com/json/?fields=query,country,countryCode,city,isp,as,hosting,proxy,mobile&lang=zh-CN', 8000);
-          result.ip = await r.json();
-        } catch (e) { result.ipError = e.message; }
-      } else if (!exitUrl) result.ipError = '这台还没有测速口令，同步一次后再测';
+      if (!exitUrl) result.ipError = '这台还没有测速口令，同步一次后再测';
       else {
         try {
           const r = await fetchVia(port, exitUrl, 8000);

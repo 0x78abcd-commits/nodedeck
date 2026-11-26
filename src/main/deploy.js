@@ -643,14 +643,12 @@ async function serverSelfCheck(server, { log } = {}) {
     const r = await ssh.exec(`
 T=$( (curl -s -o /dev/null -w '%{http_code} %{time_total}' --max-time 8 https://www.gstatic.com/generate_204 || wget -q -T 8 -O /dev/null https://www.gstatic.com/generate_204 && echo '204 0') 2>/dev/null)
 echo "NET=$T"
-echo "IP=$(curl -s --max-time 8 'http://ip-api.com/line/?fields=query,country,isp' 2>/dev/null | tr '\\n' '|')"
 echo "LISTEN=$( (ss -lntuH 2>/dev/null || netstat -lntu 2>/dev/null) | awk '{print $1"/"$5}' | sed -E 's#/.*:#/#' | sort -u | tr '\\n' ' ')"
 echo "TIME=$(date +%s)"
 `, { root: false });
     const kv = {};
     for (const line of r.stdout.split('\n')) { const i = line.indexOf('='); if (i > 0) kv[line.slice(0, i)] = line.slice(i + 1).trim(); }
     const [code, secs] = (kv.NET || '').split(' ');
-    const ipParts = (kv.IP || '').split('|');
     const listening = new Set();
     for (const t of (kv.LISTEN || '').split(' ')) { const m = t.match(/^(tcp|udp)\/(\d+)$/); if (m) listening.add(`${m[1]}/${m[2]}`); }
     return {
@@ -658,8 +656,6 @@ echo "TIME=$(date +%s)"
       via: ssh.via,
       netOk: code === '204',
       netMs: secs ? Math.round(Number(secs) * 1000) : null,
-      // ip-api 的 line 格式按固定顺序输出：country, isp, query
-      exitCountry: ipParts[0] || '', exitIsp: ipParts[1] || '', exitIp: ipParts[2] || '',
       listening: [...listening],
       clockSkew: kv.TIME ? Math.round(Number(kv.TIME) - Date.now() / 1000) : null,
     };

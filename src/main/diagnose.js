@@ -80,7 +80,7 @@ async function diagnoseServer(state, server, deps) {
     if (core.usesXray(server)) add({ id: 'xray', title: 'Xray（XHTTP 协议）', level: st.xray ? 'ok' : 'fail', text: st.xray ? `运行中${st.xrayVersion ? `（${st.xrayVersion}）` : ''}` : '没在运行：点「同步」重试，或「查看日志」看 nodedeck-xray 的报错；其它协议不受影响' });
     if (!svcOk) advice.add(server.deployedAt ? '服务没在运行：点「日志」看原因，或点「重新部署」' : '这台服务器还没部署，先点「部署」');
 
-    add({ id: 'outbound', title: '服务器出网', level: self.netOk ? 'ok' : 'fail', text: self.netOk ? `能访问外网（${self.netMs} ms），出口 IP ${self.exitIp} ${self.exitCountry} ${self.exitIsp}` : '服务器自己访问不了外网：检查 VPS 的网络 / DNS' });
+    add({ id: 'outbound', title: '服务器出网', level: self.netOk ? 'ok' : 'fail', text: self.netOk ? `能访问外网（${self.netMs} ms）` : '服务器自己访问不了外网：检查 VPS 的网络 / DNS' });
     if (!self.netOk) advice.add('服务器本身不能上网，节点肯定用不了，先联系服务商或检查 DNS');
 
     if (self.clockSkew !== null) {

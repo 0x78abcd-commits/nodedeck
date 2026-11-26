@@ -136,16 +136,9 @@ async function syncOne(id, log) {
   return st;
 }
 
-// 推配置前：探针开着就补齐密钥；还没查过地区的查一下（探针网页显示旗帜用，查不到不影响）
-async function beforePush(id) {
+// 推配置前：探针开着就补齐密钥。（以前还会从这台电脑去 ip-api 查服务器地区给探针显示旗帜，会把你的 IP 和服务器 IP 一起告诉第三方，0.9.8 起不查了；已经查过的保留）
+async function beforePush() {
   if (probe.ensureKeys(state())) store.save();
-  const s = getServer(id);
-  if (s && !s.geo?.cc && probe.probeOn(state())) {
-    try {
-      const j = await tools.ipInfo(sysFetch, String(s.host).replace(/^\[|\]$/g, ''));
-      if (j.countryCode) store.upsert('servers', { id, geo: { cc: j.countryCode, country: j.country || '' } });
-    } catch (_) { /* ignore */ }
-  }
 }
 
 // 推完配置后：主控上的机器列表过期了（加了 / 删了 / 改名服务器），过几秒在后台同步一下主控
@@ -505,7 +498,21 @@ function registerIpc() {
     if (!fs.existsSync(singboxPath)) throw new Error('找不到内置 sing-box：' + singboxPath);
     const l = state().landings.find((x) => x.id === id);
     if (!l) throw new Error('落地不存在');
-    return nodetest.testOutbound({ singboxPath, outbound: core.landingOutbound(l, 'proxy'), fetchVia, exitUrl: 'ip-api' });
+    // 出口 IP：经落地访问自己的一台 VPS，由它报看到的来源 IP（不经第三方）
+    const s = state();
+    const deployed = s.servers.filter((x) => x.deployedAt);
+    let srv = deployed.find((x) => x.speedToken) || deployed[0];
+    if (srv && !srv.speedToken) {
+      if (!tokenSyncs.has(srv.id)) {
+        store.upsert('servers', { id: srv.id, speedToken: core.randId(32) });
+        tokenSyncs.set(srv.id, syncOne(srv.id, () => {}).catch(() => {}).finally(() => setTimeout(() => tokenSyncs.delete(srv.id), 1000)));
+      }
+      await tokenSyncs.get(srv.id);
+      srv = state().servers.find((x) => x.id === srv.id);
+    }
+    const r = await nodetest.testOutbound({ singboxPath, outbound: core.landingOutbound(l, 'proxy'), fetchVia, exitUrl: srv ? exitUrlFor(state(), { serverId: srv.id }) : '' });
+    if (!srv && r.ok) r.ipError = '没有已部署的服务器，查不了出口 IP';
+    return r;
   });
   handle('qr', (text) => tools.qr(text));
   // 批量识别落地：每行一个，支持 ip:端口:用户:密码、socks5://、各种节点分享链接
