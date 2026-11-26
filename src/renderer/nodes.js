@@ -7,7 +7,7 @@ async function viewNodes(v) {
   await reload();
   v.append(h('h1', {}, '节点'), h('p', { class: 'sub' }, '这里显示的是默认用户的链接（自用）。给别人用请在「用户」里创建并发订阅。'));
   const groups = await api.call('nodes:list');
-  if (!groups.length) { v.append(h('div', { class: 'card empty' }, '还没有服务器')); return; }
+  if (!groups.length) { v.append(emptyState('还没有节点', '节点在服务器部署好之后自动生成。', h('button', { class: 'primary', onclick: () => go('servers') }, '去添加服务器'))); return; }
   for (const g of groups) {
     const tb = h('tbody');
     for (const e of g.entries) {
@@ -20,8 +20,7 @@ async function viewNodes(v) {
           h('button', { class: 'small', onclick: () => copy(e.link) }, '复制'),
           h('button', { class: 'small', onclick: () => showQr(e.label, e.link) }, '二维码'),
           h('button', { class: 'small primary', onclick: (ev) => busy(ev.currentTarget, () => testEntry(e, res)) }, '测试'),
-          h('button', { class: 'small', onclick: () => editEntry(e) }, '编辑'),
-          h('button', { class: 'small danger', onclick: (ev) => removeEntry(e, ev.currentTarget) }, '删除')))));
+          h('button', { class: 'small', onclick: (ev) => { const b = ev.currentTarget; menu(b, [{ label: '编辑', onClick: () => editEntry(e) }, { sep: true }, { label: '删除', danger: true, onClick: () => removeEntry(e, b) }]); } }, '更多 ▾')))));
     }
     v.append(h('div', { class: 'card' },
       h('div', { class: 'toolbar' }, h('h3', { style: { margin: 0 } }, g.server.name), h('span', { class: 'muted mono' }, g.server.host), g.server.deployedAt ? null : h('span', { class: 'tag warn' }, '未部署'), h('div', { class: 'spacer' }),

@@ -92,7 +92,8 @@ function viaProxy(proxyPort, targetPort, ms = 10000) {
     if (hs && !realTarget) { hs.server = '127.0.0.1'; hs.server_port = rtPort; }
   }
   delete sbCfg.experimental; // 不需要统计接口
-  const fix = (o) => JSON.stringify(o, null, 2).replaceAll('/etc/nodedeck/cert.pem', path.join(dir, 'cert.pem')).replaceAll('/etc/nodedeck/key.pem', path.join(dir, 'key.pem'));
+  const fix = (o) => JSON.stringify(o, null, 2).replaceAll('/etc/nodedeck/cert.pem', path.join(dir, 'cert.pem')).replaceAll('/etc/nodedeck/key.pem', path.join(dir, 'key.pem'))
+    .replaceAll(core.CONN_LOG, path.join(dir, 'conn.log')).replaceAll(core.XRAY_ACCESS_LOG, path.join(dir, 'xray-access.log'));
   fs.writeFileSync(path.join(dir, 'server.json'), fix(sbCfg));
   const sbSrv = run(SB, ['run', '-c', path.join(dir, 'server.json')], 'sing-box 服务端');
   let xrSrv = null;
@@ -174,6 +175,14 @@ function viaProxy(proxyPort, targetPort, ms = 10000) {
     }
   } else console.log('SKIP mihomo 客户端（没设 MIHOMO）');
 
+  // 在用设备统计靠的日志：sing-box 连接日志里要有来源和「[用户 id]」，Xray 访问日志里要有 email
+  {
+    const rd = (f) => { try { return fs.readFileSync(path.join(dir, f), 'utf8'); } catch (_) { return ''; } };
+    const cl = rd('conn.log');
+    const okSb = /inbound connection from 127\.0\.0\.1:\d+/.test(cl) && cl.includes(`[${owner.id}] inbound`);
+    record('online-log', { label: 'sing-box 连接日志（在用设备统计）' }, okSb ? '' : '连接日志里没有来源 / 用户行');
+    if (XR) { const xl = rd('xray-access.log'); record('online-log', { label: 'Xray 访问日志（在用设备统计）' }, xl.includes(`email: ${owner.id}`) ? '' : '访问日志里没有 email'); }
+  }
   if (process.env.E2E_DEBUG && xrSrv) console.log('---- Xray 服务端日志 ----\n' + xrSrv.log.slice(-2500));
   for (const p of procs) stop(p);
   web.close(); rt.close();

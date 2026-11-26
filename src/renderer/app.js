@@ -196,13 +196,16 @@ async function render() {
 // ---------- 概览 ----------
 async function viewDash(v) {
   await reload();
+  // 各用户最近 10 分钟的来源 IP 合计（新版 agent 才有）
+  const fresh = S.users.filter((u) => u.online && Date.now() - u.online.at < 15 * 60 * 1000);
+  const devCount = fresh.length ? fresh.reduce((a, u) => a + u.online.ips.length, 0) : null;
   const deployed = S.servers.filter((s) => s.deployedAt);
   const nodes = (await api.call('nodes:list')).reduce((a, g) => a + g.entries.length, 0);
   const activeUsers = S.users.filter((u) => userState(u)[1] !== 'bad').length;
   const traffic = S.users.reduce((a, u) => a + userUsed(u), 0);
   const running = deployed.filter((s) => s.lastStatus?.singbox && s.lastStatus?.agent).length;
   const [tv, tu] = fmtBytes(traffic).split(' ');
-  v.append(h('div', { class: 'toolbar' }, h('div', {}, h('h1', {}, '概览'), h('p', { class: 'sub' }, deployed.length ? `${running} 台在运行${deployed.length > running ? `，${deployed.length - running} 台需要看一下` : ''}` : '先添加一台 VPS，部署后就能生成节点和订阅')), h('div', { class: 'spacer' }),
+  v.append(h('div', { class: 'toolbar' }, h('div', {}, h('h1', {}, '概览'), h('p', { class: 'sub' }, deployed.length ? `${running} 台在运行${deployed.length > running ? `，${deployed.length - running} 台需要看一下` : ''}${devCount != null ? ` · ${devCount} 台设备在用` : ''}` : '先添加一台 VPS，部署后就能生成节点和订阅')), h('div', { class: 'spacer' }),
     deployed.length ? h('button', { onclick: (e) => busy(e.currentTarget, async () => { await api.call('users:refreshUsage'); toast('已刷新', 'ok'); render(); }) }, '刷新') : null,
     h('button', { class: 'primary', onclick: () => editServer() }, '添加服务器')));
   v.append(h('div', { class: 'statstrip' },

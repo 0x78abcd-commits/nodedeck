@@ -174,6 +174,7 @@ console.log('agent users', JSON.stringify(core.buildAgentUsers(state, node)));
   for (const i of cfg.inbounds || []) if (i.listen_port) i.listen_port = 41000 + (n++);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nd-run-'));
   cfg.experimental = { ...(cfg.experimental || {}), cache_file: { enabled: true, path: path.join(dir, 'cache.db') } };
+  cfg.log = { level: 'warn', timestamp: true }; // 服务器上写连接日志文件，这里要看输出里有没有错误
   if (cfg.experimental.v2ray_api) cfg.experimental.v2ray_api.listen = '127.0.0.1:48085';
   const f = path.join(dir, 'run.json');
   fs.writeFileSync(f, JSON.stringify(cfg, null, 2).replaceAll('/etc/nodedeck/cert.pem', path.join(certDir, 'cert.pem')).replaceAll('/etc/nodedeck/key.pem', path.join(certDir, 'key.pem')));

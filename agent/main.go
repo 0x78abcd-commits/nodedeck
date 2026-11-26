@@ -78,6 +78,9 @@ type Config struct {
 	Probe *ProbeCfg `json:"probe"`
 	// 补货提醒（内置轻量版）：只在选中的那台上有
 	Stock *StockCfg `json:"stock"`
+	// 0.9.2 起：sing-box 连接日志 / Xray 访问日志的路径，用来统计每个用户在用的设备（来源 IP）；空 = 不统计
+	ConnLog       string `json:"connLog,omitempty"`
+	XrayAccessLog string `json:"xrayAccessLog,omitempty"`
 }
 
 type User struct {
@@ -144,7 +147,8 @@ type Agent struct {
 	live liveSampler
 	hub  *probeHub
 	// 补货提醒
-	stock *stockStore
+	stock  *stockStore
+	online *onlineTracker
 }
 
 func (a *Agent) path(name string) string { return filepath.Join(a.cfg.DataDir, name) }
@@ -652,6 +656,8 @@ type statsResp struct {
 	PeriodStart map[string]int64 `json:"periodStart"`
 	Today       DayStat          `json:"today"`
 	Yesterday   DayStat          `json:"yesterday"`
+	// 每个用户最近 10 分钟的来源 IP；没开统计时为 nil
+	Online map[string][]string `json:"online"`
 	// 0.6.0 起
 	Reality *RealityState `json:"reality,omitempty"`
 	Xray    *XrayStatus   `json:"xray,omitempty"`
@@ -666,6 +672,9 @@ func (a *Agent) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		a.mu.Lock()
 		resp := statsResp{Version: version, Traffic: a.traffic, Disabled: a.disabled, Uptime: int64(time.Since(a.started).Seconds()), LastErr: a.lastErr, Singbox: a.update,
 			LastActive: a.st.LastActive, FirstUsed: a.st.FirstUsed, PeriodStart: a.st.PeriodStart, Today: a.st.Day, Yesterday: a.st.Yesterday}
+		if a.cfg.ConnLog != "" || a.cfg.XrayAccessLog != "" {
+			resp.Online = a.online.snapshot(time.Now().Unix())
+		}
 		a.mu.Unlock()
 		if a.cfg.Reality != nil {
 			rs := a.loadReality()
@@ -715,7 +724,9 @@ func (a *Agent) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		}
 		json.NewEncoder(w).Encode(map[string]string{"message": msg})
 	case "/admin/metrics":
-		json.NewEncoder(w).Encode(a.metricsFor(r.URL.Query().Get("range")))
+		mr := a.metricsFor(r.URL.Query().Get("range"))
+		mr.Live = liveNow()
+		json.NewEncoder(w).Encode(mr)
 	case "/admin/notify-test":
 		err := a.sendAll(fmt.Sprintf("【%s】✅ NodeDeck 通知测试成功", a.serverName()))
 		if err != nil {
@@ -771,7 +782,7 @@ func loadConfig(path string) Config {
 }
 
 func run(cfgPath string) {
-	a := &Agent{cfg: loadConfig(cfgPath), disabled: map[string]string{}, started: time.Now()}
+	a := &Agent{cfg: loadConfig(cfgPath), disabled: map[string]string{}, started: time.Now(), online: newOnlineTracker()}
 	a.loadTraffic()
 	a.loadState()
 	a.loadData()
@@ -828,6 +839,7 @@ func run(cfgPath string) {
 	go a.updateLoop()
 	go a.realityLoop()
 	go a.probeLoop()
+	go a.onlineLoop()
 	go a.stockLoop()
 	log.Printf("NodeDeck agent %s 已启动，订阅端口 %s", version, a.cfg.SubListen)
 	for {

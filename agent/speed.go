@@ -60,10 +60,35 @@ func (a *Agent) handleSpeed(w http.ResponseWriter, r *http.Request) {
 			n -= c
 		}
 	case "/nd-speed/up":
+		// 从收到第一个字节起算，跳过前 1 秒（TCP 慢启动），之后的字节数 / 时间才是稳定速度
 		t0 := time.Now()
-		got, _ := io.Copy(io.Discard, io.LimitReader(r.Body, speedMaxBytes))
+		buf := make([]byte, 64<<10)
+		body := io.LimitReader(r.Body, speedMaxBytes)
+		var got, markBytes int64
+		var first, mark time.Time
+		for {
+			n, err := body.Read(buf)
+			if n > 0 {
+				now := time.Now()
+				if first.IsZero() {
+					first = now
+				}
+				got += int64(n)
+				if mark.IsZero() && now.Sub(first) >= time.Second {
+					mark, markBytes = now, got
+				}
+			}
+			if err != nil {
+				break
+			}
+		}
+		res := map[string]int64{"bytes": got, "ms": time.Since(t0).Milliseconds()}
+		if !mark.IsZero() {
+			res["steadyBytes"] = got - markBytes
+			res["steadyMs"] = time.Since(mark).Milliseconds()
+		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]int64{"bytes": got, "ms": time.Since(t0).Milliseconds()})
+		_ = json.NewEncoder(w).Encode(res)
 	case "/nd-speed/ping":
 		w.Write([]byte("ok"))
 	default:

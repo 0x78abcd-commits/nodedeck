@@ -30,6 +30,10 @@ type Sample struct {
 	Jit  map[string]float64 `json:"jit,omitempty"`
 	Retr float64            `json:"retr"`
 	Conn int                `json:"conn"`
+	// 0.9.2 起：CPU 被宿主机占用（steal，超售时明显）、代理流量（所有用户合计，字节/秒：用户下载 / 上传）
+	Steal float64 `json:"steal"`
+	PDown float64 `json:"pdown"`
+	PUp   float64 `json:"pup"`
 }
 
 type MonthTraffic struct {
@@ -38,38 +42,56 @@ type MonthTraffic struct {
 	Tx     int64  `json:"tx"`
 	LastRx uint64 `json:"lastRx"`
 	LastTx uint64 `json:"lastTx"`
+	// 从哪天开始统计（agent 是月中装上的；整月都在统计时为 0）
+	Since int64 `json:"since,omitempty"`
 }
 
 type Metrics struct {
-	mu       sync.Mutex
-	Minutes  []Sample     `json:"minutes"`
-	Hours    []Sample     `json:"hours"`
-	Month    MonthTraffic `json:"month"`
-	lastCPU  [2]uint64
-	lastNet  [2]uint64
-	lastT    time.Time
-	lastLat  map[string]float64
-	lastLoss map[string]float64
-	lastJit  map[string]float64
-	lastSNMP [2]uint64
-	hourBuf  []Sample
-	hourMark int64
+	mu        sync.Mutex
+	Minutes   []Sample     `json:"minutes"`
+	Hours     []Sample     `json:"hours"`
+	Month     MonthTraffic `json:"month"`
+	lastCPU   [2]uint64
+	lastNet   [2]uint64
+	lastT     time.Time
+	lastLat   map[string]float64
+	lastLoss  map[string]float64
+	lastJit   map[string]float64
+	lastSNMP  [2]uint64
+	lastSyn   uint64
+	lastSteal uint64
+	lastProxy [2]int64
+	hourBuf   []Sample
+	hourMark  int64
 }
 
 // 默认三网测试目标：广东电信 / 联通 / 移动的公共 DNS（ICMP）
 var defaultLatTargets = map[string]string{"电信": "202.96.128.86", "联通": "221.5.88.88", "移动": "211.136.192.6"}
 
 func readCPU() (idle, total uint64) {
+	idle, total, _ = readCPUSteal()
+	return
+}
+
+// readCPUSteal 读 /proc/stat 第一行：user nice system idle iowait irq softirq steal guest guest_nice。
+// guest 已经算在 user / nice 里，不能再加一次（和 top / htop 一样）；steal 是宿主机拿走的时间，单独给出来。
+func readCPUSteal() (idle, total, steal uint64) {
 	b, err := os.ReadFile("/proc/stat")
 	if err != nil {
 		return
 	}
 	f := strings.Fields(strings.SplitN(string(b), "\n", 2)[0])
 	for i, v := range f[1:] {
+		if i >= 8 {
+			break
+		}
 		n, _ := strconv.ParseUint(v, 10, 64)
 		total += n
-		if i == 3 || i == 4 { // idle + iowait
+		switch i {
+		case 3, 4: // idle + iowait
 			idle += n
+		case 7:
+			steal = n
 		}
 	}
 	return
@@ -102,18 +124,58 @@ func readMem() float64 {
 	return (total - avail) / total * 100
 }
 
+// 虚拟网卡：流量在物理网卡上已经算过一次（WireGuard、隧道、容器网桥等），再加就重复了
+var virtIfPrefixes = []string{"lo", "docker", "veth", "br-", "virbr", "vnet", "tun", "tap", "warp", "wg", "ifb", "tailscale", "zt", "cni", "flannel", "cali", "kube", "sit", "ip6tnl", "gre", "erspan", "ipip", "dummy", "nodedeck", "sb-", "singbox"}
+
+// netIfaces 要统计的网卡：有物理设备（/sys/class/net/X/device）的那些；一个都没有时（OpenVZ 的 venet0 等）按名字排除虚拟网卡
+func netIfaces(names []string) map[string]bool {
+	out := map[string]bool{}
+	for _, n := range names {
+		if _, err := os.Stat("/sys/class/net/" + n + "/device"); err == nil {
+			out[n] = true
+		}
+	}
+	if len(out) > 0 {
+		return out
+	}
+	for _, n := range names {
+		virt := false
+		for _, p := range virtIfPrefixes {
+			if strings.HasPrefix(n, p) {
+				virt = true
+				break
+			}
+		}
+		if !virt {
+			out[n] = true
+		}
+	}
+	return out
+}
+
 func readNet() (rx, tx uint64) {
 	b, err := os.ReadFile("/proc/net/dev")
 	if err != nil {
 		return
 	}
-	for _, line := range strings.Split(string(b), "\n")[2:] {
+	lines := strings.Split(string(b), "\n")
+	if len(lines) < 3 {
+		return
+	}
+	var names []string
+	for _, line := range lines[2:] {
+		if i := strings.Index(line, ":"); i > 0 {
+			names = append(names, strings.TrimSpace(line[:i]))
+		}
+	}
+	use := netIfaces(names)
+	for _, line := range lines[2:] {
 		i := strings.Index(line, ":")
 		if i < 0 {
 			continue
 		}
 		name := strings.TrimSpace(line[:i])
-		if name == "lo" || strings.HasPrefix(name, "docker") || strings.HasPrefix(name, "veth") || strings.HasPrefix(name, "br-") || strings.HasPrefix(name, "tun") || strings.HasPrefix(name, "warp") {
+		if !use[name] {
 			continue
 		}
 		f := strings.Fields(line[i+1:])
@@ -228,6 +290,9 @@ func avgSamples(list []Sample, t int64) Sample {
 			jitN[k]++
 		}
 		s.Retr += x.Retr
+		s.Steal += x.Steal
+		s.PUp += x.PUp
+		s.PDown += x.PDown
 		conn += x.Conn
 	}
 	n := float64(len(list))
@@ -246,6 +311,9 @@ func avgSamples(list []Sample, t int64) Sample {
 		s.Jit[k] /= float64(c)
 	}
 	s.Retr /= n
+	s.Steal /= n
+	s.PUp /= n
+	s.PDown /= n
 	s.Conn = conn / len(list)
 	return s
 }
@@ -254,8 +322,15 @@ func avgSamples(list []Sample, t int64) Sample {
 func (a *Agent) collect(withLatency bool) {
 	m := a.metrics
 	now := time.Now()
-	idle, total := readCPU()
+	idle, total, steal := readCPUSteal()
 	rx, tx := readNet()
+	var pUp, pDown int64
+	a.mu.Lock()
+	for _, t := range a.traffic {
+		pUp += t.Up
+		pDown += t.Down
+	}
+	a.mu.Unlock()
 	var lat, loss, jit map[string]float64
 	if withLatency {
 		lat, loss, jit = map[string]float64{}, map[string]float64{}, map[string]float64{}
@@ -285,7 +360,7 @@ func (a *Agent) collect(withLatency bool) {
 		wg.Wait()
 	}
 	snmp := readSNMP()
-	out, retr := snmp["Tcp.OutSegs"], snmp["Tcp.RetransSegs"]
+	out, retr := snmp["Tcp.OutSegs"], tcpDataRetrans(snmp, readNetstat())
 	conn := readTCPStats().InUse
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -294,7 +369,11 @@ func (a *Agent) collect(withLatency bool) {
 	}
 	month := now.In(a.loc()).Format("2006-01")
 	if m.Month.Month != month {
-		m.Month = MonthTraffic{Month: month, LastRx: rx, LastTx: tx}
+		var since int64
+		if m.Month.Month == "" { // 第一次统计：从今天开始，不是整月
+			since = now.Unix()
+		}
+		m.Month = MonthTraffic{Month: month, LastRx: rx, LastTx: tx, Since: since}
 	} else {
 		// 计数器变小说明重启过，从 0 重新累计
 		if rx >= m.Month.LastRx {
@@ -317,6 +396,18 @@ func (a *Agent) collect(withLatency bool) {
 		}
 		if dt := total - m.lastCPU[1]; dt > 0 && total >= m.lastCPU[1] {
 			s.CPU = 100 * (1 - float64(idle-m.lastCPU[0])/float64(dt))
+			if steal >= m.lastSteal {
+				s.Steal = 100 * float64(steal-m.lastSteal) / float64(dt)
+			}
+		}
+		// 代理流量：用户流量计数的增量（周期重置时计数会变小，这一分钟记 0）
+		if m.lastProxy[0] > 0 || m.lastProxy[1] > 0 {
+			if d := pUp - m.lastProxy[0]; d > 0 && secs > 0 {
+				s.PUp = float64(d) / secs
+			}
+			if d := pDown - m.lastProxy[1]; d > 0 && secs > 0 {
+				s.PDown = float64(d) / secs
+			}
 		}
 		if rx >= m.lastNet[0] && tx >= m.lastNet[1] && secs > 0 {
 			s.Rx = float64(rx-m.lastNet[0]) / secs
@@ -339,12 +430,15 @@ func (a *Agent) collect(withLatency bool) {
 	}
 	m.lastSNMP = [2]uint64{out, retr}
 	m.lastCPU = [2]uint64{idle, total}
+	m.lastSteal = steal
+	m.lastProxy = [2]int64{pUp, pDown}
 	m.lastNet = [2]uint64{rx, tx}
 	m.lastT = now
 }
 
 type metricsResp struct {
 	Now       *Sample      `json:"now"`
+	Live      *Sample      `json:"live,omitempty"` // 刚才 1 秒内的 CPU / 网速（打开监控时现测）
 	Series    []Sample     `json:"series"`
 	Month     MonthTraffic `json:"month"`
 	DiskUsed  uint64       `json:"diskUsed"`
@@ -448,4 +542,27 @@ func (a *Agent) checkVPSExpire() {
 			break
 		}
 	}
+}
+
+// liveNow 现测 1 秒：CPU、steal、网卡收发速率（打开监控面板时用，表头显示的是这个）
+func liveNow() *Sample {
+	i0, t0, s0 := readCPUSteal()
+	r0, x0 := readNet()
+	start := time.Now()
+	time.Sleep(time.Second)
+	i1, t1, s1 := readCPUSteal()
+	r1, x1 := readNet()
+	secs := time.Since(start).Seconds()
+	out := &Sample{T: time.Now().Unix(), Mem: readMem(), Load: readLoad()}
+	if dt := float64(t1 - t0); t1 > t0 {
+		out.CPU = 100 * (1 - float64(i1-i0)/dt)
+		if s1 >= s0 {
+			out.Steal = 100 * float64(s1-s0) / dt
+		}
+	}
+	if r1 >= r0 && x1 >= x0 {
+		out.Rx = float64(r1-r0) / secs
+		out.Tx = float64(x1-x0) / secs
+	}
+	return out
 }

@@ -128,6 +128,7 @@ async function viewSettings(v) {
     const tuneOn = h('input', { type: 'checkbox', checked: st.smallBoxTuning !== false });
     const netOn = h('input', { type: 'checkbox', checked: st.netAutoTune !== false });
     const probeOn = h('input', { type: 'checkbox', checked: !!st.latencyProbe });
+    const trackOn = h('input', { type: 'checkbox', checked: st.onlineTrack !== false });
     const alDisk = h('input', { type: 'number', min: 50, max: 99, value: al.diskPct || 90 });
     const alCpu = h('input', { type: 'number', min: 50, max: 100, value: al.cpuPct || 90 });
     const alLat = h('input', { type: 'number', min: 50, value: al.latencyMs || 300 });
@@ -139,11 +140,12 @@ async function viewSettings(v) {
         chk(alOn, '开启运维告警', 'sing-box 挂了（会先自动重启）、磁盘快满、CPU 持续过高、三网延迟变差时，发到「通知」里配的渠道'),
         h('div', { class: 'row' }, field('磁盘用到 %', alDisk), field('CPU 连续 15 分钟高于 %', alCpu), field('三网延迟高于 ms', alLat))),
       h('div', { class: 'card' }, h('h3', {}, '后台任务与部署优化'),
+        chk(trackOn, '统计每个用户在用几台设备', '用户列表的「在用」显示最近 10 分钟连过的不同来源 IP 数。VPS 上的代理内核把连接记录写到一个临时文件，agent 每 15 秒读一次就清空，只留来源 IP 和时间，不记访问了哪些网站。按 IP 算：同一个 Wi-Fi 下的几台设备算 1 台'),
         chk(probeOn, '后台记录三网延迟和丢包', 'VPS 每 5 分钟往国内三网各发 10 个 ping（每台每月几十 MB 流量）。打开后监控面板的延迟曲线、「网络优化」的晚高峰对比、延迟告警和探针里的三网延迟才有数据。默认关'),
         chk(netOn, '部署时自动做其它网络优化', '检测后只改有依据的几项（缓冲区、路径 MTU 探测）；BBR + fq 部署时总会开启。原值都会备份，在服务器「更多 → 网络优化」里可以恢复'),
         chk(tuneOn, '小配置 VPS 自动优化', '内存 ≤ 2GB 且没有 swap 时加一个 swap 文件（1GB 内存加 1GB，2GB 加 2GB，磁盘不够会减小或跳过）；磁盘 < 20GB 时把系统日志限制在 200MB。卸载时一并撤销')),
       h('div', { class: 'actions set-foot' }, h('button', { class: 'primary', onclick: async () => {
-        await api.call('settings:set', { latencyProbe: probeOn.checked, netAutoTune: netOn.checked, smallBoxTuning: tuneOn.checked, realityPatrol: rpMode.value, blockWatch: bwMode.value, alerts: { enabled: alOn.checked, diskPct: Number(alDisk.value) || 90, cpuPct: Number(alCpu.value) || 90, latencyMs: Number(alLat.value) || 300 } });
+        await api.call('settings:set', { onlineTrack: trackOn.checked, latencyProbe: probeOn.checked, netAutoTune: netOn.checked, smallBoxTuning: tuneOn.checked, realityPatrol: rpMode.value, blockWatch: bwMode.value, alerts: { enabled: alOn.checked, diskPct: Number(alDisk.value) || 90, cpuPct: Number(alCpu.value) || 90, latencyMs: Number(alLat.value) || 300 } });
         saved();
       } }, '保存')));
   };

@@ -346,43 +346,144 @@ func traceICMP(host string, maxHops int) TraceResult {
 		}
 		tr.Hops = append(tr.Hops, h)
 	}
-	tr.Line, tr.LineTip = classifyRoute(tr.Hops)
+	tr.Line, tr.LineTip = classifyRoute("", tr.Hops)
 	return tr
 }
 
-// classifyRoute 按经过的骨干网地址段判断线路（和常见回程测试脚本的判断方法一样）
-func classifyRoute(hops []Hop) (string, string) {
-	has := func(prefixes ...string) bool {
-		for _, h := range hops {
-			for _, p := range prefixes {
-				if strings.HasPrefix(h.IP, p) {
-					return true
-				}
-			}
-		}
-		return false
+// 线路判断参考 oneclickvirt/backtrace（Apache-2.0）：先把每一跳的 IP 归到骨干网 ASN，再按出现的先后顺序判断，
+// 比「路径里有没有某个网段」准：比如 CN2 GIA 回国后最后一跳落在 163 省网不能算成 GT，163 出国再接 CN2 才是 GT。
+func hopASN(ip string) string {
+	p := net.ParseIP(ip).To4()
+	if p == nil {
+		return ""
 	}
-	cn2 := has("59.43.")
-	p163 := has("202.97.")
+	a, b, c := p[0], p[1], p[2]
 	switch {
-	case cn2 && !p163:
-		return "CN2 GIA", "电信最高端的国际线路，晚高峰也稳"
-	case cn2 && p163:
-		return "CN2 GT", "电信次一级的国际线路，出国段走 163，晚高峰一般"
-	case has("218.105.", "210.51."):
-		return "联通 9929", "联通精品网（CUII），质量好"
-	case has("218.110.", "43.252.86."):
-		return "联通 10099", "联通国际（CUG），质量较好"
-	case has("223.120.", "223.121.", "223.118.", "223.119."):
-		return "移动 CMI / CMIN2", "移动国际线路"
-	case p163:
-		return "电信 163", "电信普通国际线路，晚高峰容易拥堵"
-	case has("219.158."):
-		return "联通 4837", "联通普通国际线路，晚高峰容易拥堵"
-	case has("221.183.", "221.176.", "111.24."):
-		return "移动 CMNET", "移动普通骨干网"
+	case a == 59 && b == 43:
+		return "AS4809" // CN2
+	case a == 202 && b == 97:
+		return "AS4134" // 电信 163
+	case (a == 218 && b == 105) || (a == 210 && b == 51):
+		return "AS9929"
+	case (a == 202 && b == 77) || (a == 43 && b == 252) || (a == 61 && b == 14):
+		return "AS10099" // 联通 CUG
+	case a == 219 && b == 158:
+		return "AS4837"
+	case a == 223 && ((b == 118 && c == 32) || (b == 120 && c >= 128) || (b == 119 && (c == 8 || c == 9 || (c >= 10 && c <= 15) || (c >= 26 && c <= 29) || (c >= 32 && c <= 37) || c == 74 || c == 75 || c == 88 || c == 89 || c == 100 || c == 252 || c == 253))):
+		return "AS58807" // 移动 CMIN2
+	case a == 223 && b >= 118 && b <= 121:
+		return "AS58453" // 移动 CMI
+	case (a == 221 && b == 183) || (a == 111 && b == 24):
+		return "AS9808" // 移动 CMNET
+	case (a == 69 && b == 194) || (a == 203 && b == 22):
+		return "AS23764" // 电信 CTGNET
 	}
-	return "未识别", "路径里没有看到常见的骨干网地址（可能中间节点不回应）"
+	return ""
+}
+
+// asnPos 某个 ASN 第一次出现在第几跳（-1 没有）、一共几跳
+func asnPos(asns []string, target string) (first, count int) {
+	first = -1
+	for i, x := range asns {
+		if x == target {
+			if first < 0 {
+				first = i
+			}
+			count++
+		}
+	}
+	return
+}
+
+// carrierOf 从目标名字里看是哪家运营商（「北京电信」→ CT）；看不出来返回空
+func carrierOf(name string) string {
+	switch {
+	case strings.Contains(name, "电信"):
+		return "CT"
+	case strings.Contains(name, "联通"):
+		return "CU"
+	case strings.Contains(name, "移动"):
+		return "CM"
+	}
+	return ""
+}
+
+// classifyRoute 判断回程线路。carrier 是目的地的运营商（CT / CU / CM），空 = 不知道（去程测试），就按看到的骨干网猜
+func classifyRoute(carrier string, hops []Hop) (string, string) {
+	var asns []string
+	for _, h := range hops {
+		if x := hopASN(h.IP); x != "" {
+			asns = append(asns, x)
+		}
+	}
+	if carrier == "" && len(asns) > 0 {
+		switch asns[0] {
+		case "AS4809", "AS4134", "AS23764":
+			carrier = "CT"
+		case "AS9929", "AS10099", "AS4837":
+			carrier = "CU"
+		default:
+			carrier = "CM"
+		}
+	}
+	none := "路径里没有看到这家运营商的骨干网地址（可能中间节点不回应）"
+	switch carrier {
+	case "CT":
+		cn2, cn2N := asnPos(asns, "AS4809")
+		ct, ctN := asnPos(asns, "AS4134")
+		ctg, _ := asnPos(asns, "AS23764")
+		if cn2 >= 0 {
+			if cn2N < 2 {
+				return "CN2 混合", "只经过一跳 CN2，其余走 163，比纯 163 好，晚高峰一般"
+			}
+			if ct < 0 || (cn2 < ct && ctN <= 1) {
+				return "CN2 GIA", "电信最高端的国际线路，全程 CN2，晚高峰也稳"
+			}
+			if cn2 < ct {
+				return "CN2 混合", "先走 CN2、回国后又走了好几跳 163，晚高峰一般"
+			}
+			return "CN2 GT", "出国段走 163、国内段走 CN2，晚高峰一般"
+		}
+		if ctg >= 0 {
+			return "电信 CTGNET", "电信国际精品网，质量好"
+		}
+		if ctN >= 2 {
+			return "电信 163", "电信普通国际线路，晚高峰容易拥堵"
+		}
+	case "CU":
+		cu9929, _ := asnPos(asns, "AS9929")
+		cug, _ := asnPos(asns, "AS10099")
+		c4837, c4837N := asnPos(asns, "AS4837")
+		if cu9929 >= 0 {
+			if c4837 >= 0 && c4837 < cu9929 {
+				return "联通 9929 混合", "出国段走 4837、国内接 9929，比纯 4837 好"
+			}
+			return "联通 9929", "联通精品网（CUII），质量好"
+		}
+		if cug >= 0 {
+			return "联通 CUG（10099）", "联通国际精品网，质量较好"
+		}
+		if c4837N >= 2 {
+			return "联通 4837", "联通普通国际线路，晚高峰容易拥堵"
+		}
+	case "CM":
+		cmin2, _ := asnPos(asns, "AS58807")
+		cmi, _ := asnPos(asns, "AS58453")
+		cmnet, _ := asnPos(asns, "AS9808")
+		if cmin2 >= 0 {
+			if cmi >= 0 && cmi < cmin2 {
+				return "移动 CMIN2 混合", "出国段走 CMI、国内接 CMIN2，质量较好"
+			}
+			return "移动 CMIN2", "移动精品国际线路，质量好"
+		}
+		if cmi >= 0 {
+			return "移动 CMI", "移动普通国际线路，多数地区不错，晚高峰看运气"
+		}
+		if cmnet >= 0 {
+			return "移动 CMNET", "移动普通骨干网"
+		}
+	}
+	return "未识别", none
 }
 
 // 三网回程测试目标（北京 / 上海 / 广州），回程测试脚本常用的地址
@@ -404,6 +505,7 @@ func traceAll() []TraceResult {
 			defer func() { <-sem }()
 			r := traceICMP(ip, 30)
 			r.Name = name
+			r.Line, r.LineTip = classifyRoute(carrierOf(name), r.Hops)
 			out[i] = r
 		}(i, t.Name, t.IP)
 	}

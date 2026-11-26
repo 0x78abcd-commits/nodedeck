@@ -84,6 +84,11 @@ async function busy(btn, fn) {
 }
 
 // 下拉菜单：items = [{ label, onClick, danger }]，假值会被忽略
+// 空页面：说清楚这里放什么，给出下一步按钮
+function emptyState(title, text, ...actions) {
+  return h('div', { class: 'card empty' }, h('div', { class: 'empty-t' }, title), text ? h('p', { class: 'muted' }, text) : null, actions.length ? h('div', { class: 'actions', style: { justifyContent: 'center' } }, actions) : null);
+}
+
 function menu(anchor, items) {
   document.querySelectorAll('.menu-pop').forEach((m) => m.remove());
   const r = anchor.getBoundingClientRect();

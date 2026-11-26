@@ -37,6 +37,16 @@ function showNetLab(srv) {
     ({ overview, route, quality, speed, compare, bench })[netTab]();
   }
 
+  // 重传率：优先用最近 1 小时（agent 每分钟记一次），没有就用开机以来；都不含 SYN 重传（连不上的目标反复发 SYN，不代表线路丢包）
+  function retrText(t) {
+    const recent = t.retransPct1h != null && t.retransPct1h >= 0;
+    const v = recent ? t.retransPct1h : t.retransPct;
+    const lvl = v > 5 ? ' — 很高，线路丢包明显' : v > 2 ? ' — 偏高，线路可能有丢包' : v > 0.5 ? ' — 正常' : ' — 很低';
+    const syn = t.synRetrans != null ? '，不含连不上目标时的 SYN 重发' : '';
+    return h('span', {}, `${fmtPct(v, 2)}`, h('span', { class: 'muted' }, `（${recent ? `最近 1 小时平均` : '开机以来'}${syn}）`), lvl,
+      recent ? h('div', { class: 'muted', style: { fontSize: '12px' } }, `开机以来 ${fmtPct(t.retransPct, 2)}`) : null);
+  }
+
   // 1. 内核设置
   function overview() {
     const ni = lab().info;
@@ -52,7 +62,7 @@ function showNetLab(srv) {
       kv2('发包队列', `${ni.qdisc}${ni.iface?.qdisc ? `，网卡当前 ${ni.iface.qdisc}` : ''}`),
       kv2('网卡', `${ni.iface?.name || '?'} · ${ni.iface?.driver || ''} · MTU ${ni.iface?.mtu || '?'} · ${ni.iface?.txQueues || 1} 个发送队列${ni.iface?.speed ? ' · ' + ni.iface.speed : ''}`),
       kv2('IPv4 / IPv6', `${ni.ipv4 ? '有' : '无'} / ${ni.ipv6 ? '有' : '无'}`),
-      kv2('TCP 重传率', `${fmtPct(ni.tcp?.retransPct, 2)}（开机以来）${ni.tcp?.retransPct > 2 ? ' — 偏高，线路可能有丢包' : ''}`),
+      kv2('TCP 重传率', retrText(ni.tcp || {})),
       kv2('TCP 连接', `${ni.tcp?.established || 0} 个已建立 · ${ni.tcp?.timeWait || 0} 个等待关闭`))));
     const pending = (ni.items || []).filter((x) => x.apply);
     const cbs = {};
@@ -84,7 +94,7 @@ function showNetLab(srv) {
   // 2. 线路
   function route() {
     const tr = lab().trace; const fw = lab().fwd;
-    const lineTag = (l) => h('span', { class: 'tag ' + (/GIA|9929|CMIN2|CMI/.test(l) ? 'ok' : /未识别/.test(l) ? '' : /GT|10099/.test(l) ? 'blue' : 'warn') }, l);
+    const lineTag = (l) => h('span', { class: 'tag ' + (/未识别/.test(l) ? '' : /混合/.test(l) ? 'blue' : /GIA|CTGNET|9929|CMIN2/.test(l) ? 'ok' : /GT|CUG|10099/.test(l) ? 'blue' : 'warn') }, l);
     const hopsLine = (hops) => h('div', { class: 'mono muted', style: { fontSize: '11px', marginTop: '4px', wordBreak: 'break-all' } }, (hops || []).map((x) => `${x.ip}${x.ms ? ` ${x.ms.toFixed(0)}ms` : ''}`).join(' → '));
     const box1 = h('div', { class: 'card' }, h('div', { class: 'toolbar' }, h('h3', { style: { margin: 0 } }, '回程（VPS → 国内三网）'), h('div', { class: 'spacer' }), tr ? h('span', { class: 'muted' }, netAgo(tr.at)) : null,
       h('button', { class: tr ? '' : 'primary', onclick: (e) => run(e.currentTarget, () => api.call('net:trace', id)) }, tr ? '重新测' : '开始测（约 30 秒）')),
@@ -144,13 +154,15 @@ function showNetLab(srv) {
   // 4. 测速 / UDP
   function speed() {
     const sp = lab().speed; const ud = lab().udp;
-    pane.append(note('测的是你这台电脑到 VPS 这一段，也就是用户实际走的路。测之前关掉代理软件的 TUN / 全局模式。每次测速最多消耗 VPS 约 250MB 流量（速度越快用得越多）。'));
+    pane.append(note('测的是你这台电脑到 VPS 这一段，也就是用户实际走的路。测之前关掉代理软件的 TUN / 全局模式。每次测速会消耗 VPS 流量，速度越快用得越多（100 Mbps 约 400MB）。'));
     const b1 = h('div', { class: 'card' }, h('div', { class: 'toolbar' }, h('h3', { style: { margin: 0 } }, 'TCP 速度'), h('div', { class: 'spacer' }), sp ? h('span', { class: 'muted' }, netAgo(sp.at)) : null,
-      h('button', { class: sp ? '' : 'primary', onclick: (e) => run(e.currentTarget, () => api.call('net:speed', id)) }, sp ? '重新测' : '开始测（约 20 秒）')));
-    if (sp) b1.append(h('div', { class: 'statstrip', style: { gridTemplateColumns: 'repeat(3, 1fr)', marginTop: '10px', marginBottom: 0 } },
-      h('div', {}, h('div', { class: 'n' }, sp.down?.error ? '—' : fmtMbps(sp.down?.mbps).replace(' Mbps', ''), h('small', {}, ' Mbps')), h('div', { class: 'l' }, sp.down?.error || '下载（VPS → 你）')),
-      h('div', {}, h('div', { class: 'n' }, sp.up?.error ? '—' : fmtMbps(sp.up?.mbps).replace(' Mbps', ''), h('small', {}, ' Mbps')), h('div', { class: 'l' }, sp.up?.error || '上传（你 → VPS）')),
-      h('div', {}, h('div', { class: 'n' }, sp.down?.ttfbMs ?? '—', h('small', {}, ' ms')), h('div', { class: 'l' }, '首字节时间'))));
+      h('button', { class: sp ? '' : 'primary', onclick: (e) => run(e.currentTarget, () => api.call('net:speed', id)) }, sp ? '重新测' : '开始测（约 40 秒）')));
+    const cell = (r, label) => h('div', {}, h('div', { class: 'n' }, !r || r.error ? '—' : fmtMbps(r.mbps).replace(' Mbps', ''), h('small', {}, ' Mbps')), h('div', { class: 'l' }, r?.error || label));
+    if (sp) b1.append(h('div', { class: 'statstrip', style: { gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', marginTop: '10px', marginBottom: 0 } },
+      cell(sp.down, '下载 · 单线程'), sp.downMulti ? cell(sp.downMulti, '下载 · 4 线程') : null,
+      cell(sp.up, '上传 · 单线程'), sp.upMulti ? cell(sp.upMulti, '上传 · 4 线程') : null,
+      h('div', {}, h('div', { class: 'n' }, sp.down?.ttfbMs ?? '—', h('small', {}, ' ms')), h('div', { class: 'l' }, '首字节时间'))),
+      sp.downMulti ? note('单线程是一条连接能跑多快（看视频、下单个文件）；4 线程接近线路带宽。两者差很多说明线路延迟高或有丢包，单条连接跑不满，可以试试 BBR 或 Hysteria2。') : null);
     const b2 = h('div', { class: 'card' }, h('div', { class: 'toolbar' }, h('h3', { style: { margin: 0 } }, 'UDP 丢包 / 抖动（Hysteria2、TUIC 走 UDP）'), h('div', { class: 'spacer' }), ud ? h('span', { class: 'muted' }, netAgo(ud.at)) : null,
       h('button', { class: ud ? '' : 'primary', onclick: (e) => run(e.currentTarget, () => api.call('net:udp', id)) }, ud ? '重新测' : '开始测（约 7 秒）')),
       note('每 20 毫秒发一个 1200 字节的包（和 QUIC 包差不多大），一共 250 个，看回来多少。'));

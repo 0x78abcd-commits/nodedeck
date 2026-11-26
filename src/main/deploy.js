@@ -40,6 +40,7 @@ function agentConfig(state, server = {}) {
     // 日报、到期 / 流量提醒的开关存在 telegram 里（老版本只有 Telegram），开了任何一个渠道都生效
     telegram: notify.anyOn(st) ? { botToken: notify.tgOn(st) ? tg.botToken : '', chatId: notify.tgOn(st) ? String(tg.chatId) : '', daily: tg.daily !== false, dailyHour: Number(tg.dailyHour ?? 9), warnDays: Number(tg.warnDays ?? 3), warnPercent: Number(tg.warnPercent ?? 90), ...(tg.apiBase ? { apiBase: tg.apiBase } : {}) } : {},
     wechat: notify.wechat(st),
+    ...(core.onlineTrackOn(state) ? { connLog: core.CONN_LOG, xrayAccessLog: core.XRAY_ACCESS_LOG } : {}),
     singboxManifest: `${singboxBase(state)}/manifest.json`,
     singboxAutoUpdate: st.singboxAutoUpdate !== false,
     statsApi: `127.0.0.1:${st.statsPort || 9092}`,

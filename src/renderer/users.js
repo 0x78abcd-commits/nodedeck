@@ -15,14 +15,23 @@ async function viewUsers(v) {
   const search = h('input', { placeholder: '搜索名称 / 备注', value: userView.q, style: { maxWidth: '260px' } });
   search.oninput = () => { userView.q = search.value; userView.page = 1; const pos = search.selectionStart; render().then(() => { const el = document.querySelector('#userSearch'); if (el) { el.focus(); el.setSelectionRange(pos, pos); } }); };
   search.id = 'userSearch';
-  const filter = h('select', { style: { maxWidth: '140px' } }, [['all', '全部'], ['ok', '正常'], ['bad', '停用/到期/用尽'], ['warn', '即将到期'], ['online', '在用']].map(([k, l]) => h('option', { value: k }, l)));
+  const filter = h('select', { style: { maxWidth: '140px' } }, [['all', '全部'], ['ok', '正常'], ['bad', '停用/到期/用尽'], ['warn', '即将到期'], ['online', '在用'], ['multi', '多台在用']].map(([k, l]) => h('option', { value: k }, l)));
   filter.value = userView.filter;
   filter.onchange = () => { userView.filter = filter.value; userView.page = 1; render(); };
 
   const q = userView.q.trim().toLowerCase();
   const online = (u) => u.lastActive && Date.now() - u.lastActive < 15 * 60 * 1000;
+  // 在用：有设备统计时显示几台（最近 10 分钟连过的不同来源 IP，各服务器合并），没有就只看最近有没有流量
+  const devs = (u) => (u.online && Date.now() - u.online.at < 15 * 60 * 1000 ? u.online.ips : null);
+  const onlineCell = (u) => {
+    const ips = devs(u);
+    if (ips && ips.length) return h('span', { class: 'tag ok', title: `最近 10 分钟连过的 IP：\n${ips.join('\n')}\n\n按来源 IP 算：同一个 Wi-Fi 下的几台设备算 1 台，手机切换网络时可能多算 1 台` }, `${ips.length} 台在用`);
+    if (online(u)) return h('span', { class: 'tag ok' }, '在用');
+    return h('span', { class: 'muted' }, u.lastActive ? ago(u.lastActive) : '从未使用');
+  };
   let list = S.users.filter((u) => !q || u.name.toLowerCase().includes(q) || (u.note || '').toLowerCase().includes(q));
-  if (userView.filter === 'online') list = list.filter(online);
+  if (userView.filter === 'online') list = list.filter((u) => online(u) || (devs(u) || []).length);
+  else if (userView.filter === 'multi') list = list.filter((u) => (devs(u) || []).length > 1);
   else if (userView.filter !== 'all') list = list.filter((u) => userState(u)[1] === userView.filter);
   const pages = Math.max(1, Math.ceil(list.length / PAGE_SIZE));
   if (userView.page > pages) userView.page = pages;
@@ -57,7 +66,7 @@ async function viewUsers(v) {
       h('td', {}, cb),
       h('td', {}, h('b', {}, u.name), u.note ? h('div', { class: 'muted' }, u.note) : null),
       h('td', {}, h('span', { class: 'tag ' + stCls }, stText)),
-      h('td', {}, online(u) ? h('span', { class: 'tag ok' }, '● 在用') : h('span', { class: 'muted' }, u.lastActive ? ago(u.lastActive) : '从未使用')),
+      h('td', {}, onlineCell(u)),
       h('td', {}, `${fmtBytes(used)} / ${u.limitGB > 0 ? u.limitGB + ' GB' : '不限'}`, u.limitGB > 0 ? h('div', { class: 'progress' }, h('i', { class: pct >= 100 ? 'full' : '', style: { width: pct + '%' } })) : null,
         u.resetPeriod && u.resetPeriod !== 'none' ? h('div', { class: 'muted', style: { fontSize: '12px' } }, '重置：' + RESET_LABEL[u.resetPeriod] + (u.resetPeriod === 'month' ? ` ${u.resetDay || 1} 号` : '')) : null),
       h('td', {}, exp ? fmtDate(exp) : u.expireAfterDays > 0 ? `首次使用后 ${u.expireAfterDays} 天` : '永久'),
@@ -186,7 +195,7 @@ async function showSub(u) {
     if (r.https) body.append(r.https.ok
       ? h('p', { class: 'muted', style: { fontSize: '12px' } }, h('span', { class: 'tag ok' }, 'HTTPS'), ' 订阅内容加密传输（Let\'s Encrypt 给 IP 签的证书，每 6 天自动续）。以前发出去的 http:// 地址也还能用，建议让用户换成上面的新地址')
       : h('p', { class: 'muted', style: { fontSize: '12px' } }, h('span', { class: 'tag warn' }, '还是 HTTP'), ' ', r.https.error ? `${r.https.server} 的订阅证书没申请下来：${r.https.error}` : '订阅证书还没申请（点「同步」后一两分钟内自动申请，申请好地址会自动变成 https://）'));
-    if (r.backups.length) body.append(h('h4', {}, '备用订阅地址（主地址打不开时用）'), r.backups.map((b) => row(b.server, b.url)));
+    if (r.backups.length) body.append(h('h4', {}, '备用订阅地址（主地址打不开时用）'), ...r.backups.map((b) => row(b.server, b.url)));
     // 临时订阅链接：给试用或临时分享，到期自动失效，不影响主地址
     const tempBox = h('div', {});
     const drawTemp = () => {

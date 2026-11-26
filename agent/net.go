@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // 我们可能会改的 sysctl（只有这些）
@@ -88,9 +89,13 @@ type NetInfo struct {
 }
 
 type TCPStats struct {
-	OutSegs      uint64  `json:"outSegs"`
-	RetransSegs  uint64  `json:"retransSegs"`
-	RetransPct   float64 `json:"retransPct"` // 开机以来
+	OutSegs     uint64  `json:"outSegs"`
+	RetransSegs uint64  `json:"retransSegs"`
+	RetransPct  float64 `json:"retransPct"` // 开机以来，不含 SYN 重传
+	SynRetrans  uint64  `json:"synRetrans"`
+	// 最近 1 小时的平均重传率（读 agent 每分钟记的数据）；-1 = 没有数据
+	RetransPct1h float64 `json:"retransPct1h"`
+	Retrans1hN   int     `json:"retrans1hN"` // 用了几分钟的数据
 	Established  int     `json:"established"`
 	TimeWait     int     `json:"timeWait"`
 	InUse        int     `json:"inUse"`
@@ -98,9 +103,23 @@ type TCPStats struct {
 	AttemptFails uint64  `json:"attemptFails"`
 }
 
-func readSNMP() map[string]uint64 {
+func readSNMP() map[string]uint64 { return readProcPairs("/proc/net/snmp") }
+
+// readNetstat /proc/net/netstat（TcpExt 等扩展计数，格式和 snmp 一样）
+func readNetstat() map[string]uint64 { return readProcPairs("/proc/net/netstat") }
+
+// tcpDataRetrans 数据段重传（去掉 SYN 重传）：连不上的目标会反复重发 SYN，那是对方的问题，不代表线路丢包
+func tcpDataRetrans(snmp, nst map[string]uint64) uint64 {
+	r, syn := snmp["Tcp.RetransSegs"], nst["TcpExt.TCPSynRetrans"]
+	if syn > r {
+		return 0
+	}
+	return r - syn
+}
+
+func readProcPairs(path string) map[string]uint64 {
 	out := map[string]uint64{}
-	b, err := os.ReadFile("/proc/net/snmp")
+	b, err := os.ReadFile(path)
 	if err != nil {
 		return out
 	}
@@ -122,7 +141,8 @@ func readSNMP() map[string]uint64 {
 
 func readTCPStats() TCPStats {
 	s := readSNMP()
-	t := TCPStats{OutSegs: s["Tcp.OutSegs"], RetransSegs: s["Tcp.RetransSegs"], ActiveOpens: s["Tcp.ActiveOpens"], AttemptFails: s["Tcp.AttemptFails"], Established: int(s["Tcp.CurrEstab"])}
+	nst := readNetstat()
+	t := TCPStats{OutSegs: s["Tcp.OutSegs"], RetransSegs: tcpDataRetrans(s, nst), SynRetrans: nst["TcpExt.TCPSynRetrans"], ActiveOpens: s["Tcp.ActiveOpens"], AttemptFails: s["Tcp.AttemptFails"], Established: int(s["Tcp.CurrEstab"]), RetransPct1h: -1}
 	if t.OutSegs > 0 {
 		t.RetransPct = 100 * float64(t.RetransSegs) / float64(t.OutSegs)
 	}
@@ -313,6 +333,7 @@ func collectNetInfo(dataDir string) NetInfo {
 	ni.IPv6 = hasIPv6Route()
 	ni.MemMB = memTotalMB()
 	ni.TCP = readTCPStats()
+	ni.TCP.RetransPct1h, ni.TCP.Retrans1hN = recentRetrans(dataDir, time.Now().Unix()-3600)
 	ni.Virt, ni.Container = detectVirt()
 	_, err1 := os.Stat(tuneConf)
 	ni.Tuned = err1 == nil
@@ -598,4 +619,23 @@ func keyName(k string) string {
 		"net.core.rmem_max": "接收缓冲区上限（含 UDP）", "net.core.wmem_max": "发送缓冲区上限（含 UDP）",
 		"net.ipv4.tcp_mtu_probing": "路径 MTU 探测", "net.ipv4.tcp_window_scaling": "TCP 窗口自动扩大",
 	}[k]
+}
+
+// recentRetrans 从 agent 保存的分钟数据里算最近一段时间的平均重传率（只算有发包的分钟）
+func recentRetrans(dataDir string, since int64) (float64, int) {
+	var m Metrics
+	if dataDir == "" || readJSON(filepath.Join(dataDir, "metrics.json"), &m) != nil {
+		return -1, 0
+	}
+	sum, n := 0.0, 0
+	for _, x := range m.Minutes {
+		if x.T >= since && x.Retr >= 0 {
+			sum += x.Retr
+			n++
+		}
+	}
+	if n < 10 {
+		return -1, n
+	}
+	return sum / float64(n), n
 }

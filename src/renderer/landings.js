@@ -24,7 +24,7 @@ async function viewLandings(v) {
     h('button', { onclick: () => importLandings('sub') }, '从订阅导入'),
     h('button', { onclick: () => importLandings('text') }, '批量添加'),
     h('button', { class: 'primary', onclick: () => editLanding() }, '+ 添加落地')));
-  if (!S.landings.length) { v.append(h('div', { class: 'card empty' }, '还没有落地')); return; }
+  if (!S.landings.length) { v.append(emptyState('还没有落地', '想让节点从住宅 IP 或别的机场出去（解锁流媒体、换地区），先在这里添加；再到服务器设置里把「出口」选成它。', h('button', { class: 'primary', onclick: () => editLanding() }, '+ 添加落地'), h('button', { onclick: () => importLandings('sub') }, '从订阅导入'))); return; }
   const groups = [...new Set(S.landings.map((l) => l.group || '').filter(Boolean))];
   if (landingGroup && !groups.includes(landingGroup)) landingGroup = '';
   if (groups.length) v.append(h('div', { class: 'tabs' }, [['', '全部'], ...groups.map((g) => [g, g])].map(([g, l]) => h('a', { class: landingGroup === g ? 'active' : '', onclick: () => { landingGroup = g; render(); } }, `${l} (${g ? S.landings.filter((x) => x.group === g).length : S.landings.length})`))));
@@ -134,7 +134,7 @@ async function viewForwards(v) {
   await reload();
   v.append(h('div', { class: 'toolbar' }, h('div', {}, h('h1', {}, '中转 / 隧道'), h('p', { class: 'sub' }, '在中转 VPS 上开端口转发。目标选节点协议时，相关用户的订阅会自动多一条经中转的线路（节点 IP 被墙也能用）')), h('div', { class: 'spacer' }),
     h('button', { class: 'primary', onclick: () => editForward() }, '+ 添加转发')));
-  if (!S.forwards.length) { v.append(h('div', { class: 'card empty' }, '还没有转发规则')); return; }
+  if (!S.forwards.length) { v.append(emptyState('还没有转发规则', '节点 IP 被墙、或者国内直连太慢时，用一台中转 VPS 把端口转过去，用户订阅里会自动多一条经中转的线路。', h('button', { class: 'primary', onclick: () => editForward() }, '+ 添加转发'))); return; }
   const tb = h('tbody');
   for (const f of S.forwards) {
     const relay = S.servers.find((s) => s.id === f.relayServerId);

@@ -203,9 +203,14 @@ async function refreshUsage() {
     const s = state();
     const errors = [];
     const now = Date.now();
+    const onlineIPs = new Map(); let tracked = false; // 用户 id → 各台服务器上最近 10 分钟的来源 IP（合并去重）
     for (const srv of s.servers.filter((x) => x.deployedAt)) {
       try {
         const st = await deploy.fetchStats(srv, s);
+        if (st.online && typeof st.online === 'object') { // 老版本 agent 没有这个字段；没开统计时是 null
+          tracked = true;
+          for (const [uid, ips] of Object.entries(st.online)) { const set = onlineIPs.get(uid) || new Set(); ips.forEach((ip) => set.add(ip)); onlineIPs.set(uid, set); }
+        }
         srv.lastStats = { today: st.today, yesterday: st.yesterday, at: now };
         if (st.reality) {
           srv.realityState = st.reality;
@@ -227,6 +232,7 @@ async function refreshUsage() {
         }
       } catch (e) { errors.push(`${srv.name}: ${e.message}`); }
     }
+    if (tracked || !core.onlineTrackOn(s)) for (const u of s.users) { if (!tracked) { delete u.online; continue; } const set = onlineIPs.get(u.id); u.online = { ips: set ? [...set] : [], at: now }; }
     store.save();
     // VPS 自动换过 Reality 目标：同步这台和共享用户的服务器，让所有订阅都更新
     if (realityAdopted.length) {

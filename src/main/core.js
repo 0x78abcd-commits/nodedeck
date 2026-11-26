@@ -6,6 +6,10 @@
 const crypto = require('crypto');
 
 const REMOTE_DIR = '/etc/nodedeck';
+const CONN_LOG = `${REMOTE_DIR}/conn.log`;
+const XRAY_ACCESS_LOG = `${REMOTE_DIR}/xray-access.log`;
+// 统计每个用户在用的设备数（默认开）
+const onlineTrackOn = (state) => state?.settings?.onlineTrack !== false;
 const CERT_PATH = `${REMOTE_DIR}/cert.pem`;
 const KEY_PATH = `${REMOTE_DIR}/key.pem`;
 
@@ -327,7 +331,8 @@ function buildServerConfig(state, server, opts = {}) {
   }
 
   const config = {
-    log: { level: 'warn', timestamp: true },
+    // 统计在用设备时：连接日志写到文件，agent 每 15 秒读走并清空（只取来源 IP），警告和错误转到 agent 的日志里
+    log: onlineTrackOn(state) ? { level: 'info', output: CONN_LOG, timestamp: false } : { level: 'warn', timestamp: true },
     dns: { servers: [{ type: 'local', tag: 'local' }] },
     inbounds,
     outbounds,
@@ -404,7 +409,7 @@ function buildXrayConfig(state, server, opts = {}) {
     });
   }
   return {
-    log: { loglevel: 'warning' },
+    log: { loglevel: 'warning', ...(onlineTrackOn(state) ? { access: XRAY_ACCESS_LOG } : {}) },
     api: { tag: 'api', listen: `127.0.0.1:${ports.api}`, services: ['StatsService'] },
     stats: {},
     policy: { levels: { 0: { statsUserUplink: true, statsUserDownlink: true } } },
@@ -549,7 +554,7 @@ function rotateServer(state, server) {
 }
 
 module.exports = {
-  subTlsWanted, cfTunnelOf, fpOf, FINGERPRINTS, PREFERRED_TCP_PORTS, hopRange, PROTOCOLS, REMOTE_DIR, GB, randId, randHex, randPassword, uuid, realityKeypair, defaultProtocols, newServer, newUser, userStatus, userExpireAt, userUsedBytes, userHasServer, usersForServer, buildServerConfig, XRAY_KEYS, isXray, usesXray, realityOn, xrayPorts, buildXrayConfig, acmeCertFiles, xhttpPath, netsOf, serverPorts, checkPortConflicts, resolveForwardTarget, landingOutbound, pickFreePort, rotateServer, ensureProtocols, ssUserKey, pickPreferredPort, usesAcme, tlsSniFor, WARP_SITES,
+  subTlsWanted, cfTunnelOf, fpOf, FINGERPRINTS, PREFERRED_TCP_PORTS, hopRange, PROTOCOLS, REMOTE_DIR, CONN_LOG, XRAY_ACCESS_LOG, onlineTrackOn, GB, randId, randHex, randPassword, uuid, realityKeypair, defaultProtocols, newServer, newUser, userStatus, userExpireAt, userUsedBytes, userHasServer, usersForServer, buildServerConfig, XRAY_KEYS, isXray, usesXray, realityOn, xrayPorts, buildXrayConfig, acmeCertFiles, xhttpPath, netsOf, serverPorts, checkPortConflicts, resolveForwardTarget, landingOutbound, pickFreePort, rotateServer, ensureProtocols, ssUserKey, pickPreferredPort, usesAcme, tlsSniFor, WARP_SITES,
   // 内部共用（订阅模块要用）
   SS_METHOD,
 };

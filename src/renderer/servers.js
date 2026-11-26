@@ -13,7 +13,7 @@ async function viewServers(v) {
   v.append(h('div', { class: 'toolbar' }, h('div', {}, h('h1', {}, '服务器'), h('p', { class: 'sub' }, '通过 SSH 安装 sing-box 和 agent，一键部署 9 种协议（XHTTP 两种由 Xray 提供）')), h('div', { class: 'spacer' }),
     h('button', { onclick: (e) => busy(e.currentTarget, syncAll) }, '同步全部'),
     h('button', { class: 'primary', onclick: () => editServer() }, '+ 添加服务器')));
-  if (!S.servers.length) { v.append(h('div', { class: 'card empty' }, '还没有服务器，点右上角添加')); return; }
+  if (!S.servers.length) { v.append(emptyState('还没有服务器', '填 VPS 的 IP 和 SSH 密码，NodeDeck 会一键装好代理内核和 agent，生成节点和订阅。', h('button', { class: 'primary', onclick: () => editServer() }, '+ 添加服务器'))); return; }
   for (const id of [...serverSel]) if (!S.servers.some((x) => x.id === id)) serverSel.delete(id);
   const n = serverSel.size;
   if (n) v.append(h('div', { class: 'toolbar', style: { marginBottom: '8px' } }, h('div', { class: 'spacer' }), h('span', { class: 'muted' }, `已选 ${n} 台`),
@@ -585,11 +585,11 @@ function vpsExpireTag(s) {
 function fmtRate(b) { return fmtBytes(b >= 1024 ? b : Math.round(b)).replace(/ (\w+)$/, ' $1/s'); }
 function fmtDur(sec) { const d = Math.floor(sec / 86400), hh = Math.floor((sec % 86400) / 3600); return d ? `${d} 天 ${hh} 小时` : `${hh} 小时 ${Math.floor((sec % 3600) / 60)} 分`; }
 const CHART_COLORS = ['var(--chart-1)', 'var(--chart-2)', 'var(--chart-3)', 'var(--chart-4)'];
-function lineChart(title, series, { unit = '', fmt = (v) => v.toFixed(1) + unit, max, empty } = {}) {
+function lineChart(title, series, { unit = '', fmt = (v) => v.toFixed(1) + unit, max, empty, note } = {}) {
   // series: [{ name, points: [[t, v]] }]
   const W = 390, H = 150, L = 62, R = 8, T = 10, B = 22;
   const all = series.flatMap((x) => x.points);
-  const box = h('div', { class: 'card chart' }, h('div', { class: 'chart-head' }, h('b', {}, title), h('span', { class: 'legend' }, series.map((x, i) => h('span', {}, h('i', { style: { background: CHART_COLORS[i] } }), x.name, x.points.length ? ' ' + fmt(x.points[x.points.length - 1][1]) : '')))));
+  const box = h('div', { class: 'card chart' }, h('div', { class: 'chart-head' }, h('b', {}, title), h('span', { class: 'legend', title: '图例里是这段时间的平均值' }, series.map((x, i) => h('span', {}, h('i', { style: { background: CHART_COLORS[i] } }), x.name, x.points.length ? ' 均 ' + fmt(x.points.reduce((a, p) => a + p[1], 0) / x.points.length) : '')))));
   if (Math.max(0, ...series.map((x) => x.points.length)) < 2) { box.append(h('div', { class: 'muted', style: { padding: '30px 0', textAlign: 'center' } }, empty || '数据还不够，agent 每分钟采集一次，过一会儿再看')); return box; }
   const t0 = Math.min(...all.map((p) => p[0])), t1 = Math.max(...all.map((p) => p[0]));
   const vmax = max || Math.max(1e-9, ...all.map((p) => p[1])) * 1.1;
@@ -616,13 +616,13 @@ function lineChart(title, series, { unit = '', fmt = (v) => v.toFixed(1) + unit,
     svg += `<path d="${d}" fill="none" style="stroke:${CHART_COLORS[i]}" stroke-width="1.8" stroke-linejoin="round"/>`;
   });
   svg += '</svg>';
-  box.append(h('div', { html: svg }));
+  box.append(h('div', { html: svg }), note ? h('div', { class: 'muted chart-note' }, note) : '');
   return box;
 }
 function esc(t) { return String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
 function gauge(label, pct, text) {
   const cls = pct >= 90 ? 'full' : '';
-  return h('div', { class: 'card stat' }, h('div', { class: 'n', style: { fontSize: '20px' } }, text), h('div', { class: 'l' }, label), pct >= 0 ? h('div', { class: 'progress' }, h('i', { class: cls, style: { width: Math.min(100, pct) + '%' } })) : null);
+  return h('div', { class: 'card stat' }, h('div', { class: 'n', style: { fontSize: String(text).length > 16 ? '16px' : '20px', whiteSpace: 'nowrap' } }, text), h('div', { class: 'l' }, label), pct >= 0 ? h('div', { class: 'progress' }, h('i', { class: cls, style: { width: Math.min(100, pct) + '%' } })) : null);
 }
 function showMonitor(s) {
   let range = '24h';
@@ -634,23 +634,30 @@ function showMonitor(s) {
     try { m = await api.call('server:metrics', s.id, range); } catch (e) { body.innerHTML = ''; body.append(h('p', {}, h('span', { class: 'tag bad' }, '读取失败'), ' ', e.message, h('div', { class: 'muted' }, '监控需要 0.5.0 以上的 agent，先点「同步」升级。'))); return; }
     body.innerHTML = '';
     const n = m.now || {};
+    const live = m.live || n; // 新版 agent 打开时现测 1 秒；老版用最近一分钟的平均
     const dpct = m.diskTotal ? (m.diskUsed / m.diskTotal) * 100 : -1;
     const expDays = s.vpsExpireAt ? Math.ceil((s.vpsExpireAt - Date.now()) / 86400000) : null;
+    const since = m.month?.since ? new Date(m.month.since * 1000) : null;
+    const series = m.series || [];
+    const steal = Math.max(0, ...series.map((x) => x.steal || 0));
     body.append(
       h('div', { class: 'tabs' }, [['1h', '1 小时'], ['24h', '24 小时'], ['7d', '7 天'], ['30d', '30 天']].map(([k, l]) => h('a', { class: range === k ? 'active' : '', onclick: () => { range = k; load(); } }, l))),
       h('div', { class: 'grid g4' },
-        gauge(`CPU（${m.cores || '?'} 核）`, n.cpu ?? -1, n.cpu != null ? n.cpu.toFixed(1) + '%' : '—'),
-        gauge('内存', n.mem ?? -1, n.mem != null ? n.mem.toFixed(1) + '%' : '—'),
+        gauge(`CPU（${m.cores || '?'} 核）${m.live ? ' · 实时' : ''}${live.steal >= 3 ? ` · 宿主机占用 ${live.steal.toFixed(0)}%` : ''}`, live.cpu ?? -1, live.cpu != null ? live.cpu.toFixed(1) + '%' : '—'),
+        gauge('内存', live.mem ?? -1, live.mem != null ? live.mem.toFixed(1) + '%' : '—'),
         gauge('硬盘', dpct, m.diskTotal ? `${fmtBytes(m.diskUsed)} / ${fmtBytes(m.diskTotal)}` : '—'),
-        gauge('本月流量（' + (m.month?.month || '') + '）', -1, `↑${fmtBytes(m.month?.tx)} ↓${fmtBytes(m.month?.rx)}`)),
-      h('p', { class: 'muted', style: { margin: '8px 0' } }, `已运行 ${fmtDur(m.uptime || 0)} · 负载 ${n.load != null ? n.load.toFixed(2) : '—'} · 网速 ↑${fmtRate(n.tx || 0)} ↓${fmtRate(n.rx || 0)}`,
+        gauge(`本月网卡流量（${since ? `${since.getMonth() + 1} 月 ${since.getDate()} 日起` : m.month?.month || ''}）`, -1, `↑${fmtBytes(m.month?.tx)} ↓${fmtBytes(m.month?.rx)}`)),
+      h('p', { class: 'muted', style: { margin: '8px 0' } }, `已运行 ${fmtDur(m.uptime || 0)} · 负载 ${live.load != null ? live.load.toFixed(2) : '—'} · 网卡${m.live ? '实时' : ''} ↑${fmtRate(live.tx || 0)} ↓${fmtRate(live.rx || 0)}${n.conn ? ` · ${n.conn} 个 TCP 连接` : ''}`,
         expDays != null ? [' · ', h('span', { class: expDays <= 7 ? 'tag warn' : '' }, expDays < 0 ? 'VPS 已过期' : `VPS 还有 ${expDays} 天到期`)] : ' · 没填 VPS 到期日（编辑服务器里可以填）'));
-    const pts = (k) => (m.series || []).map((x) => [x.t, x[k] || 0]);
-    const latKeys = [...new Set((m.series || []).flatMap((x) => Object.keys(x.lat || {})))];
+    const pts = (k) => series.map((x) => [x.t, x[k] || 0]);
+    const latKeys = [...new Set(series.flatMap((x) => Object.keys(x.lat || {})))];
+    const hasProxy = series.some((x) => 'pdown' in x);
     body.append(h('div', { class: 'grid g2' },
-      lineChart('CPU / 内存', [{ name: 'CPU', points: pts('cpu') }, { name: '内存', points: pts('mem') }], { unit: '%', max: 100, fmt: (v) => v.toFixed(0) + '%' }),
-      lineChart('网速', [{ name: '上行', points: pts('tx') }, { name: '下行', points: pts('rx') }], { fmt: (v) => fmtRate(v) }),
-      lineChart('三网延迟（TCP）', latKeys.map((k) => ({ name: k, points: (m.series || []).filter((x) => x.lat && x.lat[k] > 0).map((x) => [x.t, x.lat[k]]) })), { fmt: (v) => v.toFixed(0) + 'ms', empty: S.settings.latencyProbe ? '暂无数据（VPS 连不上国内测速点，或刚开始采集）' : '后台记录三网延迟没开（设置 → 巡检与告警），可以在「网络优化 → 质量」里手动测' }),
+      lineChart('CPU / 内存', [{ name: 'CPU', points: pts('cpu') }, { name: '内存', points: pts('mem') }, ...(steal >= 3 ? [{ name: '宿主机占用', points: pts('steal') }] : [])], { unit: '%', max: 100, fmt: (v) => v.toFixed(0) + '%', note: steal >= 5 ? '「宿主机占用」（steal）持续偏高说明这台 VPS 所在的宿主机比较挤（超售），CPU 实际可用的会变少' : null }),
+      lineChart('代理流量（所有用户合计）', [{ name: '用户下载', points: series.filter((x) => 'pdown' in x).map((x) => [x.t, x.pdown]) }, { name: '用户上传', points: series.filter((x) => 'pup' in x).map((x) => [x.t, x.pup]) }], { fmt: (v) => fmtRate(v), empty: hasProxy ? null : '新版 agent 才有（点「同步」升级后开始采集）' }),
+      lineChart('网卡速率', [{ name: '发送', points: pts('tx') }, { name: '接收', points: pts('rx') }], { fmt: (v) => fmtRate(v), note: '代理是转发：从网站收进来多少，就发给用户多少，所以发送和接收通常差不多' }),
+      lineChart('三网延迟（ping）', latKeys.map((k) => ({ name: k, points: series.filter((x) => x.lat && x.lat[k] > 0).map((x) => [x.t, x.lat[k]]) })), { fmt: (v) => v.toFixed(0) + 'ms', empty: S.settings.latencyProbe ? '暂无数据（VPS 连不上国内测速点，或刚开始采集）' : '后台记录三网延迟没开（设置 → 巡检与告警），可以在「网络优化 → 质量」里手动测' }),
+      lineChart('TCP 重传率', [{ name: '重传', points: pts('retr') }], { fmt: (v) => v.toFixed(2) + '%', note: '发出去的数据有多少要重发，能看出线路丢包；不含连不上目标时的 SYN 重发。长期高于 2% 说明线路有丢包' }),
       lineChart('负载', [{ name: '1 分钟', points: pts('load') }], { fmt: (v) => v.toFixed(2) })));
   };
   modal({ title: `监控 · ${s.name}`, wide: true, body, buttons: [{ label: '刷新', close: false, onClick: load }, { label: '关闭' }] });
