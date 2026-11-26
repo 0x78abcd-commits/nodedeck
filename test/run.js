@@ -21,7 +21,7 @@ execFileSync('openssl', ['req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramg
 
 function check(name, cfg) {
   const f = path.join(os.tmpdir(), `nd-test-${name.replace(/[^\w.-]/g, '_')}.json`);
-  fs.writeFileSync(f, JSON.stringify(cfg, null, 2).replaceAll('/etc/nodedeck/cert.pem', path.join(certDir, 'cert.pem')).replaceAll('/etc/nodedeck/key.pem', path.join(certDir, 'key.pem')));
+  fs.writeFileSync(f, JSON.stringify(cfg, null, 2).replaceAll('/etc/nodedeck/cert.pem', path.join(certDir, 'cert.pem')).replaceAll('/etc/nodedeck/key.pem', path.join(certDir, 'key.pem')).replaceAll(core.XRAY_ACCESS_LOG, path.join(os.tmpdir(), 'nd-xray-access.log')));
   try { execFileSync(SB, ['check', '-c', f], { stdio: 'pipe' }); console.log('OK  ', name); }
   catch (e) { console.log('FAIL', name, String(e.stderr || e.message)); process.exitCode = 1; }
 }
@@ -177,7 +177,7 @@ console.log('agent users', JSON.stringify(core.buildAgentUsers(state, node)));
   cfg.log = { level: 'warn', timestamp: true }; // 服务器上写连接日志文件，这里要看输出里有没有错误
   if (cfg.experimental.v2ray_api) cfg.experimental.v2ray_api.listen = '127.0.0.1:48085';
   const f = path.join(dir, 'run.json');
-  fs.writeFileSync(f, JSON.stringify(cfg, null, 2).replaceAll('/etc/nodedeck/cert.pem', path.join(certDir, 'cert.pem')).replaceAll('/etc/nodedeck/key.pem', path.join(certDir, 'key.pem')));
+  fs.writeFileSync(f, JSON.stringify(cfg, null, 2).replaceAll('/etc/nodedeck/cert.pem', path.join(certDir, 'cert.pem')).replaceAll('/etc/nodedeck/key.pem', path.join(certDir, 'key.pem')).replaceAll(core.XRAY_ACCESS_LOG, path.join(os.tmpdir(), 'nd-xray-access.log')));
   const p = spawn(SB, ['run', '-c', f], { stdio: ['ignore', 'pipe', 'pipe'] });
   let out = '';
   p.stdout.on('data', (d) => { out += d; }); p.stderr.on('data', (d) => { out += d; });
@@ -235,7 +235,7 @@ console.log('agent users', JSON.stringify(core.buildAgentUsers(state, node)));
   if (XR) {
     const xcheck = (name, cfg) => {
       const f = path.join(os.tmpdir(), `nd-xray-${name}.json`);
-      fs.writeFileSync(f, JSON.stringify(cfg, null, 2).replaceAll('/etc/nodedeck/cert.pem', path.join(certDir, 'cert.pem')).replaceAll('/etc/nodedeck/key.pem', path.join(certDir, 'key.pem')));
+      fs.writeFileSync(f, JSON.stringify(cfg, null, 2).replaceAll('/etc/nodedeck/cert.pem', path.join(certDir, 'cert.pem')).replaceAll('/etc/nodedeck/key.pem', path.join(certDir, 'key.pem')).replaceAll(core.XRAY_ACCESS_LOG, path.join(os.tmpdir(), 'nd-xray-access.log')));
       try { execFileSync(XR, ['run', '-test', '-c', f], { stdio: 'pipe' }); console.log('OK  ', name); }
       catch (e) { fail(name + ' ' + String(e.stdout || '') + String(e.stderr || e.message)); }
     };
