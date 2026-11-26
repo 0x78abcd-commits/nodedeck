@@ -31,6 +31,7 @@ const NAV_ICONS = {
   nodes: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="18" r="2.2"/><circle cx="18" cy="6" r="2.2"/><circle cx="18" cy="18" r="2.2"/><path d="M7.8 16.6 16.2 7.4M8.2 18h7.6"/></svg>',
   users: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8.5" r="3.2"/><path d="M3.5 19.5c.6-3.2 2.8-5 5.5-5s4.9 1.8 5.5 5"/><path d="M15.5 5.6a3 3 0 0 1 0 5.8M17.5 14.8c1.6.6 2.6 2.2 3 4.7"/></svg>',
   landings: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-6.5-5.6-6.5-11a6.5 6.5 0 0 1 13 0c0 5.4-6.5 11-6.5 11Z"/><circle cx="12" cy="10" r="2.4"/></svg>',
+  relays: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="6" r="2"/><circle cx="19" cy="12" r="2"/><path d="M6.6 10.7 10.4 7.3M13.6 7.3l3.8 3.4"/></svg>',
   forwards: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h13l-3.5-3.5M20 16H7l3.5 3.5"/></svg>',
   stock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8.5a6 6 0 0 1 12 0c0 6 2.5 7.5 2.5 7.5h-17S6 14.5 6 8.5"/><path d="M10.3 19.5a2 2 0 0 0 3.4 0"/></svg>',
   tools: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 6.5a4 4 0 0 0 5 5L13 18a2.1 2.1 0 0 1-3-3l6.5-6.5"/><path d="M5 19l3-3M4 5l5 5"/></svg>',
@@ -42,6 +43,7 @@ const PAGES = [
   ['nodes', NAV_ICONS.nodes, '节点'],
   ['users', NAV_ICONS.users, '用户'],
   ['landings', NAV_ICONS.landings, '落地'],
+  ['relays', NAV_ICONS.relays, '中转'],
   ['forwards', NAV_ICONS.forwards, '端口转发'],
   ['stock', NAV_ICONS.stock, '补货提醒'],
   ['tools', NAV_ICONS.tools, '工具箱'],
@@ -221,7 +223,7 @@ async function viewDash(v) {
         h('li', {}, '在「节点」里复制链接或扫码，点「测试」看延迟和出口 IP'),
         h('li', {}, '在「用户」里创建用户，设置流量和到期时间，把订阅地址发给对方'),
         h('li', {}, '需要住宅 IP 出口：在「落地」添加，再在服务器设置里选出口'),
-        h('li', {}, '节点被墙：一键换新，或在「端口转发」用另一台 VPS 转发')),
+        h('li', {}, '节点被墙：一键换新，或在「中转」里用另一台 VPS 转发')),
       h('button', { class: 'primary', onclick: () => editServer() }, '添加第一台服务器')));
   } else {
     const box = h('div', { class: 'lines' }, h('div', { class: 'lines-head' }, h('h3', {}, '线路'), h('div', { class: 'spacer' }), h('a', { href: '#', onclick: (e) => { e.preventDefault(); go('servers'); } }, '管理服务器')));

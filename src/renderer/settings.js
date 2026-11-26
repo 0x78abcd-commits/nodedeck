@@ -245,7 +245,7 @@ async function viewSettings(v) {
   v.append(h('h1', {}, '设置'), h('p', { class: 'sub' }, '改完点各页下面的「保存」；涉及 VPS 的设置要再点「同步全部」才生效。'), tabs, pane);
 }
 
-const VIEWS = { dash: viewDash, servers: viewServers, nodes: viewNodes, users: viewUsers, landings: viewLandings, forwards: viewForwards, tools: viewTools, stock: viewStock, settings: viewSettings };
+const VIEWS = { dash: viewDash, servers: viewServers, nodes: viewNodes, users: viewUsers, landings: viewLandings, relays: viewRelays, forwards: viewForwards, tools: viewTools, stock: viewStock, settings: viewSettings };
 
 (async function init() {
   info = await api.call('app:info');

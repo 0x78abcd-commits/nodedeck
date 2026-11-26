@@ -153,55 +153,69 @@ async function syncRelay(relayId, what) {
   try { await api.call('server:sync', relayId); toast(what + '，已同步到 ' + relay.name, 'ok'); } catch (e) { markDirty(); toast(what + '，但同步失败：' + e.message + '\n稍后点「同步全部」', 'err'); }
 }
 
-async function viewForwards(v) {
+// 中转和端口转发共用一张表：中转 = 目标是节点（订阅里自动多一条经中转的线路）；端口转发 = 目标是任意地址
+async function viewRelays(v) { return fwdPage(v, 'node'); }
+async function viewForwards(v) { return fwdPage(v, 'custom'); }
+
+async function fwdPage(v, mode) {
   await reload();
+  const isRelay = mode === 'node';
+  const all = S.forwards.filter((f) => (f.target?.type === 'node') === isRelay);
   const refreshBtn = h('button', {}, '刷新状态');
-  v.append(h('div', { class: 'toolbar' }, h('div', {}, h('h1', {}, '端口转发'), h('p', { class: 'sub' }, '在中转机上把端口转到节点或任意地址，TCP 和 UDP 都能转。目标是节点时，用户订阅里会自动多一条经中转的线路（节点 IP 被墙也能用）。')), h('div', { class: 'spacer' }),
-    S.forwards.length ? refreshBtn : null,
-    h('button', { onclick: () => batchForwards() }, '批量添加'),
-    h('button', { class: 'primary', onclick: () => editForward() }, '+ 添加转发')));
-  if (!S.forwards.length) { v.append(emptyState('还没有转发规则', '节点 IP 被墙、国内直连太慢，或者想把某个端口转到别的机器时，在一台中转 VPS 上开个端口转过去。', h('button', { class: 'primary', onclick: () => editForward() }, '+ 添加转发'), h('button', { onclick: () => batchForwards() }, '批量添加'))); return; }
-  const cells = {}; // 规则 id → 要等状态回来再填的格子
+  const addBtn = () => h('button', { class: 'primary', onclick: () => (isRelay ? addRelays() : editForward(null, false, null, 'custom')) }, isRelay ? '+ 添加中转' : '+ 添加转发');
+  v.append(h('div', { class: 'toolbar' }, h('div', {},
+    h('h1', {}, isRelay ? '中转' : '端口转发'),
+    h('p', { class: 'sub' }, isRelay
+      ? '用一台国内直连好的 VPS 转发到节点：节点 IP 被墙、或者直连太慢时用。用户订阅里自动多一条「经中转」的线路，和直连线路并存。'
+      : '在一台 VPS 上开个端口，把 TCP / UDP 转到任意地址（别的机器、内网服务、游戏服等）。不会加进订阅。')), h('div', { class: 'spacer' }),
+    all.length ? refreshBtn : null,
+    isRelay ? null : h('button', { onclick: () => batchForwards() }, '批量添加'),
+    addBtn()));
+  if (!all.length) {
+    v.append(isRelay
+      ? emptyState('还没有中转', '选一台中转机和要中转的节点，一次可以勾好几个协议，入口端口自动分配。', addBtn())
+      : emptyState('还没有端口转发', '比如把这台 VPS 的 30001 端口转到另一台机器的 22 端口。可以填多个目标做主备或轮询，也能限制只让某些 IP 连。', addBtn(), h('button', { onclick: () => batchForwards() }, '批量添加')));
+    return;
+  }
+  const cells = {};
   const relayErr = {};
   const byRelay = new Map();
-  for (const f of S.forwards) { if (!byRelay.has(f.relayServerId)) byRelay.set(f.relayServerId, []); byRelay.get(f.relayServerId).push(f); }
+  for (const f of all) { if (!byRelay.has(f.relayServerId)) byRelay.set(f.relayServerId, []); byRelay.get(f.relayServerId).push(f); }
   for (const [rid, list] of byRelay) {
     const relay = S.servers.find((s) => s.id === rid);
     const tb = h('tbody');
-    for (const f of list.sort((a, b) => a.listenPort - b.listenPort)) {
+    for (const f of list.sort((a, b) => (isRelay ? serverName(a.target.serverId).localeCompare(serverName(b.target.serverId)) || 0 : 0) || a.listenPort - b.listenPort)) {
       const targets = fwdTargetsOf(f);
       const c = { traffic: h('td', { class: 'nowrap muted' }, '—'), conns: h('td', { class: 'nowrap muted' }, '—'), targets: h('div', { class: 'fw-targets' }) };
       cells[f.id] = { f, ...c, list: targets };
-      const isNode = f.target?.type === 'node';
       const off = f.enabled === false;
       const entry = `${relay?.host || '?'}:${f.listenPort}`;
+      const first = isRelay
+        ? h('td', {}, h('b', {}, serverName(f.target.serverId)), h('div', { class: 'muted fw-sub' }, PROTO_LABEL[f.target.protocol] || f.target.protocol, f.name ? ` · ${f.name}` : ''))
+        : h('td', {}, h('b', {}, f.name || '未命名'), (f.allow || []).length ? h('div', { class: 'fw-sub' }, h('span', { class: 'tag', title: f.allow.join('\n') }, `只允许 ${f.allow.length} 个来源`)) : null);
       tb.append(h('tr', { class: off ? 'fw-off' : '' },
-        h('td', {}, h('b', {}, f.name || (isNode ? `${serverName(f.target.serverId)} ${PROTO_LABEL[f.target.protocol] || ''}` : '转发')), isNode ? h('div', { class: 'muted fw-sub' }, '节点 · 用户订阅里有这条线路') : null),
+        first,
         h('td', { class: 'nowrap' }, h('span', { class: 'mono fw-port', title: '点击复制 ' + entry, onclick: () => copy(entry) }, ':' + f.listenPort), ' ', h('span', { class: 'tag' }, FWD_NET[fwdNet(f)] || 'TCP+UDP')),
-        h('td', {}, c.targets,
-          h('div', { class: 'fw-meta' },
-            isNode ? h('span', { class: 'muted' }, `→ ${serverName(f.target.serverId)} / ${PROTO_LABEL[f.target.protocol] || f.target.protocol}`) : null,
-            targets.length > 1 ? h('span', { class: 'tag blue' }, f.strategy === 'roundrobin' ? '轮询' : '主备') : null,
-            (f.allow || []).length ? h('span', { class: 'tag', title: f.allow.join('\n') }, `只允许 ${f.allow.length} 个来源`) : null)),
+        h('td', {}, c.targets, !isRelay && targets.length > 1 ? h('div', { class: 'fw-meta' }, h('span', { class: 'tag blue' }, f.strategy === 'roundrobin' ? '轮询' : '主备')) : null),
         c.traffic, c.conns,
         h('td', {}, h('button', { class: 'small fw-toggle ' + (off ? '' : 'on'), title: off ? '点击启用' : '点击停用', onclick: (ev) => busy(ev.currentTarget, async () => { await api.call('col:upsert', 'forwards', { ...f, enabled: off }); await syncRelay(rid, off ? '已启用' : '已停用'); render(); }) }, off ? '已停用' : '运行中')),
         h('td', { class: 'nowrap' }, h('div', { class: 'actions nowrap' },
-          h('button', { class: 'small', onclick: () => editForward(f) }, '编辑'),
+          h('button', { class: 'small', onclick: () => editForward(f, false, null, mode) }, '编辑'),
           h('button', { class: 'small', onclick: (ev) => { const b = ev.currentTarget; menu(b, [
             { label: '复制入口地址', onClick: () => copy(entry) },
-            { label: '复制一条一样的', onClick: () => editForward({ ...f, id: undefined, name: (f.name || '') + ' 副本', listenPort: 30000 + Math.floor(Math.random() * 20000) }, true) },
-            { label: '流量清零', onClick: async () => { if (await confirmBox(`把「${f.name || entry}」的流量统计清零？`)) { await api.call('fwd:reset', f.id); toast('已清零', 'ok'); loadStatus(); } } },
+            isRelay ? null : { label: '复制一条一样的', onClick: () => editForward({ ...f, id: undefined, name: (f.name || '') + ' 副本', listenPort: 30000 + Math.floor(Math.random() * 20000) }, true, null, mode) },
+            { label: '流量清零', onClick: async () => { if (await confirmBox(`把 ${entry} 的流量统计清零？`)) { await api.call('fwd:reset', f.id); toast('已清零', 'ok'); loadStatus(); } } },
             { sep: true },
-            { label: '删除', danger: true, onClick: async () => { if (await confirmBox(`删除转发 ${entry}？${isNode ? '\n\n用户订阅里经这台中转的线路也会去掉。' : ''}`, '删除')) { await api.call('col:remove', 'forwards', f.id); await syncRelay(rid, '已删除'); render(); } } },
+            { label: '删除', danger: true, onClick: async () => { if (await confirmBox(`删除 ${entry}？${isRelay ? '\n\n用户订阅里经这台中转的这条线路也会去掉，节点本身不受影响。' : ''}`, '删除')) { await api.call('col:remove', 'forwards', f.id); await syncRelay(rid, '已删除'); render(); } } },
           ]); } }, '更多 ▾')))));
     }
     relayErr[rid] = h('span', { class: 'muted' });
     v.append(h('div', { class: 'card' },
-      h('div', { class: 'toolbar' }, h('h3', { style: { margin: 0 } }, relay?.name || '（中转机已删除）'), h('span', { class: 'muted mono' }, relay?.host || ''), relay && !relay.deployedAt ? h('span', { class: 'tag warn' }, '未部署') : null, h('span', { class: 'muted' }, `${list.length} 条`), relayErr[rid], h('div', { class: 'spacer' }),
-        h('button', { class: 'small', onclick: () => editForward(null, false, rid) }, '+ 在这台添加')),
-      h('table', {}, h('thead', {}, h('tr', {}, ['名称', '入口端口', '目标', '流量 ↑ / ↓', '连接', '状态', ''].map((t) => h('th', {}, t)))), tb)));
+      h('div', { class: 'toolbar' }, h('span', { class: 'muted' }, isRelay ? '中转机' : '在'), h('h3', { style: { margin: 0 } }, relay?.name || '（服务器已删除）'), h('span', { class: 'muted mono' }, relay?.host || ''), relay && !relay.deployedAt ? h('span', { class: 'tag warn' }, '未部署') : null, h('span', { class: 'muted' }, `${list.length} 条`), relayErr[rid], h('div', { class: 'spacer' }),
+        h('button', { class: 'small', onclick: () => (isRelay ? addRelays(rid) : editForward(null, false, rid, 'custom')) }, '+ 在这台添加')),
+      h('table', { class: 'fw-table' }, h('thead', {}, h('tr', {}, [isRelay ? '节点' : '名称', '入口端口', isRelay ? '中转机 → 节点' : '目标', '流量 ↑ / ↓', '连接', '状态', ''].map((t) => h('th', {}, t)))), tb)));
   }
-  v.append(h('p', { class: 'muted', style: { fontSize: '12px' } }, '目标前面的圆点：绿 = 中转机连得上（后面是中转机到目标的延迟），红 = 连不上，灰 = 还没探测（只转 UDP 的不探测）。中转机每 30 秒探测一次；有多个目标时，连不上的会被跳过。'));
+  v.append(h('p', { class: 'muted', style: { fontSize: '12px' } }, '圆点：绿 = 中转机连得上目标（后面是中转机到目标的延迟），红 = 连不上，灰 = 还没探测（只转 UDP 的不探测）。中转机每 30 秒探测一次。'));
 
   function fill(st) {
     for (const [id, c] of Object.entries(cells)) {
@@ -229,10 +243,57 @@ async function viewForwards(v) {
   loadStatus();
 }
 
-function editForward(orig, copyOf = false, relayPreset) {
+// 添加中转：选中转机和节点服务器，可以一次勾好几个协议，入口端口自动分配（尽量和节点端口一样）
+function addRelays(relayPreset) {
+  if (S.servers.length < 2) { toast('至少要有两台服务器：一台当中转，一台当节点', 'err'); return; }
+  const relay = h('select', {}, S.servers.map((s) => h('option', { value: s.id }, `${s.name} (${s.host})`)));
+  relay.value = relayPreset || (S.servers.find((s) => s.role === 'relay') || S.servers[0]).id;
+  const tsrv = h('select', {});
+  const protoBox = h('div', { class: 'fw-protos' });
+  const samePort = h('input', { type: 'checkbox', checked: true });
+  const fillT = () => {
+    const cur = tsrv.value;
+    tsrv.replaceChildren(...S.servers.filter((s) => s.id !== relay.value).map((s) => h('option', { value: s.id }, s.name)));
+    if (cur && [...tsrv.options].some((o) => o.value === cur)) tsrv.value = cur;
+    fillP();
+  };
+  const fillP = () => {
+    const s = S.servers.find((x) => x.id === tsrv.value);
+    const have = new Set(S.forwards.filter((f) => f.relayServerId === relay.value && f.target?.serverId === tsrv.value).map((f) => f.target.protocol));
+    protoBox.replaceChildren(...PROTOS.filter(([k]) => s?.protocols?.[k]?.enabled).map(([k, l]) => {
+      const cb = h('input', { type: 'checkbox', value: k, checked: !have.has(k), disabled: have.has(k) });
+      return h('label', { class: 'fw-proto' + (have.has(k) ? ' muted' : '') }, cb, ` ${l}`, h('span', { class: 'muted mono' }, ` :${s.protocols[k].port}`), have.has(k) ? h('span', { class: 'muted' }, '（已有中转）') : null);
+    }));
+    if (!protoBox.children.length) protoBox.append(h('span', { class: 'muted' }, '这台没有启用的协议'));
+  };
+  relay.onchange = fillT; tsrv.onchange = fillP; fillT();
+  modal({ title: '添加中转', body: h('div', {},
+    h('div', { class: 'row' }, field('中转机', relay, '国内连得快的那台'), field('节点服务器', tsrv, '被墙或者直连慢的那台')),
+    field('要中转的协议', protoBox),
+    chk(samePort, '入口端口尽量和节点一样', '中转机上这个端口被占了就随机换一个')), buttons: [
+    { label: '取消' },
+    { label: '添加', class: 'primary', onClick: async () => {
+      const keys = [...protoBox.querySelectorAll('input:checked:not(:disabled)')].map((x) => x.value);
+      if (!keys.length) throw new Error('勾选至少一个协议');
+      const rs = S.servers.find((x) => x.id === relay.value);
+      const ts = S.servers.find((x) => x.id === tsrv.value);
+      const used = new Set([...S.forwards.filter((x) => x.relayServerId === rs.id).map((x) => Number(x.listenPort)), ...Object.values(rs.protocols || {}).filter((p) => p?.enabled).map((p) => Number(p.port)), Number(S.settings.subPort || 2096)]);
+      for (const k of keys) {
+        let port = samePort.checked ? Number(ts.protocols[k].port) : 0;
+        while (!port || used.has(port)) port = 30000 + Math.floor(Math.random() * 20000);
+        used.add(port);
+        await api.call('col:upsert', 'forwards', { id: 'f' + Math.random().toString(36).slice(2, 9), relayServerId: rs.id, listenPort: port, enabled: true, name: '', target: { type: 'node', serverId: ts.id, protocol: k }, allow: [] });
+      }
+      render();
+      syncRelay(rs.id, `已添加 ${keys.length} 条中转`);
+    } },
+  ] });
+}
+
+function editForward(orig, copyOf = false, relayPreset, mode) {
   if (!S.servers.length) { toast('请先添加服务器', 'err'); return; }
   const isNew = !orig || copyOf;
-  const f = orig ? JSON.parse(JSON.stringify(orig)) : { listenPort: 30000 + Math.floor(Math.random() * 20000), target: { type: 'node' }, enabled: true };
+  const f = orig ? JSON.parse(JSON.stringify(orig)) : { listenPort: 30000 + Math.floor(Math.random() * 20000), target: { type: mode || 'custom' }, enabled: true };
   if (isNew) f.id = 'f' + Math.random().toString(36).slice(2, 9);
   const name = h('input', { value: f.name || '', placeholder: '可选，例如：香港中转→美国' });
   const relay = h('select', {}, S.servers.map((s) => h('option', { value: s.id }, `${s.name} (${s.host})`)));
@@ -267,9 +328,9 @@ function editForward(orig, copyOf = false, relayPreset) {
   ttype.onchange = sw; sw();
   const adv = h('details', { class: 'fw-adv' }, h('summary', {}, '来源 IP 白名单（可选）'), field('只允许这些来源', allow, '比如只给自己家宽或某台机器用，别人扫到端口也连不上'));
   if ((f.allow || []).length) adv.open = true;
-  modal({ title: isNew ? '添加转发' : '编辑转发', body: h('div', {},
+  modal({ title: (f.target.type === 'node' ? (isNew ? '添加中转' : '编辑中转') : (isNew ? '添加转发' : '编辑转发')), body: h('div', {},
     h('div', { class: 'row' }, field('中转服务器', relay), field('入口端口', h('div', { class: 'row' }, lp, rnd))),
-    field('转到', ttype), nodeBox, customBox, field('名称', name), adv, chk(en, '启用')), buttons: [
+    mode ? null : field('转到', ttype), nodeBox, customBox, field(f.target.type === 'node' ? '备注（可选）' : '名称', name), f.target.type === 'node' ? null : adv, chk(en, '启用')), buttons: [
     { label: '取消' },
     { label: '保存', class: 'primary', onClick: async () => {
       f.name = name.value.trim(); f.relayServerId = relay.value; f.listenPort = Number(lp.value); f.enabled = en.checked;

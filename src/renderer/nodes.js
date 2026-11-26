@@ -88,7 +88,7 @@ async function viewNodes(v) {
         h('td', { class: 'nowrap' }, h('div', { class: 'actions nowrap' },
           h('button', { class: 'small', onclick: () => copy(e.link) }, '复制'),
           h('button', { class: 'small', onclick: () => showQr(e.label, e.link) }, '二维码'),
-          h('button', { class: 'small', title: '开一个经这个节点上网的浏览器窗口，看看网站能不能打开、显示的地区对不对', onclick: (ev) => busy(ev.currentTarget, () => api.call('node:browse', e)) }, '浏览器'),
+          h('button', { class: 'small', title: '开一个经这个节点上网的浏览器窗口，看看网站能不能打开、显示的地区对不对', onclick: (ev) => busy(ev.currentTarget, () => api.call('node:browse', e)) }, '用它上网'),
           h('button', { class: 'small', onclick: (ev) => { const b = ev.currentTarget; menu(b, [e.cf ? null : { label: '改名', onClick: () => renameEntry(e) }, { label: '编辑', onClick: () => editEntry(e) }, { sep: true }, { label: '删除', danger: true, onClick: () => removeEntry(e, b) }]); } }, '更多 ▾')))));
     }
     const latBtn = h('button', { class: 'small' }, '一键测延迟');
@@ -126,9 +126,9 @@ async function renameEntry(e) {
   } }] });
 }
 
-// 节点页的「编辑」：普通入口打开服务器编辑并定位到这个协议；经中转的入口去「端口转发」改
+// 节点页的「编辑」：普通入口打开服务器编辑并定位到这个协议；经中转的入口去「中转」改
 function editEntry(e) {
-  if (e.via) { go('forwards'); toast('经中转的入口在「端口转发」里修改'); return; }
+  if (e.via) { go('relays'); toast('经中转的入口在「中转」里修改'); return; }
   const s = S.servers.find((x) => x.id === e.serverId);
   if (!s) return;
   editServer(s, { focus: e.cf ? 'cf' : e.protocol });
@@ -142,7 +142,7 @@ async function removeEntry(e, btn) {
   let msg; let apply; let syncId = s.deployedAt ? s.id : null;
   if (e.via) {
     const f = (S.forwards || []).find((x) => x.relayServerId === e.via && Number(x.listenPort) === Number(e.port) && x.target?.serverId === s.id);
-    if (!f) { toast('没找到这条转发，去「端口转发」里看看', 'err'); return; }
+    if (!f) { toast('没找到这条转发，去「中转」里看看', 'err'); return; }
     const relay = S.servers.find((x) => x.id === e.via);
     msg = `删除经「${relay?.name || '中转'}」转发的 ${pname} 入口（${e.host}:${e.port}）？\n\n只删这条转发，${s.name} 上的 ${pname} 本身不受影响。`;
     apply = () => api.call('col:remove', 'forwards', f.id);

@@ -427,7 +427,7 @@ td.nowrap, .nowrap { white-space: nowrap; }
 .nt-table th:nth-child(2) { width: 84px; }
 .nt-table th:nth-child(3), .nt-table th:nth-child(4) { width: 96px; }
 .nt-table th:nth-child(5) { width: 128px; }
-.nt-table th:nth-child(7) { width: 268px; }
+.nt-table th:nth-child(7) { width: 284px; }
 .nt-name b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nt-sub { font-size: 12px; display: flex; gap: 6px; align-items: center; margin-top: 2px; }
 .nt-sub .tag { margin: 0; }
@@ -464,3 +464,9 @@ td.nowrap, .nowrap { white-space: nowrap; }
 .fw-toggle.on { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, var(--line)); }
 details.fw-adv { margin: 4px 0 12px; }
 details.fw-adv summary { cursor: pointer; color: var(--muted); font-size: 13px; margin-bottom: 8px; }
+.fw-protos { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 14px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-ctl); }
+.fw-proto { display: flex; align-items: center; gap: 4px; cursor: pointer; white-space: nowrap; }
+.fw-table th:nth-child(2) { width: 130px; }
+.fw-table th:nth-child(4) { width: 120px; }
+.fw-table th:nth-child(5) { width: 70px; }
+.fw-table th:nth-child(6) { width: 90px; }
