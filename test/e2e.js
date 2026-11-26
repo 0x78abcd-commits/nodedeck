@@ -145,28 +145,26 @@ function viaProxy(proxyPort, targetPort, ms = 10000) {
 
   // 4c. mihomo 客户端（Clash 订阅里的节点）
   if (MH) {
+    // 完整的 Clash 订阅（DNS、TUN、规则）要能被 mihomo 读进去；顺便把 GeoIP / GeoSite 数据下载到共用目录，后面的客户端不用再下
+    const home = path.join(dir, 'mh-home');
+    fs.mkdirSync(home);
+    fs.writeFileSync(path.join(dir, 'mh-full.yaml'), core.buildSubscription(state, owner).clash);
+    try { execFileSync(MH, ['-t', '-d', home, '-f', path.join(dir, 'mh-full.yaml')], { stdio: 'pipe', timeout: 180000 }); console.log('OK   mihomo   完整 Clash 订阅通过 mihomo -t 校验'); }
+    catch (e) { failed++; console.log('FAIL mihomo   完整 Clash 订阅校验不过：' + String(e.stdout || '') + String(e.stderr || e.message).slice(-600)); }
     for (const e of entries) {
       const px = core.clashProxy(state, e, owner);
       if (!px) continue;
       const port = await freePort();
-      const d = path.join(dir, `mh-${port}`);
-      fs.mkdirSync(d);
+      const cfgFile = path.join(dir, `mh-${port}.yaml`);
       const yaml = [`mixed-port: ${port}`, 'allow-lan: false', 'mode: rule', 'log-level: warning', 'ipv6: false', 'proxies:', '  - ' + JSON.stringify(px), 'rules:', `  - MATCH,${JSON.stringify(px.name)}`, ''].join('\n');
-      fs.writeFileSync(path.join(d, 'config.yaml'), yaml);
-      const p = run(MH, ['-d', d, '-f', path.join(d, 'config.yaml')], 'mihomo');
-      const up = await waitPort(port);
+      fs.writeFileSync(cfgFile, yaml);
+      const p = run(MH, ['-d', home, '-f', cfgFile], 'mihomo');
+      const up = await waitPort(port, 30000);
       let err = up ? await viaProxy(port, webPort) : 'mihomo 没起来：' + p.log.slice(-400);
       if (err && up) { await sleep(800); err = await viaProxy(port, webPort); }
       record('mihomo', e, err ? err + (p.log ? ' | ' + p.log.trim().split('\n').slice(-2).join(' | ').slice(0, 300) : '') : '');
       stop(p);
     }
-    // 完整的 Clash 订阅（DNS、TUN、规则）要能被 mihomo 读进去
-    const full = core.buildSubscription(state, owner).clash;
-    const d = path.join(dir, 'mh-full');
-    fs.mkdirSync(d);
-    fs.writeFileSync(path.join(d, 'config.yaml'), full);
-    try { execFileSync(MH, ['-t', '-d', d, '-f', path.join(d, 'config.yaml')], { stdio: 'pipe', timeout: 120000 }); console.log('OK   mihomo   完整 Clash 订阅通过 mihomo -t 校验'); }
-    catch (e) { failed++; console.log('FAIL mihomo   完整 Clash 订阅校验不过：' + String(e.stdout || '') + String(e.stderr || e.message).slice(-600)); }
   } else console.log('SKIP mihomo 客户端（没设 MIHOMO）');
 
   for (const p of procs) stop(p);
