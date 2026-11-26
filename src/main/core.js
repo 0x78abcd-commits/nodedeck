@@ -700,6 +700,31 @@ function userEntries(state, user) {
 
 function toYamlValue(v) { return JSON.stringify(v); }
 
+// 防 DNS 泄露：开 DNS 模块用 fake-ip，国外域名经节点用加密 DNS 查（respect-rules），国内域名用国内加密 DNS；
+// 规则先按域名分流，按 IP 分流时不在本地解析（no-resolve），这样本地运营商的 DNS 看不到你访问的国外网站。
+// TUN 段默认关，客户端里打开 TUN 后所有流量（包括浏览器 WebRTC 的 UDP）都走代理，防真实 IP 泄露。
+const CLASH_DNS = [
+  'dns:',
+  '  enable: true',
+  '  ipv6: false',
+  '  enhanced-mode: fake-ip',
+  '  fake-ip-range: 198.18.0.1/16',
+  '  fake-ip-filter: ' + JSON.stringify(['*.lan', '*.local', 'localhost', '+.msftconnecttest.com', '+.msftncsi.com', 'time.*.com', '+.ntp.org', '+.pool.ntp.org']),
+  '  respect-rules: true',
+  '  default-nameserver: ' + JSON.stringify(['223.5.5.5', '119.29.29.29']),
+  '  proxy-server-nameserver: ' + JSON.stringify(['https://223.5.5.5/dns-query', 'https://1.12.12.12/dns-query']),
+  '  nameserver: ' + JSON.stringify(['https://1.1.1.1/dns-query', 'https://8.8.8.8/dns-query']),
+  '  nameserver-policy:',
+  "    'geosite:cn,private': " + JSON.stringify(['https://223.5.5.5/dns-query', 'https://1.12.12.12/dns-query']),
+  'tun:',
+  '  enable: false',
+  '  stack: mixed',
+  '  auto-route: true',
+  '  auto-detect-interface: true',
+  '  strict-route: true',
+  '  dns-hijack: ' + JSON.stringify(['any:53', 'tcp://any:53']),
+];
+
 function clashYaml(proxies) {
   const names = proxies.map((p) => p.name);
   const lines = [
@@ -707,13 +732,19 @@ function clashYaml(proxies) {
     'allow-lan: false',
     'mode: rule',
     'log-level: info',
+    'ipv6: true',
+    'unified-delay: true',
+    ...CLASH_DNS,
     'proxies:',
     ...proxies.map((p) => '  - ' + toYamlValue(p)),
     'proxy-groups:',
     '  - ' + toYamlValue({ name: '节点选择', type: 'select', proxies: ['自动选择', ...names] }),
     '  - ' + toYamlValue({ name: '自动选择', type: 'url-test', url: 'https://www.gstatic.com/generate_204', interval: 300, proxies: names.length ? names : ['DIRECT'] }),
     'rules:',
-    '  - GEOIP,CN,DIRECT',
+    '  - GEOSITE,private,DIRECT',
+    '  - GEOSITE,cn,DIRECT',
+    '  - GEOIP,private,DIRECT,no-resolve',
+    '  - GEOIP,CN,DIRECT,no-resolve',
     '  - MATCH,节点选择',
     '',
   ];

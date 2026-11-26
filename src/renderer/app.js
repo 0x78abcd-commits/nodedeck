@@ -1612,6 +1612,22 @@ async function editUser(orig) {
   ] });
 }
 
+// 防 DNS / WebRTC 泄露说明（订阅信息页里也有一份给用户看）
+function leakGuide() {
+  const sec = (title, ...lines) => h('div', { style: { marginBottom: '12px' } }, h('b', {}, title), lines.map((l) => h('p', { class: 'muted', style: { margin: '4px 0 0' } }, l)));
+  modal({ title: '防止 DNS / 真实 IP 泄露', wide: true, body: h('div', {},
+    h('p', {}, 'DNS 泄露：本地运营商的 DNS 能看到你访问了哪些国外网站。WebRTC 泄露：浏览器用 UDP 直接问外部服务器「我的公网 IP」，只开系统代理时这个请求不走代理，网页就能拿到你的真实 IP。服务器这边管不了，要靠客户端设置；NodeDeck 生成的 sing-box 和 Clash 订阅已经配好了 DNS。'),
+    sec('最省事的办法', '客户端打开「TUN / VPN 模式」（v2rayNG、sing-box、Hiddify 默认就是）：所有流量包括浏览器的 WebRTC 和 DNS 都走代理。'),
+    sec('Clash Verge / FlClash / Clash Meta', '订阅里已配好：fake-ip，国外域名经节点用加密 DNS（1.1.1.1）查，国内域名用国内加密 DNS（223.5.5.5）查，按 IP 分流时不在本地解析。', '不要打开客户端的「DNS 覆写」（打开后以客户端的设置为准）。要防 WebRTC 就打开「虚拟网卡 / TUN 模式」。'),
+    sec('sing-box（SFA / SFI / SFM）', '订阅里已配好 TUN 和 DNS（国外经节点用 1.1.1.1，国内用 223.5.5.5），打开 VPN 即可。'),
+    sec('v2rayNG', '分享链接带不了 DNS 设置，要在客户端里配：设置里「远程 DNS」填 https://1.1.1.1/dns-query，「国内 DNS」填 223.5.5.5，打开「启用本地 DNS」；路由选「绕过局域网及大陆地址」。'),
+    sec('v2rayN', '系统代理模式下浏览器的 WebRTC 不走代理，要防就打开 TUN 模式。'),
+    sec('浏览器补一道', 'Chrome：装 uBlock Origin，在它的设置里勾「防止 WebRTC 泄露本地 IP 地址」。Firefox：about:config 里把 media.peerconnection.enabled 改成 false（网页视频通话会用不了）。'),
+    sec('自查', '连上节点后打开 ipleak.net：显示的 IP 和 DNS 服务器都应该在节点所在的国家，不应出现你本地运营商。'),
+    h('p', { class: 'muted', style: { fontSize: '12px' } }, '用户在浏览器里打开自己的订阅地址，也能看到这份说明（「防止 DNS / 真实 IP 泄露」一栏）。')),
+  buttons: [{ label: '打开 ipleak.net', onClick: () => api.call('open:external', 'https://ipleak.net/') }, { label: '关闭' }] });
+}
+
 async function showSub(u) {
   const r = await api.call('user:sub', u.id);
   const body = h('div', {});
@@ -1650,7 +1666,7 @@ async function showSub(u) {
     drawTemp();
   }
   body.append(h('h4', {}, `节点链接（${r.links.length}）`), h('textarea', { readonly: true, style: { minHeight: '120px' } }, r.links.join('\n')));
-  modal({ title: `${u.name} 的订阅`, wide: true, body, buttons: [{ label: '复制全部链接', onClick: () => copy(r.links.join('\n')) }, { label: '关闭' }] });
+  modal({ title: `${u.name} 的订阅`, wide: true, body, buttons: [{ label: '防泄露设置', close: false, onClick: () => leakGuide() }, { label: '复制全部链接', onClick: () => copy(r.links.join('\n')) }, { label: '关闭' }] });
 }
 
 // ---------- 落地 ----------
