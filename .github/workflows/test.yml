@@ -1,0 +1,45 @@
+name: 测试
+
+# 每次推送到 main、发版前都跑：agent 单元测试、配置检查（test/run.js）、
+# 真流量端到端测试（test/e2e.js：本机起全协议服务端，用 sing-box / Xray / mihomo 三种客户端逐个连）。
+on:
+  push:
+    branches: [main]
+    paths: ['src/main/**', 'agent/**', 'test/**', '.github/workflows/test.yml']
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: agent 单元测试
+        run: cd agent && go vet ./... && go test ./...
+      - name: 准备内核（本仓库发布的 sing-box / Xray，官方最新 mihomo）
+        run: |
+          mkdir -p /tmp/k
+          gh release download singbox -R "$GITHUB_REPOSITORY" -p nodedeck-sing-box-linux-amd64.gz -O /tmp/k/sb.gz
+          gh release download xray -R "$GITHUB_REPOSITORY" -p nodedeck-xray-linux-amd64.gz -O /tmp/k/xr.gz
+          gunzip -f /tmp/k/sb.gz /tmp/k/xr.gz && chmod +x /tmp/k/sb /tmp/k/xr
+          V=$(gh api repos/MetaCubeX/mihomo/releases/latest --jq .tag_name)
+          NAME=$(gh api repos/MetaCubeX/mihomo/releases/latest --jq '[.assets[].name | select(test("^mihomo-linux-amd64-(compatible-)?v[0-9.]+\\.gz$"))] | sort | .[0]')
+          echo "mihomo $V：$NAME"
+          gh release download "$V" -R MetaCubeX/mihomo -p "$NAME" -O /tmp/k/mh.gz
+          gunzip -f /tmp/k/mh.gz && chmod +x /tmp/k/mh
+          /tmp/k/sb version | head -1; /tmp/k/xr version | head -1; /tmp/k/mh -v
+      - name: 配置检查
+        run: SINGBOX=/tmp/k/sb XRAY=/tmp/k/xr node test/run.js
+      - name: 真流量端到端测试
+        run: SINGBOX=/tmp/k/sb XRAY=/tmp/k/xr MIHOMO=/tmp/k/mh node test/e2e.js

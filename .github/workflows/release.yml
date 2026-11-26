@@ -43,6 +43,10 @@ jobs:
           echo "发版提交：$SHA"
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
 
+  # 发版前把测试全跑一遍（包括三种客户端的真流量测试），不过就不发
+  test:
+    uses: ./.github/workflows/test.yml
+
   # 确保服务端 sing-box 内核已发布（已是最新则直接跳过）
   singbox:
     uses: ./.github/workflows/singbox.yml
@@ -76,7 +80,7 @@ jobs:
           path: out/*
 
   windows:
-    needs: [target, singbox, linux-binaries]
+    needs: [target, test, singbox, linux-binaries]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4

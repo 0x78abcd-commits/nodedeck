@@ -106,6 +106,8 @@ jobs:
           gunzip -c out/nodedeck-sing-box-linux-amd64.gz > /tmp/sb-new && chmod +x /tmp/sb-new
           /tmp/sb-new version
           SINGBOX=/tmp/sb-new node test/run.js
+          # 真流量：新内核当服务端，再用它当客户端逐个协议连一遍
+          SINGBOX=/tmp/sb-new node test/e2e.js
 
       - name: 发布
         if: steps.check.outputs.build == 'true'

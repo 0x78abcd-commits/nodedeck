@@ -93,6 +93,7 @@ jobs:
           gh release download singbox -p nodedeck-sing-box-linux-amd64.gz -O /tmp/sb.gz
           gunzip -c /tmp/sb.gz > /tmp/sb && chmod +x /tmp/sb
           SINGBOX=/tmp/sb XRAY=/tmp/xray-new node test/run.js
+          SINGBOX=/tmp/sb XRAY=/tmp/xray-new node test/e2e.js
 
       - name: 发布
         if: steps.check.outputs.build == 'true'
