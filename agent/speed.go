@@ -91,6 +91,12 @@ func (a *Agent) handleSpeed(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(res)
 	case "/nd-speed/ping":
 		w.Write([]byte("ok"))
+	case "/nd-speed/ip":
+		// 节点测试查出口 IP：请求经节点发到这台 VPS 自己，看到的来源就是节点的出口（走落地时是落地的 IP），不经第三方
+		host, _, _ := net.SplitHostPort(r.RemoteAddr)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		_ = json.NewEncoder(w).Encode(map[string]string{"ip": host})
 	default:
 		http.NotFound(w, r)
 	}

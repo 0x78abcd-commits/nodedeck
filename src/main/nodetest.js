@@ -80,7 +80,7 @@ async function speedVia(fetchVia, port, urls, secs = 8) {
 // fetchVia(proxyPort, url, timeoutMs) => Response，由主进程注入（使用 Electron 独立 session + 代理）
 // xrayPath 给了就用 Xray 跑（XHTTP 节点，outbound 是 Xray 格式），否则用 sing-box
 // want：要测哪几项（延迟 / 出口 IP / 速度），一次启动内核全部测完
-async function testOutbound({ singboxPath, xrayPath, outbound, fetchVia, want = { latency: true, exit: true }, speedUrls = [] }) {
+async function testOutbound({ singboxPath, xrayPath, outbound, fetchVia, want = { latency: true, exit: true }, speedUrls = [], exitUrl = '' }) {
   if (!outbound) return { ok: false, error: '这个协议不支持本地测试' };
   const port = await freePort();
   const cfgFile = path.join(os.tmpdir(), `nodedeck-test-${port}.json`);
@@ -105,10 +105,23 @@ async function testOutbound({ singboxPath, xrayPath, outbound, fetchVia, want = 
     result.latency = Math.min(...lat);
     result.ok = true;
     if (want.exit) {
-      try {
-        const r = await fetchVia(port, 'http://ip-api.com/json/?fields=query,country,countryCode,city,isp,as,hosting,proxy,mobile&lang=zh-CN', 8000);
-        result.ip = await r.json();
-      } catch (e) { result.ipError = e.message; }
+      // 出口 IP 由节点所在的 VPS 自己报（请求经节点发回这台 VPS，它看到的来源就是出口），不经第三方
+      if (exitUrl === 'ip-api') { // 落地（别人的代理）没有自己的 VPS 可问，只能查第三方
+        try {
+          const r = await fetchVia(port, 'http://ip-api.com/json/?fields=query,country,countryCode,city,isp,as,hosting,proxy,mobile&lang=zh-CN', 8000);
+          result.ip = await r.json();
+        } catch (e) { result.ipError = e.message; }
+      } else if (!exitUrl) result.ipError = '这台还没有测速口令，同步一次后再测';
+      else {
+        try {
+          const r = await fetchVia(port, exitUrl, 8000);
+          if (r.status === 404) throw new Error('VPS 上的 agent 太旧，同步一次后再测');
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          const j = await r.json();
+          if (!j.ip) throw new Error('VPS 没返回 IP');
+          result.ip = { query: j.ip, self: true };
+        } catch (e) { result.ipError = e.message; }
+      }
     }
     if (want.speed) result.speed = await speedVia(fetchVia, port, speedUrls);
     return result;

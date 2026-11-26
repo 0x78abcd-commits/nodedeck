@@ -146,9 +146,13 @@ function testResultView(cell, r) {
     const ip = r.ip;
     const lat = Number(r.latency) || 0;
     box.append(h('div', { class: 'tr-l1' }, h('span', { class: 'tag ' + (lat > 1500 ? 'warn' : 'ok') }, `${lat} ms`),
-      ip ? h('span', { class: 'tag ' + (ip.hosting ? 'warn' : 'ok') }, ip.hosting ? '机房 IP' : '住宅 / 非机房') : null,
+      ip && !ip.self ? h('span', { class: 'tag ' + (ip.hosting ? 'warn' : 'ok') }, ip.hosting ? '机房 IP' : '住宅 / 非机房') : null,
       r.speed ? (r.speed.error ? h('span', { class: 'tag bad', title: r.speed.error }, '测速失败') : h('span', { class: 'tag blue', title: '经节点下载测速' + (r.speed.source ? '，来源 ' + r.speed.source : '') }, `${r.speed.mbps >= 100 ? r.speed.mbps.toFixed(0) : r.speed.mbps.toFixed(1)} Mbps`)) : null));
-    if (ip) {
+    if (ip?.self) { // 新版：出口 IP 由节点所在 VPS 自己报，不经第三方
+      box.append(h('div', { class: 'tr-l2', title: '节点的出口 IP，由节点所在的 VPS 自己查（不经第三方）' }, h('span', { class: 'muted' }, '出口 '), h('span', { class: 'mono' }, ip.query), ip.landing ? h('span', { class: 'muted' }, `（经落地「${ip.landing}」）`) : null));
+    } else if (r.ipError) {
+      box.append(h('div', { class: 'tr-l2 muted', title: r.ipError }, '出口 IP 查不到：' + r.ipError));
+    } else if (ip) {
       const where = [ip.country, ip.city].filter(Boolean).join(' ');
       const full = [ip.query, where, ip.isp].filter(Boolean).join(' · ');
       box.append(h('div', { class: 'tr-l2', title: full }, h('span', { class: 'mono' }, ip.query), where ? ` · ${where}` : '', ip.isp ? h('span', { class: 'muted' }, ` · ${ip.isp}`) : null));

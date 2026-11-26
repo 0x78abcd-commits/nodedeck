@@ -93,6 +93,13 @@ function speedUrlsFor(s, entry) {
   return out;
 }
 
+// 查出口 IP 的地址：节点所在 VPS 自己的接口（要测速口令）
+function exitUrlFor(s, entry) {
+  const srv = s.servers.find((x) => x.id === entry.serverId);
+  if (!srv?.speedToken || !srv.host) return '';
+  return `http://${srv.host.includes(':') ? `[${srv.host}]` : srv.host}:${Number(s.settings?.subPort || 2096)}/nd-speed/ip?t=${encodeURIComponent(srv.speedToken)}`;
+}
+
 // 节点在本机跑起来要用的内核和出站配置
 function entryRunner(s, entry, user) {
   if (core.isXray(entry.protocol)) {
@@ -109,7 +116,11 @@ function testEntryFor(userId = 'owner', want) {
     const user = s.users.find((u) => u.id === userId) || s.users.find((u) => u.id === 'owner');
     let run;
     try { run = entryRunner(s, entry, user); } catch (e) { return Promise.resolve({ ok: false, error: e.message }); }
-    return nodetest.testOutbound({ ...run, fetchVia, want, speedUrls: want?.speed ? speedUrlsFor(s, entry) : [] });
+    const srv = s.servers.find((x) => x.id === entry.serverId);
+    return nodetest.testOutbound({ ...run, fetchVia, want, speedUrls: want?.speed ? speedUrlsFor(s, entry) : [], exitUrl: exitUrlFor(s, entry) }).then((r) => {
+      if (r.ip?.self) r.ip.landing = srv?.exit?.type === 'landing' ? (s.landings || []).find((l) => l.id === srv.exit.landingId)?.name || '落地' : '';
+      return r;
+    });
   };
 }
 
@@ -461,12 +472,17 @@ function registerIpc() {
     }));
   });
   // want：{ latency, exit, speed }，默认测延迟和出口
+  const tokenSyncs = new Map();
   handle('node:test', async (entry, userId = 'owner', want) => {
-    // 测速优先走节点所在 VPS 自己的测速接口：第一次要先把测速口令同步上去（只做一次）
-    const srv = want?.speed && getServer(entry.serverId);
+    // 查出口 IP 和测速都走节点所在 VPS 自己的接口：第一次要先把口令同步上去（只做一次，同一台并发测时只同步一回）
+    const wantExit = !want || want.exit || want.speed;
+    const srv = wantExit && state().servers.find((x) => x.id === entry.serverId);
     if (srv && srv.deployedAt && !srv.speedToken) {
-      store.upsert('servers', { id: srv.id, speedToken: core.randId(32) });
-      try { await syncOne(srv.id, () => {}); } catch (_) { /* 同步不上就用 Cloudflare 测 */ }
+      if (!tokenSyncs.has(srv.id)) {
+        store.upsert('servers', { id: srv.id, speedToken: core.randId(32) });
+        tokenSyncs.set(srv.id, syncOne(srv.id, () => {}).catch(() => {}).finally(() => setTimeout(() => tokenSyncs.delete(srv.id), 1000)));
+      }
+      await tokenSyncs.get(srv.id);
     }
     return testEntryFor(userId, want || { latency: true, exit: true })(entry);
   });
@@ -489,7 +505,7 @@ function registerIpc() {
     if (!fs.existsSync(singboxPath)) throw new Error('找不到内置 sing-box：' + singboxPath);
     const l = state().landings.find((x) => x.id === id);
     if (!l) throw new Error('落地不存在');
-    return nodetest.testOutbound({ singboxPath, outbound: core.landingOutbound(l, 'proxy'), fetchVia });
+    return nodetest.testOutbound({ singboxPath, outbound: core.landingOutbound(l, 'proxy'), fetchVia, exitUrl: 'ip-api' });
   });
   handle('qr', (text) => tools.qr(text));
   // 批量识别落地：每行一个，支持 ip:端口:用户:密码、socks5://、各种节点分享链接
