@@ -5,6 +5,7 @@ const path = require('path');
 const crypto = require('crypto');
 const core = require('./core');
 const probe = require('./probe');
+const stockMod = require('./stock');
 const tools = require('./tools');
 const { withSSH, shq } = require('./ssh');
 const { DIR, SB_BIN, AGENT_BIN, XRAY_BIN, memLimits, xrayUnit, openrcXray, sbUnit, agentUnit, openrcSb, CF_UNIT, openrcAgent, svcOf, agentJSON } = require('./units');
@@ -50,6 +51,7 @@ function agentConfig(state, server = {}) {
     latencyProbe: !!st.latencyProbe, // 后台定时测三网延迟，默认关（省流量）
     // 订阅 HTTPS：给 VPS 的 IP 申请 Let's Encrypt 证书（6 天有效，agent 自动续）
     subTls: core.subTlsWanted(state) ? { enabled: true, host: String(server.host || '').replace(/^\[|\]$/g, '') } : null,
+    stock: stockMod.agentCfg(state, server), // 补货提醒（内置轻量版）：只在选中的那台上有
     probe: probe.agentCfg(state, server), // 探针：只读接口密钥；主控还带网页口令和机器列表
     alerts: { off: st.alerts?.enabled === false, diskPct: Number(st.alerts?.diskPct) || 0, cpuPct: Number(st.alerts?.cpuPct) || 0, latencyMs: Number(st.alerts?.latencyMs) || 0 },
   };
@@ -474,6 +476,7 @@ echo CPUS=$(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo)
 echo MEMI=$(awk '/^MemTotal:/{t=$2} /^MemAvailable:/{a=$2} END{print int((t-a)/1024)" "int(t/1024)}' /proc/meminfo)
 echo DISK=$(df -Pm / | awk 'NR==2{print $3" "$2}')
 echo CPU=$(a=$(head -1 /proc/stat); sleep 0.5; b=$(head -1 /proc/stat); printf '%s|%s' "$a" "$b" | awk -F'|' '{n=split($1,x," "); split($2,y," "); for(i=2;i<=9&&i<=n;i++){ta+=x[i]; tb+=y[i]}; d=tb-ta; printf "%.0f", (d > 0 ? 100*(1-((y[5]+y[6])-(x[5]+x[6]))/d) : 0)}')
+echo EXTRA=$(${AGENT_BIN} extra -c ${DIR}/agent.json 2>/dev/null | tr -d '\n')
 echo IP6=$(ip -6 addr show scope global 2>/dev/null | awk '/inet6/{print $2}' | cut -d/ -f1 | grep -v '^f[cd]' | head -1)
 `);
   const kv = {};
@@ -484,6 +487,8 @@ echo IP6=$(ip -6 addr show scope global 2>/dev/null | awk '/inet6/{print $2}' | 
   return {
     singbox: kv.SB === 'active', agent: kv.AG === 'active', version: kv.VER || '', agentVersion: kv.AGV || '', cf: kv.CF === 'active', xray: kv.XR === 'active', xrayVersion: kv.XRV || '', ipv6: kv.IP6 || '', load: kv.LOAD, mem: kv.MEM, uptime: kv.UP,
     // 给服务器列表画仪表用（MB）
+    // 探针主控看到的各台在线情况、补货提醒的状态（agent 0.8.9 / 0.9.0 起）
+    ...(() => { try { const j = JSON.parse(kv.EXTRA || ''); return j && typeof j === 'object' ? { probe: j.probe || null, stock: j.stock || null } : {}; } catch (_) { return {}; } })(),
     subCert: (() => { try { const j = JSON.parse(kv.SUBCERT || ''); return j && typeof j === 'object' && 'ok' in j ? j : null; } catch (_) { return null; } })(),
     memUsed: memUsed || 0, memTotal: memTotal || 0, diskUsed: diskUsed || 0, diskTotal: diskTotal || 0, cpus: Number(kv.CPUS) || 0, cpu: kv.CPU === '' || kv.CPU == null ? null : Number(kv.CPU), uptimeSec: Number(kv.UPS) || 0, at: Date.now(),
   };

@@ -75,6 +75,8 @@ type Config struct {
 	Xray *XrayCfg `json:"xray"`
 	// 探针：所有机器都有只读密钥，主控还有网页口令和要拉的机器列表
 	Probe *ProbeCfg `json:"probe"`
+	// 补货提醒（内置轻量版）：只在选中的那台上有
+	Stock *StockCfg `json:"stock"`
 }
 
 type User struct {
@@ -140,6 +142,8 @@ type Agent struct {
 	// 探针
 	live liveSampler
 	hub  *probeHub
+	// 补货提醒
+	stock *stockStore
 }
 
 func (a *Agent) path(name string) string { return filepath.Join(a.cfg.DataDir, name) }
@@ -651,6 +655,7 @@ type statsResp struct {
 	Reality *RealityState `json:"reality,omitempty"`
 	Xray    *XrayStatus   `json:"xray,omitempty"`
 	Probe   any           `json:"probe,omitempty"`
+	Stock   any           `json:"stock,omitempty"`
 }
 
 func (a *Agent) handleAdmin(w http.ResponseWriter, r *http.Request) {
@@ -668,6 +673,9 @@ func (a *Agent) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		resp.Xray = a.xrayStatus()
 		if p := a.probeStatus(); p != nil {
 			resp.Probe = p
+		}
+		if st := a.stockStatus(); st != nil {
+			resp.Stock = st
 		}
 		b, _ := json.Marshal(resp)
 		w.Write(b)
@@ -687,6 +695,16 @@ func (a *Agent) handleAdmin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		json.NewEncoder(w).Encode(map[string]string{"message": msg})
+	case "/admin/extra":
+		// 桌面端读状态时顺便带上：探针主控看到的各台在线情况、补货提醒的状态
+		out := map[string]any{}
+		if p := a.probeStatus(); p != nil {
+			out["probe"] = p
+		}
+		if st := a.stockStatus(); st != nil {
+			out["stock"] = st
+		}
+		json.NewEncoder(w).Encode(out)
 	case "/admin/update-xray":
 		msg, err := a.updateXray()
 		if err != nil {
@@ -809,6 +827,7 @@ func run(cfgPath string) {
 	go a.updateLoop()
 	go a.realityLoop()
 	go a.probeLoop()
+	go a.stockLoop()
 	log.Printf("NodeDeck agent %s 已启动，订阅端口 %s", version, a.cfg.SubListen)
 	for {
 		select {
@@ -840,7 +859,7 @@ func run(cfgPath string) {
 func adminCall(cfgPath, p string) {
 	cfg := loadConfig(cfgPath)
 	method := "GET"
-	if p != "/admin/stats" && !strings.HasPrefix(p, "/admin/metrics") {
+	if p != "/admin/stats" && p != "/admin/extra" && !strings.HasPrefix(p, "/admin/metrics") {
 		method = "POST"
 	}
 	req, _ := http.NewRequest(method, "http://"+cfg.AdminListen+p, nil)
@@ -885,7 +904,7 @@ func genCert(host, dir string) {
 func main() {
 	log.SetFlags(log.LstdFlags)
 	if len(os.Args) < 2 {
-		fmt.Println("用法: nodedeck-agent run|stats|metrics|apply|reset [user]|update-singbox|install-singbox|install-xray|update-xray|warp-register|scan-reality|apply-hops|notify-test|gencert|version  [-c /etc/nodedeck/agent.json]")
+		fmt.Println("用法: nodedeck-agent run|stats|metrics|apply|reset [user]|update-singbox|install-singbox|install-xray|update-xray|extra|stock-check|warp-register|scan-reality|apply-hops|notify-test|gencert|version  [-c /etc/nodedeck/agent.json]")
 		os.Exit(2)
 	}
 	cmd := os.Args[1]
@@ -902,6 +921,8 @@ func main() {
 	selfIP := fs.String("ip", "", "本机公网 IPv4（扫描 Reality 目标用）")
 	text := fs.String("text", "", "通知内容（notify 用）")
 	domains := fs.String("domains", "", "逗号分隔的域名（check-reality / pick-reality 用）")
+	stockURL := fs.String("url", "", "商品页地址（stock-check 用）")
+	stockMode := fs.String("mode", "gone", "判断规则：gone / appear / regex（stock-check 用）")
 	timeout := fs.Duration("timeout", 2*time.Second, "单个地址的超时")
 	fs.Parse(os.Args[2:])
 	switch cmd {
@@ -937,6 +958,11 @@ func main() {
 		fmt.Println("sing-box", v)
 	case "update-singbox":
 		adminCall(*cfgPath, "/admin/update-singbox")
+	case "stock-check":
+		// 桌面端「测试一下」：按规则打开一次页面，输出结果
+		r := checkStock(StockWatch{URL: *stockURL, Mode: *stockMode, Text: *text})
+		b, _ := json.Marshal(r)
+		fmt.Println(string(b))
 	case "install-xray":
 		v, err := installXray(*manifest, *bin)
 		if err != nil {
@@ -946,6 +972,8 @@ func main() {
 		fmt.Println("Xray", v)
 	case "update-xray":
 		adminCall(*cfgPath, "/admin/update-xray")
+	case "extra":
+		adminCall(*cfgPath, "/admin/extra")
 	case "notify-test":
 		adminCall(*cfgPath, "/admin/notify-test")
 	case "check-reality":

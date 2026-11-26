@@ -18,6 +18,7 @@
 | P2 | ClickDevTech/CELERITY-panel | Tag | 同类面板（MIT）：Xray XHTTP、级联中转、负载均衡、外部探针 |
 | P2 | nezhahq/nezha | Release | 探针参考：服务器卡片、流量 / 到期展示、告警（只参考做法；NodeDeck 探针只读，不做远程命令） |
 | P2 | henrygd/beszel | Release | 探针参考（MIT）：轻量采集、历史曲线、告警阈值和通知渠道 |
+| P1 | dgtlmoon/changedetection.io | Release | 补货提醒一键安装的就是它：镜像名、浏览器容器、补货检测设置变了要跟着改 |
 | P2 | Teminuosi/tms-client | Release（含预发布） | 同类桌面工具：功能灵感（不公开源码，只看更新说明，自己实现；不解包安装包）。11-25 停过一次，当天恢复 |
 
 不跟踪的（2026-11-25 评估）：

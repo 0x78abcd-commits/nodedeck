@@ -104,7 +104,7 @@ async function scanOthers(server) {
     }
     const known = new Set(apps.flatMap((a) => a.units.map((u) => u.name)));
     const knownExe = (exe) => OTHER_APPS.some((a) => a.paths.concat(a.markers || []).some((x) => exe === x || exe.startsWith(x + '/')));
-    const containers = dockerTxt.split('\n').map((l) => l.split('|')).filter((f) => f.length >= 4 && /^[0-9a-f]{6,}$/.test(f[0])).map((f) => ({ kind: 'docker', id: f[0], name: f[1], image: f[2], status: f[3], ports: f[4] || '', running: /^Up/i.test(f[3]) }));
+    const containers = dockerTxt.split('\n').map((l) => l.split('|')).filter((f) => f.length >= 4 && /^[0-9a-f]{6,}$/.test(f[0]) && !/^nodedeck-/.test(f[1])).map((f) => ({ kind: 'docker', id: f[0], name: f[1], image: f[2], status: f[3], ports: f[4] || '', running: /^Up/i.test(f[3]) }));
     const others = new Map();
     for (const p of ports) {
       const pr = p.pid && procs[p.pid];

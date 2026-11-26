@@ -21,6 +21,10 @@ Windows 桌面软件：**填 VPS → 一键部署全套协议 → 分配给用�
 
 「设置 → 探针网页」里选一台服务器当主控：它每 5 秒从各台 VPS 的 agent 读一次 CPU、内存、磁盘、网速、本月流量（只读接口，带密钥），在订阅端口上出一个网页 `https://IP:订阅端口/p/<随机口令>/`，手机浏览器就能看。某台 1 分钟没回应会发 Telegram，恢复后再发一次。网页里不显示 IP，没有任何远程操作功能。
 
+## 补货提醒
+
+「补货提醒」页面有两种方式：内置提醒（agent 定时打开商品页按文字判断，变了发 Telegram，不用装东西）和一键安装 changedetection.io（Docker，可带 Chrome 看 JavaScript 页面，只监听 VPS 本机，经 SSH 隧道打开管理界面）。
+
 ## 工作原理
 
 ```
@@ -109,12 +113,13 @@ src/main/units.js     VPS 上的路径和服务文件（systemd / OpenRC）
 src/main/bench.js     网络优化、社区测试脚本
 src/main/cleanup.js   清理其他面板 / 程序、备份和恢复
 src/main/probe.js     探针网页（主控、密钥、机器列表）
+src/main/stock.js     补货提醒（内置规则、changedetection.io 安装 / 隧道 / 卸载）
 src/main/tools.js     工具箱
 src/main/nodetest.js  本地节点测试（sing-box / Xray）
 src/main/updater.js   自动更新
 src/main/store.js     本地数据（Windows DPAPI 加密）
 src/renderer/         界面（原生 JS，无需构建；按页面分文件，index.html 按顺序加载，settings.js 最后启动界面）
-agent/                VPS 端 agent（Go，仅标准库；update.go 内核自动升级，xray.go Xray，probe.go 探针）
+agent/                VPS 端 agent（Go，仅标准库；update.go 内核自动升级，xray.go Xray，probe.go 探针，stock.go 补货提醒）
 test/                 run.js 配置检查；e2e.js 真流量测试
 .github/workflows/    release.yml 发布软件；test.yml 测试；singbox.yml / xray.yml 每天同步内核；upstream-watch.yml 每周提醒上游更新
 ```

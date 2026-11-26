@@ -95,3 +95,9 @@ function menu(anchor, items) {
   document.body.append(pop);
   setTimeout(() => document.addEventListener('mousedown', function close(e) { if (!pop.contains(e.target)) { pop.remove(); document.removeEventListener('mousedown', close); } }), 0);
 }
+
+// 按钮里的异步操作出错（没有被单独处理的）统一弹出来，别让用户以为点了没反应
+window.addEventListener('unhandledrejection', (e) => {
+  const msg = e.reason?.message || String(e.reason || '');
+  if (msg) toast(msg.replace(/^Error invoking remote method '[^']+': (Error: )?/, ''), 'err');
+});

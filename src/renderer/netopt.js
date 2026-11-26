@@ -1,6 +1,6 @@
 'use strict';
 /* global api, h, toast, modal, confirmBox, field, copy, fmtBytes, fmtDate, busy */
-// 由 index.html 按顺序加载：ui.js → app.js → servers.js → netopt.js → nodes.js → users.js → landings.js → toolbox.js → settings.js（最后一个启动界面）
+// 由 index.html 按顺序加载：ui.js → app.js → servers.js → netopt.js → nodes.js → users.js → landings.js → toolbox.js → stock.js → settings.js（最后一个启动界面）
 
 // ---------- 网络优化 ----------
 const NET_TABS = [['overview', '内核设置'], ['route', '线路'], ['quality', '质量 / 晚高峰'], ['speed', '测速 / UDP'], ['compare', 'BBR 对比'], ['bench', '社区测试']];

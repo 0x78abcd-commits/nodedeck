@@ -34,6 +34,7 @@ jobs:
           - { upstream: ClickDevTech/CELERITY-panel,  label: upstream-celerity,    short: CELERITY,     mode: tags,     pre: false, why: '同类面板（MIT）：Xray XHTTP、级联中转、负载均衡、外部探针的做法可以参考' }
           - { upstream: nezhahq/nezha,              label: upstream-nezha,       short: 哪吒,         mode: releases, pre: false, why: '探针参考：服务器卡片、流量 / 到期展示、告警规则的做法（NodeDeck 探针只读，不做远程命令）' }
           - { upstream: henrygd/beszel,             label: upstream-beszel,      short: Beszel,       mode: releases, pre: false, why: '探针参考（MIT）：轻量采集、历史曲线、告警阈值和通知渠道' }
+          - { upstream: dgtlmoon/changedetection.io, label: upstream-cdio,        short: changedetection.io, mode: releases, pre: false, why: '补货提醒一键安装的就是它：镜像名、浏览器容器、补货检测设置变了要跟着改安装脚本和说明' }
           - { upstream: Teminuosi/tms-client,       label: upstream-tms,         short: TMS,          mode: releases, pre: true,  why: '同类桌面工具：功能灵感（不公开源码，只看更新说明，自己实现；不解包安装包）' }
     env:
       GH_TOKEN: ${{ github.token }}

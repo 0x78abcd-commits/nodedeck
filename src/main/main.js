@@ -11,6 +11,7 @@ const diagnose = require('./diagnose');
 const links = require('./links');
 const proxy = require('./proxy');
 const probe = require('./probe');
+const stock = require('./stock');
 const { setProxyProvider, setHostKeySaver } = require('./ssh');
 const { Store } = require('./store');
 const { Updater, publish } = require('./updater');
@@ -344,6 +345,51 @@ function registerIpc() {
   handle('col:upsert', (col, item) => store.upsert(col, item));
   handle('col:remove', (col, id) => store.remove(col, id));
   handle('settings:set', (patch) => { store.setSettings(patch); return state().settings; });
+  // 补货提醒
+  const stockInfo = () => {
+    const st = state();
+    const c = stock.cfg(st);
+    const srv = stock.stockServer(st);
+    return { serverId: c.serverId || '', serverName: srv?.name || '', watches: c.watches || [], status: srv?.lastStatus?.stock || {}, statusAt: srv?.lastStatus?.at || 0,
+      agentOld: !!(srv && srv.lastStatus && !('stock' in srv.lastStatus)), cd: st.settings.cd || {}, tgUrl: stock.tgNotifyUrl(st), tgOn: !!st.settings.telegram?.enabled, modes: stock.MODES };
+  };
+  handle('stock:info', stockInfo);
+  handle('stock:newWatch', () => stock.newWatch());
+  handle('stock:save', async ({ serverId, watches }) => {
+    const cur = stock.cfg(state());
+    const list = (watches || []).map(stock.validWatch);
+    if (list.length && !serverId) throw new Error('先选一台已部署的服务器来做检查');
+    store.setSettings({ stock: { serverId: serverId || '', watches: list } });
+    const ids = [...new Set([cur.serverId, serverId].filter((id) => id && getServer(id)?.deployedAt))];
+    const results = [];
+    for (const id of ids) {
+      try { await syncOne(id, () => {}); results.push({ id, name: getServer(id).name, ok: true }); } catch (e) { results.push({ id, name: getServer(id).name, ok: false, error: e.message }); }
+    }
+    return { results, info: stockInfo() };
+  });
+  handle('stock:test', (serverId, w) => stock.test(getServer(serverId), w));
+  handle('stock:refresh', async () => {
+    const srv = stock.stockServer(state());
+    if (!srv) return stockInfo();
+    const st = await deploy.serverStatus(srv);
+    store.upsert('servers', { id: srv.id, lastStatus: st });
+    return stockInfo();
+  });
+  handle('cd:install', async (serverId, opts = {}) => {
+    const log = taskLogger('cd:' + serverId);
+    const st = await stock.cdInstall(getServer(serverId), opts, log);
+    store.setSettings({ cd: { serverId, browser: !!opts.browser, installedAt: Date.now() } });
+    return st;
+  });
+  handle('cd:status', (serverId) => stock.cdStatus(getServer(serverId)));
+  handle('cd:open', async (serverId) => { const port = await stock.cdTunnel(getServer(serverId)); openSafe(`http://127.0.0.1:${port}/`); return port; });
+  handle('cd:uninstall', async (serverId, opts = {}) => {
+    stock.closeTunnel(serverId);
+    const st = await stock.cdUninstall(getServer(serverId), opts);
+    store.setSettings({ cd: {} });
+    return st;
+  });
+
   // 探针网页
   handle('probe:info', () => probe.info(state()));
   handle('probe:save', async (p) => {
@@ -835,3 +881,4 @@ app.whenReady().then(() => {
   setInterval(() => blockWatchTick().catch(() => {}), 30 * 60 * 1000);
 });
 app.on('window-all-closed', () => app.quit());
+app.on('will-quit', () => stock.closeAll());

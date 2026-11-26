@@ -1,6 +1,6 @@
 'use strict';
 /* global api, h, toast, modal, confirmBox, field, copy, fmtBytes, fmtDate, busy */
-// 由 index.html 按顺序加载：ui.js → app.js → servers.js → netopt.js → nodes.js → users.js → landings.js → toolbox.js → settings.js（最后一个启动界面）
+// 由 index.html 按顺序加载：ui.js → app.js → servers.js → netopt.js → nodes.js → users.js → landings.js → toolbox.js → stock.js → settings.js（最后一个启动界面）
 
 // ---------- 落地 ----------
 let landingGroup = '';

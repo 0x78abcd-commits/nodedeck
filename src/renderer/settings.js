@@ -1,6 +1,6 @@
 'use strict';
 /* global api, h, toast, modal, confirmBox, field, copy, fmtBytes, fmtDate, busy */
-// 由 index.html 按顺序加载：ui.js → app.js → servers.js → netopt.js → nodes.js → users.js → landings.js → toolbox.js → settings.js（最后一个启动界面）
+// 由 index.html 按顺序加载：ui.js → app.js → servers.js → netopt.js → nodes.js → users.js → landings.js → toolbox.js → stock.js → settings.js（最后一个启动界面）
 
 // ---------- 设置 ----------
 function updateCard() {
@@ -176,7 +176,7 @@ async function viewSettings(v) {
       h('div', { class: 'card' }, h('h3', {}, '关于'), h('p', { class: 'muted' }, `NodeDeck · ${info.repo ? 'github.com/' + info.repo : '未配置发布仓库'} · 内置 sing-box ${info.singbox ? '✔' : '✘（节点测试不可用）'}`), h('p', { class: 'muted' }, 'sing-box 以 GPL-3.0 许可证发布，作为独立程序随附。')))));
 }
 
-const VIEWS = { dash: viewDash, servers: viewServers, nodes: viewNodes, users: viewUsers, landings: viewLandings, forwards: viewForwards, tools: viewTools, settings: viewSettings };
+const VIEWS = { dash: viewDash, servers: viewServers, nodes: viewNodes, users: viewUsers, landings: viewLandings, forwards: viewForwards, tools: viewTools, stock: viewStock, settings: viewSettings };
 
 (async function init() {
   info = await api.call('app:info');
