@@ -6,19 +6,6 @@ const dns = require('dns');
 const { spawn } = require('child_process');
 const QRCode = require('qrcode');
 
-async function ipInfo(fetchFn, ip) {
-  const q = (ip || '').trim();
-  const fields = 'status,message,query,country,countryCode,regionName,city,isp,org,as,asname,mobile,proxy,hosting,timezone';
-  const r = await fetchFn(`http://ip-api.com/json/${encodeURIComponent(q)}?fields=${fields}&lang=zh-CN`);
-  const j = await r.json();
-  if (j.status !== 'success') throw new Error(j.message || '查询失败');
-  let kind = '住宅/普通宽带';
-  if (j.hosting) kind = '机房 IP（数据中心）';
-  else if (j.mobile) kind = '移动网络';
-  if (j.proxy) kind += '，已被标记为代理/VPN';
-  return { ...j, kind };
-}
-
 function tcpPing(host, port, timeout = 4000) {
   return new Promise((resolve) => {
     const t0 = Date.now();
@@ -164,4 +151,4 @@ async function qr(text) {
   return 'data:image/svg+xml;base64,' + Buffer.from(svg).toString('base64');
 }
 
-module.exports = { ipInfo, portCheck, tcpPing, dnsLookup, traceroute, realityCheck, parseSocks, socksToQr, qr };
+module.exports = { portCheck, tcpPing, dnsLookup, traceroute, realityCheck, parseSocks, socksToQr, qr };

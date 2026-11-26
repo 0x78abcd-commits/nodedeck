@@ -3,28 +3,19 @@
 // 由 index.html 按顺序加载：ui.js → app.js → servers.js → netopt.js → nodes.js → users.js → landings.js → toolbox.js → stock.js → settings.js（最后一个启动界面）
 
 // ---------- 工具箱 ----------
-let toolTab = 'ip';
+let toolTab = 'ports';
 async function viewTools(v) {
   await reload();
   v.append(h('h1', {}, '工具箱'), h('p', { class: 'sub' }, '无需登录即可使用'));
-  const tabs = [['ip', 'IP 画像'], ['ports', '端口检测'], ['dns', 'DNS 查询'], ['trace', '路由追踪'], ['block', '被墙检测'], ['reality', 'Reality 域名检测'], ['socks', 'SOCKS5 转二维码']];
+  const tabs = [['ports', '端口检测'], ['dns', 'DNS 查询'], ['trace', '路由追踪'], ['block', '被墙检测'], ['reality', 'Reality 域名检测'], ['socks', 'SOCKS5 转二维码']];
   const box = h('div', { class: 'card' });
   const tabBar = h('div', { class: 'tabs' }, tabs.map(([id, l]) => h('a', { class: toolTab === id ? 'active' : '', onclick: () => { toolTab = id; render(); } }, l)));
   v.append(tabBar, box);
+  if (!TOOLS[toolTab]) toolTab = 'ports';
   TOOLS[toolTab](box);
 }
 
 const TOOLS = {
-  ip(box) {
-    const ip = h('input', { placeholder: '留空 = 查询本机出口 IP' });
-    const out = h('div', {});
-    const btn = h('button', { class: 'primary auto', onclick: (e) => busy(e.currentTarget, async () => {
-      out.innerHTML = '';
-      const r = await api.call('tools:ip', ip.value);
-      out.append(h('div', { class: 'kv', style: { marginTop: '14px' } }, kv('IP', r.query), kv('类型', h('span', { class: 'tag ' + (r.hosting || r.proxy ? 'warn' : 'ok') }, r.kind)), kv('位置', `${r.country} ${r.regionName} ${r.city}`), kv('运营商', r.isp), kv('组织', r.org), kv('ASN', r.as), kv('时区', r.timezone)));
-    }) }, '查询');
-    box.append(h('div', { class: 'row' }, ip, btn), out);
-  },
   ports(box) {
     const host = h('input', { placeholder: 'IP 或域名' }), ports = h('input', { placeholder: '443,8443,2000-2010' });
     const out = h('div', {});

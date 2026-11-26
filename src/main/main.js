@@ -813,7 +813,6 @@ function registerIpc() {
   });
 
   // 工具箱
-  handle('tools:ip', (ip) => tools.ipInfo(sysFetch, ip));
   handle('tools:ports', (host, ports) => tools.portCheck(host, ports));
   handle('tools:dns', (name, type, server) => tools.dnsLookup(name, type, server));
   handle('tools:trace', (host) => tools.traceroute(host, taskLogger('trace')));
