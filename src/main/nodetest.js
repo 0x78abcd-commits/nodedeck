@@ -120,19 +120,4 @@ async function testOutbound({ singboxPath, xrayPath, outbound, fetchVia, want = 
   }
 }
 
-// 打开一个走这个节点的浏览器窗口：返回本地代理端口和停止函数（关窗口时调用）
-async function startLocalProxy({ singboxPath, xrayPath, outbound }) {
-  const port = await freePort();
-  const cfgFile = path.join(os.tmpdir(), `nodedeck-browse-${port}.json`);
-  fs.writeFileSync(cfgFile, JSON.stringify(xrayPath ? core.xrayTestConfig(outbound, port) : core.clientTestConfig(outbound, port)));
-  let stderr = '';
-  const proc = spawn(xrayPath || singboxPath, ['run', '-c', cfgFile], { windowsHide: true });
-  proc.stderr.on('data', (d) => { stderr += d.toString(); });
-  const exited = new Promise((r) => proc.once('exit', r));
-  const ready = await Promise.race([waitPort(port), exited.then(() => false)]);
-  const stop = () => { proc.kill(); setTimeout(() => fs.rm(cfgFile, { force: true }, () => {}), 1000); };
-  if (!ready) { stop(); throw new Error('本地内核启动失败：' + stderr.trim().slice(-300)); }
-  return { port, stop };
-}
-
-module.exports = { testOutbound, startLocalProxy, speedVia, freePort, lastSingboxError };
+module.exports = { testOutbound, speedVia, freePort, lastSingboxError };

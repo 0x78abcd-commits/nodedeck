@@ -88,7 +88,6 @@ async function viewNodes(v) {
         h('td', { class: 'nowrap' }, h('div', { class: 'actions nowrap' },
           h('button', { class: 'small', onclick: () => copy(e.link) }, '复制'),
           h('button', { class: 'small', onclick: () => showQr(e.label, e.link) }, '二维码'),
-          h('button', { class: 'small', title: '开一个经这个节点上网的浏览器窗口，看看网站能不能打开、显示的地区对不对', onclick: (ev) => busy(ev.currentTarget, () => api.call('node:browse', e)) }, '用它上网'),
           h('button', { class: 'small', onclick: (ev) => { const b = ev.currentTarget; menu(b, [e.cf ? null : { label: '改名', onClick: () => renameEntry(e) }, { label: '编辑', onClick: () => editEntry(e) }, { sep: true }, { label: '删除', danger: true, onClick: () => removeEntry(e, b) }]); } }, '更多 ▾')))));
     }
     const latBtn = h('button', { class: 'small' }, '一键测延迟');

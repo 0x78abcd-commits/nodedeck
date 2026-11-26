@@ -427,7 +427,7 @@ td.nowrap, .nowrap { white-space: nowrap; }
 .nt-table th:nth-child(2) { width: 84px; }
 .nt-table th:nth-child(3), .nt-table th:nth-child(4) { width: 96px; }
 .nt-table th:nth-child(5) { width: 128px; }
-.nt-table th:nth-child(7) { width: 284px; }
+.nt-table th:nth-child(7) { width: 196px; }
 .nt-name b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nt-sub { font-size: 12px; display: flex; gap: 6px; align-items: center; margin-top: 2px; }
 .nt-sub .tag { margin: 0; }

@@ -470,20 +470,6 @@ function registerIpc() {
     }
     return testEntryFor(userId, want || { latency: true, exit: true })(entry);
   });
-  // 用这个节点打开一个浏览器窗口（独立会话、走本地代理），关窗口就停
-  handle('node:browse', async (entry, url) => {
-    const s = state();
-    const user = s.users.find((u) => u.id === 'owner');
-    const lp = await nodetest.startLocalProxy(entryRunner(s, entry, user));
-    const ses = session.fromPartition(`nodedeck-browse-${lp.port}`);
-    await ses.setProxy({ proxyRules: `http://127.0.0.1:${lp.port}`, proxyBypassRules: '<-loopback>' });
-    const win = new BrowserWindow({ width: 1180, height: 820, title: `经节点浏览 · ${entry.label}`, autoHideMenuBar: true, webPreferences: { session: ses, sandbox: true, contextIsolation: true, nodeIntegration: false } });
-    win.on('page-title-updated', (e) => e.preventDefault());
-    win.on('closed', () => { lp.stop(); ses.clearStorageData().catch(() => {}); });
-    win.webContents.setWindowOpenHandler(({ url: u }) => { win.loadURL(u); return { action: 'deny' }; });
-    win.loadURL(url || 'https://ip.sb/');
-    return true;
-  });
   // 节点改名：普通入口存在协议设置里，经中转的存在那条转发里；留空恢复默认名
   handle('node:rename', async (entry, name) => {
     const s = state();
