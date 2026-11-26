@@ -221,7 +221,7 @@ console.log('agent users', JSON.stringify(core.buildAgentUsers(state, node)));
     if (e.protocol === 'vlessXhttpReality' && (!u.searchParams.get('pbk') || u.searchParams.get('mode') !== 'stream-one')) fail('XHTTP-Reality 链接：' + l);
     if (e.protocol === 'vlessXhttpTls' && u.searchParams.get('pcs') !== 'cd'.repeat(32)) fail('XHTTP-TLS 链接缺少证书指纹：' + l);
     const cp = core.clashProxy(stx, e, owner);
-    if (cp.network !== 'xhttp' || !cp['xhttp-opts']?.path) fail('Clash XHTTP 节点');
+    if (e.protocol === 'vlessXhttpReality' ? cp !== null : (cp.network !== 'xhttp' || !cp['xhttp-opts']?.path)) fail('Clash XHTTP 节点');
   }
   const sbc = core.buildSingboxClient(stx, owner);
   if (sbc.outbounds.some((o) => /XHTTP/.test(o.tag || ''))) fail('sing-box 订阅里不应有 XHTTP 节点');

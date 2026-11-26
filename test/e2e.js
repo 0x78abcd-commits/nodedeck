@@ -74,7 +74,9 @@ function viaProxy(proxyPort, targetPort, ms = 10000) {
   const server = core.newServer({ name: 'E2E', host: '127.0.0.1', tlsSni: sni });
   server.certSha256 = x509.fingerprint256.replace(/:/g, '').toLowerCase();
   server.certSpki = crypto.createHash('sha256').update(x509.publicKey.export({ type: 'spki', format: 'der' })).digest('base64');
-  server.protocols.vlessReality.sni = sni;
+  // REALITY_TARGET=www.microsoft.com：用真实网站当 Reality 目标（需要能上网），否则用本机 TLS 1.3 服务
+  const realTarget = process.env.REALITY_TARGET || '';
+  server.protocols.vlessReality.sni = realTarget || sni;
   for (const k of Object.keys(core.PROTOCOLS)) {
     if (core.isXray(k) && !XR) { server.protocols[k].enabled = false; continue; }
     server.protocols[k].enabled = true;
@@ -87,7 +89,7 @@ function viaProxy(proxyPort, targetPort, ms = 10000) {
   sbCfg.route.rules = sbCfg.route.rules.filter((r) => !r.ip_is_private); // 测试目标在 127.0.0.1
   for (const ib of sbCfg.inbounds) {
     const hs = ib.tls?.reality?.handshake;
-    if (hs) { hs.server = '127.0.0.1'; hs.server_port = rtPort; }
+    if (hs && !realTarget) { hs.server = '127.0.0.1'; hs.server_port = rtPort; }
   }
   delete sbCfg.experimental; // 不需要统计接口
   const fix = (o) => JSON.stringify(o, null, 2).replaceAll('/etc/nodedeck/cert.pem', path.join(dir, 'cert.pem')).replaceAll('/etc/nodedeck/key.pem', path.join(dir, 'key.pem'));
@@ -96,7 +98,8 @@ function viaProxy(proxyPort, targetPort, ms = 10000) {
   let xrSrv = null;
   if (XR) {
     const xc = core.buildXrayConfig(state, server);
-    for (const ib of xc.inbounds) if (ib.streamSettings.realitySettings) ib.streamSettings.realitySettings.target = `127.0.0.1:${rtPort}`;
+    for (const ib of xc.inbounds) if (ib.streamSettings.realitySettings && !realTarget) ib.streamSettings.realitySettings.target = `127.0.0.1:${rtPort}`;
+    if (process.env.E2E_DEBUG) xc.log = { loglevel: 'debug' };
     fs.writeFileSync(path.join(dir, 'xray-server.json'), fix(xc));
     xrSrv = run(XR, ['run', '-c', path.join(dir, 'xray-server.json')], 'Xray 服务端');
   }
@@ -113,8 +116,9 @@ function viaProxy(proxyPort, targetPort, ms = 10000) {
     if (err) failed++;
   };
 
+  const only = process.env.E2E_ONLY || ''; // 调试用：只跑某一种客户端
   // 4a. sing-box 客户端（sing-box 订阅里的出站）
-  for (const e of entries) {
+  for (const e of entries.filter(() => !only || only === 'sing-box')) {
     const ob = core.clientOutbound(state, e, owner);
     if (!ob) continue;
     const port = await freePort();
@@ -124,12 +128,12 @@ function viaProxy(proxyPort, targetPort, ms = 10000) {
     const up = await waitPort(port);
     let err = up ? await viaProxy(port, webPort) : '客户端没起来：' + p.log.slice(-300);
     if (err && up) { await sleep(800); err = await viaProxy(port, webPort); }
-    record('sing-box', e, err ? err + (p.log ? ' | ' + p.log.trim().split('\n').slice(-2).join(' | ').slice(0, 300) : '') : '');
+    record('sing-box', e, err ? err + (p.log ? ' | ' + p.log.trim().split('\n').slice(-2).join(' | ').slice(0, 1200) : '') : '');
     stop(p);
   }
 
   // 4b. Xray 客户端（XHTTP 节点；v2rayN / v2rayNG 用的内核）
-  if (XR) {
+  if (XR && (!only || only === 'xray')) {
     for (const e of entries.filter((x) => core.isXray(x.protocol))) {
       const port = await freePort();
       const f = path.join(dir, `xr-${port}.json`);
@@ -144,7 +148,7 @@ function viaProxy(proxyPort, targetPort, ms = 10000) {
   } else console.log('SKIP Xray 客户端（没设 XRAY）');
 
   // 4c. mihomo 客户端（Clash 订阅里的节点）
-  if (MH) {
+  if (MH && (!only || only === 'mihomo')) {
     // 完整的 Clash 订阅（DNS、TUN、规则）要能被 mihomo 读进去；顺便把 GeoIP / GeoSite 数据下载到共用目录，后面的客户端不用再下
     const home = path.join(dir, 'mh-home');
     fs.mkdirSync(home);
@@ -161,14 +165,16 @@ function viaProxy(proxyPort, targetPort, ms = 10000) {
       fs.writeFileSync(cfgFile, yaml);
       const p = run(MH, ['-d', home, '-f', cfgFile], 'mihomo');
       const up = await waitPort(port, 30000);
+      if (process.env.E2E_MH_WAIT) await sleep(Number(process.env.E2E_MH_WAIT));
       let err = up ? await viaProxy(port, webPort) : 'mihomo 没起来';
       if (!up && mhDebug) { console.log('---- mihomo 日志 ----\n' + p.log.slice(-3000) + '\n---- 配置 ----\n' + yaml); mhDebug = false; }
       if (err && up) { await sleep(800); err = await viaProxy(port, webPort); }
-      record('mihomo', e, err ? err + (p.log ? ' | ' + p.log.trim().split('\n').slice(-2).join(' | ').slice(0, 300) : '') : '');
+      record('mihomo', e, err ? err + (p.log ? ' | ' + p.log.trim().split('\n').slice(-2).join(' | ').slice(0, 1200) : '') : '');
       stop(p);
     }
   } else console.log('SKIP mihomo 客户端（没设 MIHOMO）');
 
+  if (process.env.E2E_DEBUG && xrSrv) console.log('---- Xray 服务端日志 ----\n' + xrSrv.log.slice(-2500));
   for (const p of procs) stop(p);
   web.close(); rt.close();
   console.log(`\n${results.length - failed} / ${results.length} 个连接通过${failed ? `，${failed} 个失败` : ''}`);

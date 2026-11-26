@@ -309,7 +309,7 @@ async function editServer(orig, opts = {}) {
     if (k === 'vlessXhttpReality' || k === 'vlessXhttpTls') {
       els.path = I(pc.path || ''); extra.push(field('XHTTP 路径', h('div', { class: 'row' }, els.path, h('button', { class: 'small auto', onclick: () => { els.path.value = '/' + randStr(8).toLowerCase(); } }, '随机'))));
       extra.push(h('p', { class: 'muted', style: { fontSize: '12px', margin: 0 } }, k === 'vlessXhttpReality'
-        ? '由 Xray 内核提供（勾上后部署 / 同步时自动安装）。和上面的 VLESS-Reality 共用 Reality 目标和密钥，目标在 VLESS-Reality 里设置。不能和 VLESS-Reality 用同一个端口。客户端：v2rayN / v2rayNG、Clash Verge（mihomo 1.19.22 以上）、Shadowrocket；sing-box 客户端不支持，订阅里会自动去掉。'
+        ? '由 Xray 内核提供（勾上后部署 / 同步时自动安装）。和上面的 VLESS-Reality 共用 Reality 目标和密钥，目标在 VLESS-Reality 里设置。不能和 VLESS-Reality 用同一个端口。客户端：v2rayN / v2rayNG（Xray 内核）。Clash 系客户端（mihomo）暂时连不上新版 Xray 的 Reality，sing-box 客户端不支持 XHTTP，这两种订阅里会自动去掉它。'
         : '由 Xray 内核提供，走 HTTP/2 + TLS，用上面的自签证书（链接带证书指纹）；填了域名并开启正式证书时自动用正式证书。也可以套 CDN（需要正式证书）。sing-box 客户端不支持，订阅里会自动去掉。'));
       const mem = orig?.hw?.memMB;
       if (mem && mem < 1024) extra.push(h('p', { style: { fontSize: '12px', margin: 0, color: 'var(--warn)' } }, `⚠ 这台机器只有 ${mem}MB 内存。开了 XHTTP 会多跑一个 Xray 内核（空载约 30–60MB，连接多时更多），和 sing-box 一起可能内存紧张；建议只开一个 XHTTP 协议，或加 swap（「更多 → 小机器优化」）。`));

@@ -160,11 +160,11 @@ function clashProxy(state, entry, user) {
       return pinned({ ...base, type: 'anytls', password: user.password, sni, 'skip-cert-verify': skip, udp: true, 'client-fingerprint': 'chrome' });
     case 'shadowsocks':
       return { ...base, type: 'ss', cipher: SS_METHOD, password: `${pc.serverKey}:${ssUserKey(user)}`, udp: true };
-    // mihomo 1.19.13 起支持 XHTTP；更老的 Clash 内核由 agent 按 UA 去掉这两个节点
-    case 'vlessXhttpReality': {
-      const r = server.protocols.vlessReality;
-      return { ...base, type: 'vless', uuid: user.uuid, network: 'xhttp', tls: true, udp: true, servername: r.sni, 'client-fingerprint': fpOf(r), 'reality-opts': { 'public-key': r.publicKey, 'short-id': r.shortId }, 'xhttp-opts': { path: xhttpPath(pc), mode: 'stream-one' } };
-    }
+    // XHTTP-Reality 不进 Clash 订阅：Xray 26.11 的 Reality 服务端只认带 X25519MLKEM768（抗量子）密钥交换的握手，
+    // mihomo 1.19.34 的 Reality 握手还没有，连不上（REALITY authentication failed；端到端测试里实测）
+    case 'vlessXhttpReality':
+      return null;
+    // mihomo 1.19.22 起支持 XHTTP；更老的 Clash 内核由 agent 按 UA 去掉这个节点
     case 'vlessXhttpTls':
       return pinned({ ...base, type: 'vless', uuid: user.uuid, network: 'xhttp', tls: true, udp: true, servername: sni, alpn: ['h2', 'http/1.1'], 'client-fingerprint': 'chrome', 'skip-cert-verify': skip, 'xhttp-opts': { path: xhttpPath(pc), mode: 'auto' } });
     default:
