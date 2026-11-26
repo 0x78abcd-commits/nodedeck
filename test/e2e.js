@@ -157,7 +157,7 @@ function viaProxy(proxyPort, targetPort, ms = 10000) {
       if (!px) continue;
       const port = await freePort();
       const cfgFile = path.join(dir, `mh-${port}.yaml`);
-      const yaml = [`mixed-port: ${port}`, 'allow-lan: false', 'mode: rule', `log-level: ${mhDebug ? 'debug' : 'warning'}`, 'ipv6: false', 'find-process-mode: off', 'geo-auto-update: false', 'proxies:', '  - ' + JSON.stringify(px), 'rules:', `  - MATCH,${JSON.stringify(px.name)}`, ''].join('\n');
+      const yaml = [`mixed-port: ${port}`, 'allow-lan: false', 'mode: rule', `log-level: ${mhDebug ? 'debug' : 'warning'}`, 'ipv6: false', 'find-process-mode: off', 'geo-auto-update: false', 'proxies:', '  - ' + JSON.stringify(px), 'rules:', `  - MATCH,${px.name}`, ''].join('\n');
       fs.writeFileSync(cfgFile, yaml);
       const p = run(MH, ['-d', home, '-f', cfgFile], 'mihomo');
       const up = await waitPort(port, 30000);

@@ -142,7 +142,7 @@ function watchSubCert(id, tries = 0) {
   if (!s || !s.deployedAt || !core.subTlsWanted(state()) || core.subCertOk(state(), s) || tries >= 4) return;
   subCertWatch.set(id, setTimeout(async () => {
     try {
-      const st = await deploy.status(getServer(id));
+      const st = await deploy.serverStatus(getServer(id));
       store.upsert('servers', { id, lastStatus: st });
       if (core.subCertOk(state(), getServer(id))) { send('toast', { text: `${getServer(id).name} 的订阅证书申请好了，订阅地址变成 https://（旧的 http 地址继续能用）`, level: 'ok' }); return; }
     } catch (_) { /* ignore */ }
