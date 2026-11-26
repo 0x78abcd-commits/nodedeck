@@ -17,6 +17,10 @@ Windows 桌面软件：**填 VPS → 一键部署全套协议 → 分配给用�
 
 软件本身不改系统代理、不装虚拟网卡、不需要管理员权限。
 
+## 探针网页
+
+「设置 → 探针网页」里选一台服务器当主控：它每 5 秒从各台 VPS 的 agent 读一次 CPU、内存、磁盘、网速、本月流量（只读接口，带密钥），在订阅端口上出一个网页 `https://IP:订阅端口/p/<随机口令>/`，手机浏览器就能看。某台 1 分钟没回应会发 Telegram，恢复后再发一次。网页里不显示 IP，没有任何远程操作功能。
+
 ## 工作原理
 
 ```
@@ -75,6 +79,14 @@ Windows 上的 NodeDeck ──SSH──▶ VPS
 
 `上游仓库更新提醒` 工作流每周检查 sing-box、Xray、Hysteria、TUIC、cloudflared、v2rayN / v2rayNG、mihomo、NodeQuality、TcpQuality、CELERITY-panel 和 Teminuosi/tms-client 的新版本，有更新就开 Issue。TMS 不公开源码，只看它的更新说明，自己实现。清单和理由见 `docs/upstream-tracking.md`。
 
+## 测试
+
+- `node test/run.js`：生成的各种配置都能被 sing-box / Xray 读进去（`SINGBOX=…`、`XRAY=…` 指定内核）
+- `node test/e2e.js`：真流量测试，本机起全协议服务端，用 sing-box / Xray / mihomo 三种客户端逐个连（`SINGBOX=… XRAY=… MIHOMO=…`）
+- `cd agent && go test ./...`：agent 单元测试
+
+GitHub 上每次推送、发版、内核自动同步前都会跑（`.github/workflows/test.yml`）。
+
 ## 本地开发
 
 ```bash
@@ -90,15 +102,21 @@ npm run dist                     # 打包 exe 到 dist/（在 Windows 上运行�
 ## 目录
 
 ```
-src/main/core.js      配置生成 / 分享链接 / 订阅（纯逻辑，可单测）
+src/main/core.js      协议、用户、sing-box / Xray 服务端配置、端口分配（纯逻辑，可单测）
+src/main/subscribe.js 节点入口、分享链接、订阅（v2rayN / Clash / sing-box）、客户端出站
 src/main/deploy.js    SSH 部署、同步（含 agent 升级）、状态、卸载
+src/main/units.js     VPS 上的路径和服务文件（systemd / OpenRC）
+src/main/bench.js     网络优化、社区测试脚本
+src/main/cleanup.js   清理其他面板 / 程序、备份和恢复
+src/main/probe.js     探针网页（主控、密钥、机器列表）
 src/main/tools.js     工具箱
-src/main/nodetest.js  本地 sing-box 节点测试
+src/main/nodetest.js  本地节点测试（sing-box / Xray）
 src/main/updater.js   自动更新
 src/main/store.js     本地数据（Windows DPAPI 加密）
-src/renderer/         界面（原生 JS，无需构建）
-agent/                VPS 端 agent（Go，仅标准库；update.go 是内核自动升级）
-.github/workflows/    release.yml 发布软件；singbox.yml 每天自动构建 sing-box 内核；upstream-watch.yml 每周提醒参考仓库更新
+src/renderer/         界面（原生 JS，无需构建；按页面分文件，index.html 按顺序加载，settings.js 最后启动界面）
+agent/                VPS 端 agent（Go，仅标准库；update.go 内核自动升级，xray.go Xray，probe.go 探针）
+test/                 run.js 配置检查；e2e.js 真流量测试
+.github/workflows/    release.yml 发布软件；test.yml 测试；singbox.yml / xray.yml 每天同步内核；upstream-watch.yml 每周提醒上游更新
 ```
 
 ## 注意
