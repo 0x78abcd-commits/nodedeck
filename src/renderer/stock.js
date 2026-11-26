@@ -27,7 +27,7 @@ async function viewStock(v) {
   const cdOn = !!info.cd?.serverId;
   v.append(h('h1', {}, '补货提醒'), h('p', { class: 'sub' }, '盯着商品页，补货了就发通知（Telegram / 微信）'));
   if (!deployed.length) { v.append(h('div', { class: 'card' }, h('p', { class: 'muted' }, '先部署一台服务器：检查商品页、装 changedetection.io 都在你的 VPS 上进行。'))); return; }
-  if (!info.notifyOn) v.append(h('div', { class: 'card', style: { borderColor: 'var(--warn)' } }, h('b', {}, '还没配通知渠道'), h('p', { class: 'muted', style: { margin: '4px 0 0' } }, '补货消息要发到 Telegram 或微信，先在「设置 → 通知」里填好一个（微信用 PushPlus 最省事）。'), h('button', { class: 'small', onclick: () => go('settings') }, '去设置')));
+  if (!info.notifyOn) v.append(h('div', { class: 'card', style: { borderColor: 'var(--warn)' } }, h('b', {}, '还没配通知渠道'), h('p', { class: 'muted', style: { margin: '4px 0 0' } }, '补货消息要发到 Telegram 或微信，先在「设置 → 通知」里填好一个（微信用 PushPlus 最省事）。'), h('button', { class: 'small', onclick: () => goSettings('notify') }, '去设置')));
   if (!builtinOn && !cdOn) { v.append(stockChooser(deployed)); return; }
   if (builtinOn) v.append(stockBuiltinCard(info, deployed));
   if (cdOn) v.append(await stockCdCard(info));

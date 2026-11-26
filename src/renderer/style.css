@@ -216,6 +216,20 @@ td b { font-weight: 600; }
 .tabs a:hover { color: var(--text); }
 .tabs a.active { color: var(--text); border-color: var(--accent); }
 
+/* 设置页：分页 + 单列，勾选项标题和说明分两行 */
+.set-pane, .set-tabs { max-width: 860px; }
+.set-pane > div > .grid { margin-bottom: 14px; }
+.set-pane label.f > select { max-width: 460px; }
+.set-pane .row { align-items: flex-start; }
+.set-pane .card h3 { display: flex; align-items: center; }
+.set-lead { margin: 0 0 14px; }
+.set-foot { margin: 4px 0 24px; }
+.set-indent { padding-left: 26px; }
+label.chk { display: flex; gap: 10px; align-items: flex-start; margin: 0 0 14px; cursor: pointer; }
+label.chk > input { flex: none; margin: 3px 0 0; }
+label.chk .t { font-weight: 500; }
+label.chk .d { color: var(--muted); font-size: 12px; line-height: 1.6; margin-top: 2px; }
+
 pre.log { background: var(--log-bg); border: 1px solid var(--line); border-radius: var(--r-ctl); padding: 12px 14px; max-height: 420px; overflow: auto; white-space: pre-wrap; font-family: var(--font-mono); font-size: 12px; line-height: 1.6; margin: 0; color: var(--text); }
 .kv { display: grid; grid-template-columns: 120px 1fr; gap: 6px 12px; }
 .kv .k { color: var(--muted); }

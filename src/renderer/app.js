@@ -117,7 +117,7 @@ function renderFoot() {
   f.innerHTML = '';
   f.append(h('div', {}, `v${info.version || ''}${info.portable ? ' 便携版' : ''}`));
   const st = updateStatus.state;
-  if (st === 'available') f.append(h('div', { class: 'upd', onclick: () => go('settings') }, `● 新版本 ${updateStatus.latest}`));
+  if (st === 'available') f.append(h('div', { class: 'upd', onclick: () => goSettings('app') }, `● 新版本 ${updateStatus.latest}`));
   if (st === 'downloading') f.append(h('div', { class: 'upd' }, `下载更新 ${updateStatus.percent || 0}%`), h('div', { class: 'upd-bar' }, h('i', { style: { width: (updateStatus.percent || 0) + '%' } })));
   if (st === 'downloaded') f.append(h('div', { class: 'upd', onclick: () => api.call('update:install') }, '● 更新已就绪，点此重启'));
 }
