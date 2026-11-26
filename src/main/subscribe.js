@@ -43,7 +43,7 @@ function nodeEntries(state, server) {
     if (!relay) continue;
     out.push({
       serverId: server.id, protocol: f.target.protocol, host: relay.host, port: Number(f.listenPort),
-      label: f.nodeName || `${server.name}-${PROTOCOLS[f.target.protocol].label}-经${relay.name}`, via: relay.id,
+      label: f.nodeName || `${server.name}-${PROTOCOLS[f.target.protocol].label}-经${relay.name}`, custom: !!f.nodeName, via: relay.id,
     });
   }
   const cft = cfTunnelOf(server);
