@@ -525,28 +525,36 @@ const AUTO_PREFER = {
   vlessXhttpTls: [443, 8443, 2053, 2083, 2087, 2096],
   hysteria2: [443, 8443],
 };
+// 给一个协议挑优选端口：先按 AUTO_PREFER 顺序挑，都不行就随机高位端口。
+// 避开本服务器其它协议 / 端口跳跃范围 / 转发 / 订阅端口、SSH 端口、busy（VPS 上被别的程序占用的 { tcp, udp }）和 avoid
+function preferredFreePort(state, server, protocolKey, { busy = {}, avoid = [] } = {}) {
+  const nets = netsOf(PROTOCOLS[protocolKey].net);
+  const used = new Set();
+  const ranges = [];
+  for (const { port, net: n, range, key } of serverPorts(state, server)) {
+    if (range) { ranges.push(range); continue; }
+    if (key === protocolKey) continue;
+    if (port) for (const x of netsOf(n)) used.add(`${x}/${port}`);
+  }
+  for (const x of busy.tcp || []) used.add(`tcp/${x}`);
+  for (const x of busy.udp || []) used.add(`udp/${x}`);
+  for (const x of avoid) for (const n of nets) used.add(`${n}/${x}`);
+  used.add(`tcp/${Number(server.sshPort) || 22}`);
+  const ok = (port) => nets.every((x) => !used.has(`${x}/${port}`)) && !ranges.some(([a, b]) => port >= a && port <= b);
+  let port = (AUTO_PREFER[protocolKey] || []).find(ok);
+  for (let i = 0; !port && i < 500; i++) { const c = 10000 + crypto.randomInt(50000); if (ok(c)) port = c; }
+  if (!port) throw new Error('找不到空闲端口');
+  return port;
+}
+
 function autoPickPorts(state, server, busy = {}) {
   const p = server.protocols || {};
   const keys = Object.keys(PROTOCOLS).filter((k) => p[k]?.enabled && !(k === 'vmess' && cfTunnelOf(server)));
   for (const k of keys) p[k].port = 0; // 先全部腾空，按顺序重新挑
   const picked = [];
   for (const k of keys) {
-    const nets = netsOf(PROTOCOLS[k].net);
-    const used = new Set();
-    const ranges = [];
-    for (const { port, net: n, range } of serverPorts(state, server)) {
-      if (range) { ranges.push(range); continue; }
-      if (port) for (const x of netsOf(n)) used.add(`${x}/${port}`);
-    }
-    for (const x of busy.tcp || []) used.add(`tcp/${x}`);
-    for (const x of busy.udp || []) used.add(`udp/${x}`);
-    used.add(`tcp/${Number(server.sshPort) || 22}`);
-    const ok = (port) => nets.every((x) => !used.has(`${x}/${port}`)) && !ranges.some(([a, b]) => port >= a && port <= b);
-    let port = (AUTO_PREFER[k] || []).find(ok);
-    for (let i = 0; !port && i < 500; i++) { const c = 10000 + crypto.randomInt(50000); if (ok(c)) port = c; }
-    if (!port) throw new Error('找不到空闲端口');
-    p[k].port = port;
-    picked.push(`${PROTOCOLS[k].label} ${port}`);
+    p[k].port = preferredFreePort(state, server, k, { busy });
+    picked.push(`${PROTOCOLS[k].label} ${p[k].port}`);
   }
   return picked;
 }
@@ -593,7 +601,7 @@ function rotateServer(state, server) {
   return { server: s, changes };
 }
 
-module.exports = { autoPickPorts,
+module.exports = { autoPickPorts, preferredFreePort,
   subTlsWanted, cfTunnelOf, fpOf, FINGERPRINTS, PREFERRED_TCP_PORTS, hopRange, PROTOCOLS, REMOTE_DIR, agentForwards, forwardTargets, CONN_LOG, XRAY_ACCESS_LOG, onlineTrackOn, GB, randId, randHex, randPassword, uuid, realityKeypair, defaultProtocols, newServer, newUser, userStatus, userExpireAt, userUsedBytes, userHasServer, usersForServer, buildServerConfig, XRAY_KEYS, isXray, usesXray, realityOn, xrayPorts, buildXrayConfig, acmeCertFiles, xhttpPath, netsOf, serverPorts, checkPortConflicts, resolveForwardTarget, landingOutbound, pickFreePort, rotateServer, ensureProtocols, ssUserKey, pickPreferredPort, usesAcme, tlsSniFor, WARP_SITES,
   // 内部共用（订阅模块要用）
   SS_METHOD,

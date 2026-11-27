@@ -505,6 +505,85 @@ function registerIpc() {
     store.upsert('servers', { id: srv.id, protocols: { ...srv.protocols, [entry.protocol]: { ...srv.protocols[entry.protocol], name } } });
     return true;
   });
+  // 节点页「端口检测」：从本机连这个入口的端口（TCP 协议直接连端口，UDP 协议走一次真连），
+  // 不通就换成优选端口再测（最多 3 次，都不通改回原端口）。opts.force：固定端口 / 疑似安全组没放行时也照样换
+  handle('node:portCheck', async (entry, opts = {}) => {
+    const id = entry.serverId;
+    const key = entry.protocol;
+    const log = taskLogger(`port:${id}:${key}`);
+    const srv0 = getServer(id);
+    const meta = core.PROTOCOLS[key];
+    if (!srv0 || !meta || !srv0.protocols?.[key]?.enabled) throw new Error('没找到这个节点');
+    if (entry.via) throw new Error('经中转的入口用的是中转机的端口，请到「中转」页处理');
+    if (entry.cf) throw new Error('Cloudflare 隧道入口不走服务器端口，不用检测');
+    if (!srv0.deployedAt) throw new Error('这台服务器还没部署');
+    const label = meta.label;
+    const tcp = core.netsOf(meta.net).includes('tcp');
+    if (!tcp && !fs.existsSync(singboxPath)) throw new Error('找不到内置 sing-box，测不了 UDP 协议');
+    const entryNow = () => core.nodeEntries(state(), getServer(id)).find((x) => x.protocol === key && !x.via && !x.cf && x.host === entry.host)
+      || core.nodeEntries(state(), getServer(id)).find((x) => x.protocol === key && !x.via && !x.cf);
+    // 测一次，不通再补测一次（偶发丢包不算不通）
+    const probeOnce = async (e) => (tcp ? tools.tcpPing(e.host, e.port, 5000) : testEntryFor('owner', { latency: true })(e));
+    const probePort = async (e) => { let r = await probeOnce(e); if (!r.ok) r = await probeOnce(e); return r; };
+
+    log('检查服务器上的服务和端口监听 …');
+    const self = await deploy.serverSelfCheck(srv0);
+    const svcUp = core.isXray(key) ? self.status.xray : self.status.singbox;
+    if (!svcUp) { log(`✘ ${core.isXray(key) ? 'Xray' : 'sing-box'} 没在运行`); return { status: 'down', message: '服务没在运行，换端口没用：先点服务器的「同步」，还不行看「日志」' }; }
+    const port0 = Number(srv0.protocols[key].port);
+    if (self.listening.length && !core.netsOf(meta.net).every((n) => self.listening.includes(`${n}/${port0}`))) {
+      log(`✘ 服务器上 ${port0} 没在监听`);
+      return { status: 'down', message: `服务器上 ${label} 的端口 ${port0} 没在监听，换端口没用：先点服务器的「同步」重新下发配置，还不行看「日志」` };
+    }
+    log(`服务器上 ${label} 正在监听 ${port0} ✔`);
+
+    log(`从本机${tcp ? '连接' : '真连（UDP 协议没法只测端口）'} ${entry.host}:${port0} …`);
+    const first = await probePort(entryNow() || entry);
+    if (first.ok) { log('✔ 端口通'); return { status: 'ok', port: port0, message: `端口 ${port0} 从本机能连通` }; }
+    log(`✘ 连不通${first.error ? '：' + first.error : ''}`);
+
+    if (self.via) return { status: 'ip', message: `SSH 也要经本机代理（${self.via}）才连得上：多半是整个 IP 被墙，换端口没用，建议加中转、换 IP，或开 Cloudflare 隧道` };
+    if (!opts.force && tcp) {
+      const others = Object.entries(core.PROTOCOLS).filter(([k, m]) => k !== key && core.netsOf(m.net).includes('tcp') && srv0.protocols?.[k]?.enabled && !(k === 'vmess' && core.cfTunnelOf(srv0)));
+      if (others.length) {
+        const rs = await Promise.all(others.map(([k]) => tools.tcpPing(srv0.host, srv0.protocols[k].port, 5000)));
+        if (rs.every((r) => !r.ok)) return { status: 'firewall', canForce: true, message: 'SSH 能连上，但这台所有协议端口从本机都连不通：多半是云厂商的安全组 / 防火墙只放行了 SSH，换端口也一样不通。先去 VPS 控制台放行端口' };
+      }
+    }
+    if (srv0.protocols[key].fixedPort && !opts.force) return { status: 'fixed', canForce: true, message: `端口 ${port0} 不通，但它是固定端口，没有自动更换` };
+
+    // 换优选端口：VPS 上被别的程序占用的端口要避开（监听列表去掉我们自己的）
+    const ours = new Set();
+    for (const { port, net } of core.serverPorts(state(), srv0)) if (port) for (const n of core.netsOf(net)) ours.add(`${n}/${port}`);
+    const busy = { tcp: [], udp: [] };
+    for (const x of self.listening) if (!ours.has(x)) { const [n, p] = x.split('/'); (busy[n] || []).push(Number(p)); }
+    const tried = [port0];
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const cur = getServer(id);
+      let port;
+      try { port = core.preferredFreePort(state(), cur, key, { busy, avoid: tried }); } catch (e) { log('✘ ' + e.message); break; }
+      tried.push(port);
+      store.upsert('servers', { id, protocols: { ...cur.protocols, [key]: { ...cur.protocols[key], port } } });
+      log(`换成 ${port} 再试（第 ${attempt} 次），同步到服务器 …`);
+      try { await syncOne(id, () => {}); } catch (e) { log('✘ 同步失败：' + e.message); continue; }
+      const r = await probePort(entryNow());
+      if (r.ok) {
+        log(`✔ ${port} 能连通`);
+        // 订阅和转发跟着更新：共享用户的服务器、把这个节点当转发目标的中转机
+        const related = new Set();
+        for (const u of state().users) if (core.userHasServer(u, id)) for (const x of state().servers) if (x.id !== id && x.deployedAt && core.userHasServer(u, x.id)) related.add(x.id);
+        for (const f of state().forwards || []) if (f.target?.serverId === id && f.target?.protocol === key) { const rl = getServer(f.relayServerId); if (rl?.deployedAt) related.add(rl.id); }
+        for (const rid of related) { log(`同步 ${getServer(rid).name}（订阅 / 转发跟着更新）…`); try { await syncOne(rid, () => {}); } catch (e) { log(`⚠ ${getServer(rid).name} 同步失败：${e.message}，稍后点「同步全部」`); } }
+        return { status: 'changed', from: port0, to: port, message: `${label} 端口 ${port0} → ${port}，已经能连通。用户刷新订阅后生效` };
+      }
+      log(`✘ ${port} 也连不通`);
+    }
+    const cur = getServer(id);
+    store.upsert('servers', { id, protocols: { ...cur.protocols, [key]: { ...cur.protocols[key], port: port0 } } });
+    log(`改回原端口 ${port0}，同步 …`);
+    try { await syncOne(id, () => {}); } catch (e) { log('⚠ 改回后同步失败：' + e.message); }
+    return { status: 'failed', message: `换了 ${tried.length - 1} 个端口都连不通，已改回 ${port0}：多半是 IP 被墙或这台电脑的网络问题，可以点「一键体检」看原因` };
+  });
   handle('landing:test', async (id) => {
     if (!fs.existsSync(singboxPath)) throw new Error('找不到内置 sing-box：' + singboxPath);
     const l = state().landings.find((x) => x.id === id);

@@ -57,7 +57,7 @@ async function viewNodes(v) {
           h('button', { class: 'small', onclick: () => copy(e.link) }, '复制'),
           h('button', { class: 'small', onclick: () => showQr(e.label, e.link) }, '二维码'),
           h('button', { class: 'small primary', onclick: (ev) => busy(ev.currentTarget, () => runEntryTest(e, res, false)) }, '测试'),
-          h('button', { class: 'small', onclick: (ev) => { const b = ev.currentTarget; menu(b, [e.cf ? null : { label: '改名', onClick: () => renameEntry(e) }, { label: '编辑', onClick: () => editEntry(e) }, { sep: true }, { label: '删除', danger: true, onClick: () => removeEntry(e, b) }]); } }, '更多 ▾')))));
+          h('button', { class: 'small', onclick: (ev) => { const b = ev.currentTarget; menu(b, [e.cf ? null : { label: '改名', onClick: () => renameEntry(e) }, { label: '编辑', onClick: () => editEntry(e) }, e.cf || e.via ? null : { label: '端口检测', onClick: () => portCheck(e) }, { sep: true }, { label: '删除', danger: true, onClick: () => removeEntry(e, b) }]); } }, '更多 ▾')))));
     }
     const latBtn = h('button', { class: 'small', title: '这台的所有入口测延迟和出口 IP（最多 4 个同时测）' }, '一键测延迟');
     const spBtn = h('button', { class: 'small', title: '这台的所有入口经节点下载测速，一个一个测（每个约 10 秒）' }, '一键测速');
@@ -71,6 +71,34 @@ async function viewNodes(v) {
         h('button', { class: 'small', onclick: () => copy(g.entries.map((e) => e.link).join('\n')) }, '复制全部')),
       g.entries.length ? h('table', {}, h('thead', {}, h('tr', {}, ['协议', '入口', '测试结果', '操作'].map((t) => h('th', {}, t)))), tb) : h('div', { class: 'muted' }, '没有启用的协议')));
   }
+}
+
+// 端口检测：本机连不通就换成优选端口（最多 3 次，都不通改回原端口）
+function portCheck(e) {
+  const pname = PROTO_LABEL[e.protocol];
+  const pre = h('pre', { class: 'log', style: { maxHeight: '220px' } }, '');
+  const result = h('div', { style: { marginTop: '10px' } });
+  const off = api.on('task-log', (m) => { if (m.task !== `port:${e.serverId}:${e.protocol}`) return; pre.textContent += m.line + '\n'; pre.scrollTop = pre.scrollHeight; });
+  let running = false;
+  const TAG = { ok: ['ok', '✔ 端口通'], changed: ['ok', '✔ 已换端口'], fixed: ['warn', '⚠ 不通'], firewall: ['warn', '⚠ 不通'], down: ['bad', '✘ 服务没监听'], ip: ['bad', '✘ 不通'], failed: ['bad', '✘ 不通'] };
+  const run = async (force) => {
+    if (running) return;
+    running = true; result.innerHTML = '';
+    if (force) pre.textContent += '——\n';
+    try {
+      const r = await api.call('node:portCheck', e, { force: !!force });
+      const [cls, txt] = TAG[r.status] || ['', r.status];
+      result.append(h('p', { style: { margin: 0 } }, h('span', { class: 'tag ' + cls }, txt), ' ', r.message));
+      if (r.canForce) result.append(h('div', { style: { marginTop: '8px' } }, h('button', { class: 'small', onclick: (ev) => busy(ev.currentTarget, () => run(true)) }, '仍然换端口')));
+      if (r.status === 'changed') { await reload(); if (page === 'nodes') render(); }
+    } catch (err) {
+      result.append(h('p', { style: { margin: 0 } }, h('span', { class: 'tag bad' }, '✘ 出错'), ' ', err.message));
+    } finally { running = false; }
+  };
+  modal({ title: `端口检测：${serverName(e.serverId)} 的 ${pname}`, wide: true, onClose: off, body: h('div', {},
+    h('p', { class: 'muted', style: { marginTop: 0 } }, `先看服务器上 ${pname} 有没有在监听，再从这台电脑连 ${e.host}:${e.port}。不通就换成优选端口（Reality / XHTTP 优先 443、8443 这类 HTTPS 端口，其它随机高位端口），同步后再测，最多换 3 次，都不通就改回原端口。`),
+    pre, result), buttons: [{ label: '关闭' }] });
+  run(false);
 }
 
 async function renameEntry(e) {
