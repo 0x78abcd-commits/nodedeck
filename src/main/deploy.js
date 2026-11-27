@@ -784,6 +784,13 @@ async function vpsCheckTarget(ssh, domain) {
   return { ...list[0], where: 'vps', at: Date.now() };
 }
 
+// 在中转机上探测转发目标是不是 HTTP / Socks 明文代理（只握手，不经它访问网站）
+async function proxyProbe(server, targets) {
+  const list = [...new Set(targets.map((t) => String(t).trim()).filter((t) => /^[^\s,']+$/.test(t)))].slice(0, 30);
+  if (!list.length) return [];
+  return withSSH(server, (ssh) => agentJSON(ssh, `proxy-probe -targets ${shq(list.join(','))}`, 60000 + list.length * 15000));
+}
+
 async function remoteTlsCheck(server, domain) {
   return withSSH(server, (ssh) => vpsCheckTarget(ssh, domain));
 }
@@ -811,4 +818,4 @@ async function gateRealityTarget(ssh, server, log, force) {
   log(`✔ Reality 目标 ${rp.sni} 检测通过（TLS 1.3、HTTP/2、X25519、证书有效，${r.ms} ms）`);
 }
 
-module.exports = { ...cleanup, ...bench, withCC, swapSize, memLimits, writeUnits, tuneSmallBox, rememberHw, pickReality, adminNotify, realityCheck, deployServer, syncServer, updateSingbox, serverSelfCheck, notifyTest, fwdStatus, fwdReset, fetchMetrics, scanReality, serverStatus, fetchStats, resetTraffic, serverLogs, uninstall, testSSH, remoteTlsCheck, agentConfig };
+module.exports = { proxyProbe, ...cleanup, ...bench, withCC, swapSize, memLimits, writeUnits, tuneSmallBox, rememberHw, pickReality, adminNotify, realityCheck, deployServer, syncServer, updateSingbox, serverSelfCheck, notifyTest, fwdStatus, fwdReset, fetchMetrics, scanReality, serverStatus, fetchStats, resetTraffic, serverLogs, uninstall, testSSH, remoteTlsCheck, agentConfig };

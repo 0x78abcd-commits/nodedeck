@@ -947,7 +947,7 @@ func genCert(host, dir string) {
 func main() {
 	log.SetFlags(log.LstdFlags)
 	if len(os.Args) < 2 {
-		fmt.Println("用法: nodedeck-agent run|stats|metrics|apply|reset [user]|update-singbox|install-singbox|install-xray|update-xray|extra|stock-check|warp-register|scan-reality|apply-hops|notify-test|gencert|version  [-c /etc/nodedeck/agent.json]")
+		fmt.Println("用法: nodedeck-agent run|stats|metrics|apply|reset [user]|update-singbox|install-singbox|install-xray|update-xray|extra|stock-check|warp-register|scan-reality|apply-hops|proxy-probe|notify-test|gencert|version  [-c /etc/nodedeck/agent.json]")
 		os.Exit(2)
 	}
 	cmd := os.Args[1]
@@ -967,6 +967,7 @@ func main() {
 	stockURL := fs.String("url", "", "商品页地址（stock-check 用）")
 	stockMode := fs.String("mode", "gone", "判断规则：gone / appear / regex（stock-check 用）")
 	timeout := fs.Duration("timeout", 2*time.Second, "单个地址的超时")
+	targets := fs.String("targets", "", "逗号分隔的 地址:端口（proxy-probe 用）")
 	fs.Parse(os.Args[2:])
 	switch cmd {
 	case "run":
@@ -988,6 +989,12 @@ func main() {
 		scanRealityCmd(*selfIP, *timeout)
 	case "warp-register":
 		warpRegisterCmd(*out, *force, *warpURL)
+	case "proxy-probe":
+		t := *timeout
+		if t < 3*time.Second {
+			t = 3 * time.Second
+		}
+		proxyProbeCmd(*targets, t)
 	case "apply-hops":
 		a := &Agent{cfg: loadConfig(*cfgPath)}
 		a.applyHops()

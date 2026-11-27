@@ -92,6 +92,7 @@ async function viewServers(v) {
           s.deployedAt && { label: core_xray(s) ? '升级内核（sing-box + Xray）' : '升级 sing-box 内核', onClick: async () => { toast('正在检查内核更新…'); const m = await api.call('server:updateSingbox', s.id); toast(m, 'ok'); render(); } },
           s.deployedAt && { label: '重新部署', onClick: () => deployServer(s) },
           { label: '一键换新（被墙时用）', onClick: () => rotateServer(s) },
+          { label: '用 443 等 Web 端口…', onClick: () => webPortSetup(s) },
           { label: '清理其他面板 / 程序', onClick: () => cleanOthers(s) },
           s.deployedAt ? { label: '卸载…', onClick: () => uninstallServer(s, false) } : null,
           { sep: true },
@@ -377,8 +378,9 @@ async function editServer(orig, opts = {}) {
   }) }, '加入本机当前 IP');
   const webAllowBox = h('details', { class: 'fw-adv' }, h('summary', {}, 'Web 端口来源白名单（一定要用 80 / 443 / 8080 / 8443 时填）'),
     field('只允许这些来源 IP 连 Web 端口上的协议', h('div', {}, webAllow, h('div', { style: { marginTop: '6px' } }, myIpBtn)),
-      '很多服务商不允许在这几个端口上对公网开放代理，但允许只对指定 IP 开放。填了之后这台服务器的协议才能用这几个端口，NodeDeck 会在 VPS 防火墙里只放行名单上的 IP（其它地址扫端口也看不到）；把这台当转发目标的中转机 IP 会自动加入。本机 IP 是让自己的 VPS 看来源地址查的；开着代理或 TUN 时查到的是代理出口，先关掉再点。家宽 IP 会变，变了要回来更新'));
-  if ((s.webAllow || []).length) webAllowBox.open = true;
+      '推荐用服务器「更多 → 用 443 等 Web 端口」一键设置（自动识别本机 IP、变了自动更新）。很多服务商不允许在这几个端口上对公网开放代理，但允许只对指定 IP 开放。填了之后这台服务器的协议才能用这几个端口，NodeDeck 会在 VPS 防火墙里只放行名单上的 IP（其它地址扫端口也看不到）；把这台当转发目标的中转机 IP 会自动加入。本机 IP 是让自己的 VPS 看来源地址查的；开着代理或 TUN 时查到的是代理出口，先关掉再点。家宽 IP 会变，变了要回来更新'));
+  if (s.webAllowAuto) webAllowBox.append(h('p', { class: 'muted', style: { fontSize: '12px', margin: '0 0 8px' } }, `另外还允许这台电脑的公网 IP（${s.webAllowMyIp || '还没识别'}，变了软件会自动更新）。用「更多 → 用 443 等 Web 端口」可以重新设置或改回普通端口。`));
+  if ((s.webAllow || []).length || s.webAllowAuto) webAllowBox.open = true;
 
   // 端口：自动优选（部署时挑）或手动填
   const portMode = h('select', { style: { width: 'auto' } }, h('option', { value: 'auto' }, '端口：自动优选（推荐）'), h('option', { value: 'manual' }, '端口：手动填写'));
@@ -473,7 +475,7 @@ async function editServer(orig, opts = {}) {
     for (const [k] of PROTOS) {
       const e = protoEls[k];
       s.protocols[k] = { ...s.protocols[k], enabled: e.en.checked, port: Number(e.pt.value || e.pt.dataset.keep), fixedPort: portMode.value === 'manual' && e.fixed.checked };
-      if (portMode.value === 'manual' && e.en.checked && S.settings.avoidWebPorts !== false && !s.webAllow.length && WEB_PORTS.includes(s.protocols[k].port) && !(k === 'vmess' && cfOn.checked)) {
+      if (portMode.value === 'manual' && e.en.checked && S.settings.avoidWebPorts !== false && !s.webAllow.length && !(s.webAllowAuto && s.webAllowMyIp) && WEB_PORTS.includes(s.protocols[k].port) && !(k === 'vmess' && cfOn.checked)) {
         webAllowBox.open = true;
         throw new Error(`${PROTO_LABEL[k]} 的端口 ${s.protocols[k].port} 是常用 Web 端口（80 / 443 / 8080 / 8443），很多服务商不允许对公网开放。换一个（比如 2053），或者在下面「Web 端口来源白名单」里填上允许连接的 IP（只对这些 IP 开放）`);
       }
@@ -594,6 +596,83 @@ function deployServer(s) {
     { label: '开始部署', class: 'primary', close: false, onClick: start },
   ] });
   return m;
+}
+
+// 一键用 Web 端口：有的服务商只允许 80 / 443 / 8080 / 8443 对指定 IP 开放。选协议和端口，自动识别本机 IP、写好防火墙白名单
+async function webPortSetup(s0) {
+  await reload();
+  const s = S.servers.find((x) => x.id === s0.id) || s0;
+  const list = PROTOS.filter(([k]) => s.protocols?.[k]?.enabled && !(k === 'vmess' && s.cfTunnel?.enabled));
+  if (!list.length) { toast('这台没有启用的协议', 'err'); return; }
+  const listed = s.webAllowAuto || (s.webAllow || []).length;
+  const inUse = list.find(([k]) => WEB_PORTS.includes(Number(s.protocols[k].port)) && listed);
+  const proto = h('select', {}, list.map(([k, l]) => h('option', { value: k }, `${l}（现在 ${s.protocols[k].port}）`)));
+  proto.value = inUse ? inUse[0] : (s.protocols.vlessReality?.enabled ? 'vlessReality' : list[0][0]);
+  const port = h('select', {}, [[443, '443（推荐，最像正常网站）'], [8443, '8443'], [8080, '8080'], [80, '80']].map(([p, l]) => h('option', { value: p }, l)));
+  port.value = inUse ? s.protocols[inUse[0]].port : 443;
+  const me = h('input', { type: 'checkbox', checked: s.webAllowAuto !== false });
+  const meIp = h('span', { class: 'muted' }, '正在识别…');
+  let detected = null;
+  const wide = h('input', { type: 'checkbox' });
+  const wideText = h('span', {}, '家里 IP 经常变、电脑又不常开：允许整个网段');
+  const extra = h('textarea', { rows: 3, class: 'mono', placeholder: '一行一个，例如\n1.2.3.4\n110.80.0.0/16' }, (s.webAllow || []).join('\n'));
+  const relays = (S.forwards || []).filter((f) => f.enabled !== false && f.target?.type === 'node' && f.target.serverId === s.id).map((f) => serverName(f.relayServerId));
+  const logBox = h('pre', { class: 'log hidden', style: { maxHeight: '160px', marginTop: '12px' } });
+  const result = h('div', { style: { marginTop: '10px' } });
+  const off = api.on('task-log', (m) => { if (m.task !== 'web:' + s.id && m.task !== 'sync:' + s.id) return; logBox.classList.remove('hidden'); logBox.textContent += m.line + '\n'; logBox.scrollTop = logBox.scrollHeight; });
+  const tip = (t) => h('p', { class: 'muted', style: { fontSize: '12.5px', margin: '4px 0 0' } }, t);
+  api.call('net:myIp', s.id).then((r) => {
+    detected = r;
+    meIp.textContent = r.viaProxy ? `查到的是你的服务器「${r.viaProxy}」的 IP：这台电脑开着代理或 TUN，先关掉再打开这个窗口` : `现在是 ${r.ip}`;
+    meIp.style.color = r.viaProxy ? 'var(--warn)' : '';
+    const m = /^(\d+)\.(\d+)\./.exec(r.ip);
+    wideText.textContent = m ? `家里 IP 经常变、电脑又不常开：允许整个网段 ${m[1]}.${m[2]}.0.0/16（范围大一些，安全性稍低）` : '家里 IP 经常变：允许整个网段（只支持 IPv4）';
+  }).catch((e) => { meIp.textContent = '识别失败：' + e.message; meIp.style.color = 'var(--warn)'; });
+
+  const body = h('div', {},
+    h('p', { style: { marginTop: 0 } }, '有的服务商规定 80 / 443 / 8080 / 8443 不能对所有人开放，但可以只对指定 IP 开放。这里一键设置：把一个协议换到这个端口，VPS 防火墙只让下面这些来源连，其它地址扫端口也看不到。这台的其它协议还在普通端口上，不受影响。'),
+    h('div', { class: 'row' }, field('协议', proto), field('端口', port)),
+    h('h4', {}, '谁能连'),
+    h('label', { class: 'f' }, me, ' 这台电脑现在的网络 ', meIp),
+    tip('软件自动识别（问你自己的 VPS，不经第三方），以后 IP 变了软件开着时会自动更新。家里的手机、平板连同一个 Wi-Fi 时和电脑是同一个 IP，也能用。'),
+    h('label', { style: { display: 'flex', gap: '6px', alignItems: 'center', marginTop: '10px', cursor: 'pointer' } }, wide, wideText),
+    relays.length ? tip(`经中转连也可以：中转机 ${relays.join('、')} 的 IP 会自动加入。`) : null,
+    h('details', { class: 'fw-adv', style: { marginTop: '10px' } }, h('summary', {}, '还要让别的地方连（公司、朋友家等，可选）'),
+      field('IP 或网段，一行一个', extra),
+      tip('怎么查那个地方的 IP：用那里的手机或电脑连上那里的网络（关掉代理），浏览器打开百度搜「IP」，结果里「本机IP」后面那串数字（比如 113.87.12.34）就是，填进来。')),
+    h('details', { class: 'fw-adv' }, h('summary', {}, 'IP 是什么？手机流量能用吗？'),
+      tip('公网 IP 就是你家宽带在网上的「门牌号」，同一个路由器下的设备共用一个。运营商隔几天可能换一个号，软件开着时会自动跟上；电脑长时间不开的话，勾上「允许整个网段」更稳。'),
+      tip('手机用 4G / 5G 流量时 IP 一直在变，没法加进名单。这时用这台的其它协议（还在普通端口上），或者给它建一条中转、走中转连。')),
+    logBox, result);
+
+  const run = async () => {
+    result.innerHTML = '';
+    const ex = extra.value.split('\n').map((x) => x.trim()).filter(Boolean);
+    const m = detected && !detected.viaProxy && /^(\d+)\.(\d+)\./.exec(detected.ip);
+    if (wide.checked && m) { const c = `${m[1]}.${m[2]}.0.0/16`; if (!ex.includes(c)) ex.push(c); }
+    result.append(h('p', { class: 'muted', style: { margin: 0 } }, '正在设置，要同步到服务器，大约半分钟…'));
+    logBox.textContent = '';
+    try {
+      const r = await api.call('web:setup', s.id, { key: proto.value, port: Number(port.value), auto: me.checked, extra: ex });
+      result.innerHTML = '';
+      result.append(h('p', { style: { margin: 0 } }, h('span', { class: 'tag ' + (r.ok ? 'ok' : 'warn') }, r.ok ? '✔ 设置好了' : '⚠ 已设置'), ' ', r.message),
+        h('p', { class: 'muted', style: { fontSize: '12px', margin: '6px 0 0' } }, '现在允许：' + r.allow.join('、')));
+      await reload(); render();
+    } catch (e) { result.innerHTML = ''; result.append(h('p', { style: { margin: 0 } }, h('span', { class: 'tag bad' }, '✘ 没设置'), ' ', e.message)); }
+    return false;
+  };
+  modal({ title: `${s.name}：用 443 等 Web 端口`, wide: true, body, onClose: off, buttons: [
+    { label: '关闭' },
+    inUse ? { label: '改回普通端口', close: false, onClick: async () => {
+      if (!(await confirmBox('把用 Web 端口的协议换回普通端口，并去掉白名单？用户需要刷新订阅。', '改回'))) return false;
+      const r = await api.call('web:undo', s.id);
+      result.innerHTML = '';
+      result.append(h('p', { style: { margin: 0 } }, h('span', { class: 'tag ok' }, '✔ 已改回'), ' ', (r.changes || []).join('；') || '没有要改的', r.error ? `（同步失败：${r.error}）` : ''));
+      await reload(); render();
+      return false;
+    } } : null,
+    { label: '一键设置', class: 'primary', close: false, onClick: () => run() },
+  ].filter(Boolean) });
 }
 
 const LEVEL_TAG = { ok: ['ok', '✔ 正常'], warn: ['warn', '⚠ 注意'], fail: ['bad', '✘ 异常'], skip: ['', '— 跳过'] };

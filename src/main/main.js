@@ -375,6 +375,143 @@ function handle(name, fn) {
   });
 }
 
+// 换了端口之后，订阅和转发跟着更新：共享用户的其它服务器、把这些协议当转发目标的中转机
+async function syncRelated(id, keys, log) {
+  const related = new Set();
+  for (const u of state().users) if (core.userHasServer(u, id)) for (const x of state().servers) if (x.id !== id && x.deployedAt && core.userHasServer(u, x.id)) related.add(x.id);
+  for (const f of state().forwards || []) if (f.target?.serverId === id && keys.includes(f.target?.protocol)) { const rl = getServer(f.relayServerId); if (rl?.deployedAt) related.add(rl.id); }
+  for (const rid of related) { log(`同步 ${getServer(rid).name}（订阅 / 转发跟着更新）…`); try { await syncOne(rid, () => {}); } catch (e) { log(`⚠ ${getServer(rid).name} 同步失败：${e.message}，稍后点「同步全部」`); } }
+}
+
+// 本机当前的公网 IP：问自己的一台 VPS 看到的来源地址（不经第三方）。
+// 开着代理 / TUN 时看到的是代理出口：如果正好是自己某台服务器的 IP，标记 viaProxy
+async function lookupMyIp(preferId) {
+  const deployed = state().servers.filter((x) => x.deployedAt);
+  let srv = deployed.find((x) => x.id === preferId && x.speedToken) || deployed.find((x) => x.speedToken) || deployed.find((x) => x.id === preferId) || deployed[0];
+  if (!srv) throw new Error('还没有部署好的服务器，没法查本机 IP');
+  if (!srv.speedToken) { store.upsert('servers', { id: srv.id, speedToken: core.randId(32) }); await syncOne(srv.id, () => {}); srv = getServer(srv.id); }
+  const url = `https://${srv.host.includes(':') ? `[${srv.host}]` : srv.host}:${Number(state().settings?.subPort || 2096)}/nd-speed/ip?t=${encodeURIComponent(srv.speedToken)}`;
+  const r = await agenttls.getJSON(srv, url, 8000);
+  if (!r?.ip) throw new Error('没查到');
+  const own = state().servers.find((x) => [x.host, x.host6].map((h) => String(h || '').replace(/^\[|\]$/g, '')).includes(r.ip));
+  return { ip: r.ip, via: srv.name, viaProxy: own ? own.name : '' };
+}
+
+// 落在 Web 端口、又没设白名单的协议换走（还有要用 TCP 80 验证的正式证书关掉）
+async function leaveWebPorts(id) {
+  const log = taskLogger('sync:' + id);
+  const srv0 = getServer(id);
+  const uses = core.webPortUses(state(), srv0);
+  if (!uses.length) return { changes: [] };
+  const busy = await vpsBusyPorts(srv0, log);
+  const changes = [];
+  for (const u of uses) {
+    const cur = getServer(id);
+    if (u.key === 'acme') { store.upsert('servers', { id, acme: false }); changes.push('关掉正式证书（改用自签证书，链接里带证书指纹）'); log('关掉正式证书'); continue; }
+    const port = core.preferredFreePort(state(), cur, u.key, { busy, avoid: [u.port] });
+    store.upsert('servers', { id, protocols: { ...cur.protocols, [u.key]: { ...cur.protocols[u.key], port, fixedPort: false } } });
+    changes.push(`${u.label}：${u.port} → ${port}`);
+    log(`${u.label} 端口 ${u.port} → ${port}`);
+  }
+  const errs = core.checkPortConflicts(state(), getServer(id));
+  if (errs.length) { store.upsert('servers', { id, protocols: srv0.protocols, acme: srv0.acme }); throw new Error('换端口失败：' + errs.join('；')); }
+  let synced = false; let error = '';
+  if (srv0.deployedAt) {
+    try { await syncOne(id, log); synced = true; await syncRelated(id, uses.map((u) => u.key).filter((k) => k !== 'acme'), log); } catch (e) { error = e.message; }
+  }
+  return { changes, synced, error };
+}
+
+// VPS 上被别的程序（不是 NodeDeck）占着的端口
+async function vpsBusyPorts(srv, log) {
+  const busy = { tcp: [], udp: [] };
+  if (!srv.deployedAt) return busy;
+  try {
+    const self = await deploy.serverSelfCheck(srv);
+    const ours = new Set();
+    for (const { port, net } of core.serverPorts(state(), srv)) if (port) for (const n of core.netsOf(net)) ours.add(`${n}/${port}`);
+    for (const x of self.listening) if (!ours.has(x)) { const [n, p] = x.split('/'); (busy[n] || []).push(Number(p)); }
+  } catch (e) { log && log('⚠ 读取 VPS 端口占用失败：' + e.message); }
+  return busy;
+}
+
+// 一键用 Web 端口（80 / 443 / 8080 / 8443）：把一个协议换到这个端口，只对白名单开放（本机当前 IP 自动识别、变了自动更新；
+// 把这台当转发目标的中转机自动加入；extra = 手动加的 IP / 网段）。做完从本机测一下能不能连上
+async function webSetup(id, { key, port, auto = true, extra = [] }) {
+  const log = taskLogger('web:' + id);
+  const srv0 = getServer(id);
+  const meta = core.PROTOCOLS[key];
+  port = Number(port);
+  if (!srv0 || !meta || !srv0.protocols?.[key]?.enabled) throw new Error('这个协议没启用');
+  if (!core.WEB_PORTS.includes(port)) throw new Error('只能选 80 / 443 / 8080 / 8443');
+  if (key === 'vmess' && core.cfTunnelOf(srv0)) throw new Error('VMess 走着 Cloudflare 隧道，不用端口');
+  extra = (extra || []).map((x) => String(x).trim()).filter(Boolean);
+  const bad = extra.find((x) => !/^[0-9a-fA-F:.]+(\/\d{1,3})?$/.test(x));
+  if (bad) throw new Error('IP 格式不对：' + bad);
+  let myIp = '';
+  if (auto) {
+    log('识别这台电脑现在的公网 IP …');
+    const r = await lookupMyIp(id);
+    if (r.viaProxy) throw new Error(`查到的 IP 是你的服务器「${r.viaProxy}」：这台电脑开着代理或 TUN 模式，先关掉再点（或者不勾「这台电脑的网络」，自己填 IP）`);
+    myIp = r.ip; log(`这台电脑的公网 IP：${myIp}`);
+  }
+  const relays = (state().forwards || []).filter((f) => f.enabled !== false && f.target?.type === 'node' && f.target.serverId === id).map((f) => getServer(f.relayServerId)?.name).filter(Boolean);
+  if (!myIp && !extra.length && !relays.length) throw new Error('至少要有一个能连的来源：勾上「这台电脑的网络」、填一个 IP，或者先给这台建中转');
+  // 端口被 VPS 上别的程序占着（比如网站）就用不了
+  log(`检查 VPS 上 ${port} 端口有没有被别的程序占用 …`);
+  const busy = await vpsBusyPorts(srv0, log);
+  const nets = core.netsOf(meta.net);
+  if (nets.some((n) => (busy[n] || []).includes(port))) throw new Error(`VPS 上 ${port} 端口被别的程序（比如网站 / nginx）占着，换一个端口，或者先停掉那个程序`);
+  // 自己的其它协议占着这个端口：给它换走
+  let cur = getServer(id);
+  const protocols = { ...cur.protocols, [key]: { ...cur.protocols[key], port, fixedPort: true } };
+  for (const [k, m] of Object.entries(core.PROTOCOLS)) {
+    if (k === key || !protocols[k]?.enabled || Number(protocols[k].port) !== port || !core.netsOf(m.net).some((n) => nets.includes(n))) continue;
+    const tmp = { ...cur, protocols };
+    const np = core.preferredFreePort(state(), tmp, k, { busy, avoid: [port] });
+    protocols[k] = { ...protocols[k], port: np, fixedPort: false };
+    log(`${m.label} 原来用 ${port}，换到 ${np}`);
+  }
+  const prev = { protocols: cur.protocols, webAllow: cur.webAllow, webAllowAuto: cur.webAllowAuto, webAllowMyIp: cur.webAllowMyIp, portMode: cur.portMode };
+  store.upsert('servers', { id, protocols, webAllow: extra, webAllowAuto: !!auto, webAllowMyIp: myIp, portMode: 'manual' });
+  const errs = core.checkPortConflicts(state(), getServer(id));
+  if (errs.length) { store.upsert('servers', { id, ...prev }); throw new Error('端口冲突：' + errs.join('；')); }
+  cur = getServer(id);
+  const allow = core.webAllowOf(state(), cur);
+  log(`${meta.label} 换到 ${port}，只允许：${allow.join('、')}`);
+  if (!cur.deployedAt) return { ok: true, port, allow, message: '已设置好，部署时生效' };
+  log('同步到服务器（写防火墙白名单）…');
+  await syncOne(id, log);
+  await syncRelated(id, [key], log);
+  // 从本机测：这台电脑在名单里才测得通（没勾「这台电脑的网络」时，测不通也算正常）
+  log('从这台电脑测试 …');
+  const entry = core.nodeEntries(state(), cur).find((x) => x.protocol === key && !x.via && !x.cf);
+  const tcp = nets.includes('tcp');
+  let r = entry ? await (tcp ? tools.tcpPing(entry.host, port, 5000) : testEntryFor('owner', { latency: true })(entry)) : { ok: false };
+  if (!r.ok && entry) r = await (tcp ? tools.tcpPing(entry.host, port, 5000) : testEntryFor('owner', { latency: true })(entry));
+  log(r.ok ? '✔ 能连上' : '✘ 连不上' + (r.error ? '：' + r.error : ''));
+  if (!myIp && !r.ok) return { ok: true, port, allow, message: `已设置好。这台电脑不在名单里，从这里连不上 ${port} 是正常的。用户刷新订阅后生效` };
+  return { ok: !!r.ok, port, allow, myIp, message: r.ok ? `${meta.label} 已经用上 ${port}，这台电脑能连上，名单外的地址连不上。用户刷新订阅后生效` : `已设置，但这台电脑连不上 ${port}：可能是云厂商安全组没放行 ${port}（去 VPS 控制台放行），或者 IP 被墙。可以用节点页的「端口检测」看原因` };
+}
+
+// 开了「本机 IP 自动更新」的服务器：家宽 IP 变了就更新白名单并同步（软件开着时每 20 分钟查一次）
+async function refreshAutoAllow() {
+  const list = state().servers.filter((x) => x.webAllowAuto && x.deployedAt);
+  if (!list.length) return;
+  let r;
+  try { r = await lookupMyIp(list[0].id); } catch (_) { return; }
+  if (r.viaProxy || !r.ip) return; // 开着代理时查到的是代理出口，不能拿来更新
+  for (const srv of list) {
+    if (srv.webAllowMyIp === r.ip) continue;
+    const old = srv.webAllowMyIp;
+    store.upsert('servers', { id: srv.id, webAllowMyIp: r.ip });
+    try {
+      await syncOne(srv.id, () => {});
+      send('toast', { text: `本机公网 IP 变了（${old || '无'} → ${r.ip}），已更新「${srv.name}」的 Web 端口白名单`, level: 'ok' });
+    } catch (e) { send('toast', { text: `本机 IP 变了，更新「${srv.name}」的白名单失败：${e.message}`, level: 'err' }); }
+  }
+}
+
 function registerIpc() {
   handle('app:info', () => ({ version: app.getVersion(), packaged: app.isPackaged, portable: !!process.env.PORTABLE_EXECUTABLE_DIR, repo: publish.owner ? `${publish.owner}/${publish.repo}` : '', singbox: fs.existsSync(singboxPath), xray: fs.existsSync(xrayPath), dataDir: app.getPath('userData'), realityTargets: core.REALITY_FALLBACKS }));
   handle('state:get', () => state());
@@ -505,58 +642,19 @@ function registerIpc() {
     store.upsert('servers', { id: srv.id, protocols: { ...srv.protocols, [entry.protocol]: { ...srv.protocols[entry.protocol], name } } });
     return true;
   });
-  // 换了端口之后，订阅和转发跟着更新：共享用户的其它服务器、把这些协议当转发目标的中转机
-  async function syncRelated(id, keys, log) {
-    const related = new Set();
-    for (const u of state().users) if (core.userHasServer(u, id)) for (const x of state().servers) if (x.id !== id && x.deployedAt && core.userHasServer(u, x.id)) related.add(x.id);
-    for (const f of state().forwards || []) if (f.target?.serverId === id && keys.includes(f.target?.protocol)) { const rl = getServer(f.relayServerId); if (rl?.deployedAt) related.add(rl.id); }
-    for (const rid of related) { log(`同步 ${getServer(rid).name}（订阅 / 转发跟着更新）…`); try { await syncOne(rid, () => {}); } catch (e) { log(`⚠ ${getServer(rid).name} 同步失败：${e.message}，稍后点「同步全部」`); } }
-  }
-  // 本机当前的公网 IP：问自己的一台 VPS 看到的来源地址（不经第三方）。开着代理 / TUN 时看到的是代理出口
-  handle('net:myIp', async (preferId) => {
-    const deployed = state().servers.filter((x) => x.deployedAt);
-    let srv = deployed.find((x) => x.id === preferId && x.speedToken) || deployed.find((x) => x.speedToken) || deployed.find((x) => x.id === preferId) || deployed[0];
-    if (!srv) throw new Error('还没有部署好的服务器，没法查本机 IP');
-    if (!srv.speedToken) { store.upsert('servers', { id: srv.id, speedToken: core.randId(32) }); await syncOne(srv.id, () => {}); srv = getServer(srv.id); }
-    const url = `https://${srv.host.includes(':') ? `[${srv.host}]` : srv.host}:${Number(state().settings?.subPort || 2096)}/nd-speed/ip?t=${encodeURIComponent(srv.speedToken)}`;
-    const r = await agenttls.getJSON(srv, url, 8000);
-    if (!r?.ip) throw new Error('没查到');
-    return { ip: r.ip, via: srv.name };
+  handle('net:myIp', (preferId) => lookupMyIp(preferId));
+  // 端口转发的目标是不是 HTTP / Socks 明文代理：在中转机上探测（目标可能是内网地址，只有中转机连得到）
+  // 返回 { results: [{ target, kind, error }] }；探测不了（没部署、agent 太旧、SSH 不通）返回 { warn }，不拦保存
+  handle('forward:probe', async (relayId, targets) => {
+    const relay = getServer(relayId);
+    if (!relay?.deployedAt) return { warn: '中转机还没部署，没法检查目标是不是明文代理' };
+    try { return { results: await deploy.proxyProbe(relay, targets || []) }; } catch (e) { return { warn: '没能检查目标是不是明文代理：' + e.message }; }
   });
   // 常用 Web 端口（80 / 443 / 8080 / 8443）：哪些服务器在用、一键换走
   handle('servers:webPorts', () => state().servers.map((x) => ({ id: x.id, name: x.name, deployed: !!x.deployedAt, uses: core.webPortUses(state(), x) })).filter((x) => x.uses.length));
-  handle('server:leaveWebPorts', async (id) => {
-    const log = taskLogger('sync:' + id);
-    const srv0 = getServer(id);
-    const uses = core.webPortUses(state(), srv0);
-    if (!uses.length) return { changes: [] };
-    // 已部署的先看 VPS 上被别的程序占着哪些端口，避开
-    const busy = { tcp: [], udp: [] };
-    if (srv0.deployedAt) {
-      try {
-        const self = await deploy.serverSelfCheck(srv0);
-        const ours = new Set();
-        for (const { port, net } of core.serverPorts(state(), srv0)) if (port) for (const n of core.netsOf(net)) ours.add(`${n}/${port}`);
-        for (const x of self.listening) if (!ours.has(x)) { const [n, p] = x.split('/'); (busy[n] || []).push(Number(p)); }
-      } catch (e) { log('⚠ 读取 VPS 端口占用失败，按本机记录挑端口：' + e.message); }
-    }
-    const changes = [];
-    for (const u of uses) {
-      const cur = getServer(id);
-      if (u.key === 'acme') { store.upsert('servers', { id, acme: false }); changes.push('关掉正式证书（改用自签证书，链接里带证书指纹）'); log('关掉正式证书'); continue; }
-      const port = core.preferredFreePort(state(), cur, u.key, { busy, avoid: [u.port] });
-      store.upsert('servers', { id, protocols: { ...cur.protocols, [u.key]: { ...cur.protocols[u.key], port } } });
-      changes.push(`${u.label}：${u.port} → ${port}`);
-      log(`${u.label} 端口 ${u.port} → ${port}`);
-    }
-    const errs = core.checkPortConflicts(state(), getServer(id));
-    if (errs.length) { store.upsert('servers', { id, protocols: srv0.protocols, acme: srv0.acme }); throw new Error('换端口失败：' + errs.join('；')); }
-    let synced = false; let error = '';
-    if (srv0.deployedAt) {
-      try { await syncOne(id, log); synced = true; await syncRelated(id, uses.map((u) => u.key).filter((k) => k !== 'acme'), log); } catch (e) { error = e.message; }
-    }
-    return { changes, synced, error };
-  });
+  handle('server:leaveWebPorts', (id) => leaveWebPorts(id));
+  handle('web:setup', (id, opts) => webSetup(id, opts || {}));
+  handle('web:undo', async (id) => { store.upsert('servers', { id, webAllow: [], webAllowAuto: false, webAllowMyIp: '' }); return leaveWebPorts(id); });
   // 节点页「端口检测」：从本机连这个入口的端口（TCP 协议直接连端口，UDP 协议走一次真连），
   // 不通就换成优选端口再测（最多 3 次，都不通改回原端口）。opts.force：固定端口 / 疑似安全组没放行时也照样换
   handle('node:portCheck', async (entry, opts = {}) => {
@@ -1100,6 +1198,8 @@ app.whenReady().then(() => {
   setInterval(tick, 10 * 60 * 1000);
   setTimeout(() => blockWatchTick().catch(() => {}), 120000);
   setInterval(() => blockWatchTick().catch(() => {}), 30 * 60 * 1000);
+  setTimeout(() => refreshAutoAllow().catch(() => {}), 40000);
+  setInterval(() => refreshAutoAllow().catch(() => {}), 20 * 60 * 1000);
 });
 app.on('window-all-closed', () => app.quit());
 app.on('will-quit', () => stock.closeAll());

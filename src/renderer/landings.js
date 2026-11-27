@@ -146,6 +146,42 @@ function fwdTargetsOf(f) {
 }
 const fwdNet = (f) => (f.target?.type === 'node' ? (PROTO_NET[f.target.protocol] || 'tcp') : (f.target?.network || ''));
 
+// 端口转发的目标是明文代理（HTTP / Socks）又没填来源白名单：拦下，解释原因和改法
+const PROXY_KIND = { socks5: 'Socks5', socks4: 'Socks4', http: 'HTTP' };
+function proxyExposedBox(hits, onWhitelist, closeEditor) {
+  modal({ title: '这条转发会把明文代理暴露到公网', body: h('div', { style: { lineHeight: 1.7 } },
+    h('p', { style: { marginTop: 0 } }, '中转机检测到这些目标是不加密的代理：', h('br'), hits.map((x) => h('div', { class: 'mono' }, `${x.target}（${PROXY_KIND[x.kind] || x.kind} 代理）`))),
+    h('p', {}, '端口转发会把它原样开到公网：任何人扫到这个端口都能拿来当代理用，就算设了密码也是明文传的。很多服务商明令禁止，发现会停机，IP 也会被别人滥用。'),
+    h('p', {}, h('b', {}, '推荐：'), '到「落地」里添加这个代理，再在服务器的「出口」里选它。这样你用加密节点连 VPS，由 VPS 去连这个代理，不对公网开放任何端口。'),
+    h('p', { style: { marginBottom: 0 } }, h('b', {}, '一定要转发的话：'), '在「来源 IP 白名单」里只填自己的 IP 或中转机 IP，VPS 防火墙只放行这些地址。')),
+  buttons: [{ label: '去添加落地', onClick: () => { if (closeEditor) closeEditor(); go('landings'); } }, { label: '填白名单', class: 'primary', onClick: () => onWhitelist && onWhitelist() }] });
+}
+
+// 已有的端口转发：逐台中转机探测目标，列出会把明文代理暴露到公网的
+async function checkExposedProxies(all) {
+  const todo = all.filter((f) => f.enabled !== false && !(f.allow || []).length && f.target?.network !== 'udp');
+  if (!todo.length) { toast('没有需要检查的转发（填了来源白名单或只转 UDP 的不查）', 'ok'); return; }
+  const found = []; const warns = [];
+  const byRelay = new Map();
+  for (const f of todo) { if (!byRelay.has(f.relayServerId)) byRelay.set(f.relayServerId, []); byRelay.get(f.relayServerId).push(f); }
+  for (const [rid, list] of byRelay) {
+    const pr = await api.call('forward:probe', rid, list.flatMap((f) => fwdTargetsOf(f)));
+    if (pr.warn) { warns.push(`${serverName(rid)}：${pr.warn}`); continue; }
+    const bad = new Map((pr.results || []).filter((x) => x.kind).map((x) => [x.target, x.kind]));
+    for (const f of list) { const t = fwdTargetsOf(f).find((x) => bad.has(x)); if (t) found.push({ f, target: t, kind: bad.get(t) }); }
+  }
+  if (!found.length) { toast(warns.length ? '没发现明文代理，但有的中转机没查成：\n' + warns.join('\n') : `检查了 ${todo.length} 条，没有把明文代理暴露到公网的`, warns.length ? 'warn' : 'ok'); return; }
+  const m = modal({ title: `有 ${found.length} 条转发把明文代理暴露到了公网`, wide: true, body: h('div', {},
+    h('p', { class: 'muted', style: { marginTop: 0 } }, '这些转发的目标是不加密的 HTTP / Socks 代理，又没填来源白名单：任何人扫到入口端口都能拿来当代理用，服务商会停机、IP 会被滥用。改成「落地」最好；一定要转发就编辑它、填上来源 IP 白名单；暂时不用可以先停用。'),
+    h('table', {}, h('thead', {}, h('tr', {}, ['中转机', '入口', '目标', ''].map((t) => h('th', {}, t)))), h('tbody', {}, found.map(({ f, target, kind }) => h('tr', {},
+      h('td', {}, serverName(f.relayServerId)), h('td', { class: 'mono' }, String(f.listenPort)), h('td', { class: 'mono' }, `${target}（${PROXY_KIND[kind] || kind}）`),
+      h('td', { class: 'nowrap' }, h('div', { class: 'actions nowrap' },
+        h('button', { class: 'small', onclick: () => { m.close(); editForward(f, false, null, 'custom'); } }, '填白名单'),
+        h('button', { class: 'small', onclick: (e) => { const b = e.currentTarget; busy(b, async () => { await api.call('col:upsert', 'forwards', { ...f, enabled: false }); syncRelay(f.relayServerId, '已停用'); }).then(() => { b.textContent = '已停用'; b.disabled = true; }); } }, '停用'))))))),
+    warns.length ? h('p', { class: 'muted' }, '没查成：' + warns.join('；')) : null),
+  onClose: () => render(), buttons: [{ label: '关闭' }] });
+}
+
 async function syncRelay(relayId, what) {
   const relay = S.servers.find((x) => x.id === relayId);
   if (!relay?.deployedAt) { toast(what + '。中转机还没部署，部署后生效', 'ok'); return; }
@@ -169,6 +205,7 @@ async function fwdPage(v, mode) {
       ? '用一台国内直连好的 VPS 转发到节点：节点 IP 被墙、或者直连太慢时用。用户订阅里自动多一条「经中转」的线路，和直连线路并存。'
       : '在一台 VPS 上开个端口，把 TCP / UDP 转到任意地址（别的机器、内网服务、游戏服等）。不会加进订阅。')), h('div', { class: 'spacer' }),
     all.length ? refreshBtn : null,
+    !isRelay && all.length ? h('button', { title: '让中转机探测每条转发的目标是不是 HTTP / Socks 明文代理（没填来源白名单的才查）', onclick: (e) => busy(e.currentTarget, () => checkExposedProxies(all)) }, '检查明文代理') : null,
     isRelay ? null : h('button', { onclick: () => batchForwards() }, '批量添加'),
     addBtn()));
   if (!all.length) {
@@ -332,7 +369,7 @@ function editForward(orig, copyOf = false, relayPreset, mode) {
     h('div', { class: 'row' }, field('中转服务器', relay), field('入口端口', h('div', { class: 'row' }, lp, rnd))),
     mode ? null : field('转到', ttype), nodeBox, customBox, field(f.target.type === 'node' ? '备注（可选）' : '名称', name), f.target.type === 'node' ? null : adv, chk(en, '启用')), buttons: [
     { label: '取消' },
-    { label: '保存', class: 'primary', onClick: async () => {
+    { label: '保存', class: 'primary', onClick: async (closeEditor) => {
       f.name = name.value.trim(); f.relayServerId = relay.value; f.listenPort = Number(lp.value); f.enabled = en.checked;
       if (!(f.listenPort >= 1 && f.listenPort <= 65535)) throw new Error('入口端口要在 1–65535 之间');
       if (ttype.value === 'node') f.target = { type: 'node', serverId: tsrv.value, protocol: tproto.value };
@@ -351,6 +388,12 @@ function editForward(orig, copyOf = false, relayPreset, mode) {
       if (S.settings.avoidWebPorts !== false && WEB_PORTS.includes(f.listenPort) && !f.allow.length) { adv.open = true; throw new Error(`入口端口 ${f.listenPort} 是常用 Web 端口（80 / 443 / 8080 / 8443），很多服务商不允许对公网开放。换一个，或者在「来源 IP 白名单」里填上允许连接的 IP（只对这些 IP 开放）`); }
       if (f.target.type === 'node' && !f.target.protocol) throw new Error('目标服务器没有启用协议');
       if (f.target.type === 'node' && f.target.serverId === f.relayServerId) throw new Error('中转机和目标不能是同一台');
+      if (f.target.type === 'custom' && !f.allow.length && f.target.network !== 'udp') {
+        const pr = await api.call('forward:probe', f.relayServerId, f.target.targets || []);
+        const hits = (pr.results || []).filter((x) => x.kind);
+        if (hits.length) { proxyExposedBox(hits, () => { adv.open = true; allow.focus(); }, closeEditor); return false; }
+        if (pr.warn) toast(pr.warn, 'warn');
+      }
       const clash = S.forwards.find((x) => x.id !== f.id && x.relayServerId === f.relayServerId && Number(x.listenPort) === f.listenPort);
       if (clash) throw new Error(`这台中转机的 ${f.listenPort} 端口已经被「${clash.name || '另一条转发'}」用了`);
       const rs = S.servers.find((x) => x.id === f.relayServerId);
@@ -385,6 +428,18 @@ function batchForwards() {
         out.push({ id: 'f' + Math.random().toString(36).slice(2, 9), relayServerId: relay.value, listenPort: lp, enabled: true, name: '', target: { type: 'custom', host, port: Number(m[3]), network: (m[4] || '').toLowerCase(), targets: [`${m[2]}:${m[3]}`] }, strategy: 'failover', allow: [] });
       });
       if (!out.length) throw new Error(errs.join('\n') || '没有可添加的规则');
+      // 批量添加没有白名单：目标是明文代理的跳过
+      const tcpOnes = out.filter((f) => f.target.network !== 'udp');
+      if (tcpOnes.length) {
+        const pr = await api.call('forward:probe', relay.value, tcpOnes.map((f) => f.target.targets[0]));
+        const bad = new Map((pr.results || []).filter((x) => x.kind).map((x) => [x.target, x.kind]));
+        if (pr.warn) toast(pr.warn, 'warn');
+        for (let i = out.length - 1; i >= 0; i--) {
+          const k = out[i].target.network !== 'udp' && bad.get(out[i].target.targets[0]);
+          if (k) { errs.push(`入口 ${out[i].listenPort}：目标 ${out[i].target.targets[0]} 是 ${PROXY_KIND[k] || k} 明文代理，转发出去等于对公网开放，已跳过（改用「落地」，或单独添加并填来源 IP 白名单）`); out.splice(i, 1); }
+        }
+        if (!out.length) throw new Error(errs.join('\n'));
+      }
       for (const f of out) await api.call('col:upsert', 'forwards', f);
       if (errs.length) toast(`跳过了 ${errs.length} 行：\n` + errs.join('\n'), 'warn');
       render();

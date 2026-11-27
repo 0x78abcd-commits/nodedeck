@@ -295,3 +295,14 @@ console.log('agent users', JSON.stringify(core.buildAgentUsers(state, node)));
   const ok3 = core.subTlsWanted(st) && core.allowedPort(st, 443, r);
   if (ok1 && ok2 && ok3) console.log('OK   web-allow'); else { console.log('FAIL web-allow', ok1, ok2, ok3, JSON.stringify(rules)); process.exitCode = 1; }
 }
+
+// Web 端口白名单：本机 IP 自动模式也算名单
+{
+  const a = { id: 'a', host: '5.5.5.5', protocols: core.defaultProtocols(), webAllowAuto: true, webAllowMyIp: '8.8.4.4' };
+  a.protocols.vlessReality.port = 443;
+  const st = { settings: {}, servers: [a], forwards: [], users: [], landings: [] };
+  const ok = core.webAllowOf(st, a).join() === '8.8.4.4' && !core.webPortUses(st, a).length && core.portAllowRules(st, a)[0]?.allow[0] === '8.8.4.4';
+  a.webAllowMyIp = '';
+  const ok2 = core.webPortUses(st, a).length === 1;
+  if (ok && ok2) console.log('OK   web-allow-auto'); else { console.log('FAIL web-allow-auto'); process.exitCode = 1; }
+}

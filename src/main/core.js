@@ -448,7 +448,8 @@ const avoidWebPorts = (state) => state?.settings?.avoidWebPorts !== false;
 const isIpLiteral = (x) => /^(\d{1,3}\.){3}\d{1,3}$/.test(x) || (x.includes(':') && /^[0-9a-f:.]+$/i.test(x));
 // Web 端口来源白名单：服务器上填的 IP / 网段，加上把这台当转发目标的中转机 IP（中转机要能连进来）
 function webAllowOf(state, server) {
-  const own = (server.webAllow || []).map((x) => String(x).trim()).filter(Boolean);
+  // webAllowAuto：这台电脑的公网 IP 自动识别、变了自动更新（存在 webAllowMyIp）
+  const own = [...(server.webAllow || []), ...(server.webAllowAuto && server.webAllowMyIp ? [server.webAllowMyIp] : [])].map((x) => String(x).trim()).filter(Boolean);
   if (!own.length) return [];
   const out = new Set(own);
   for (const f of state.forwards || []) {
