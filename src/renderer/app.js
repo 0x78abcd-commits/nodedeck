@@ -235,7 +235,6 @@ async function viewDash(v) {
       const protos = PROTOS.filter(([k]) => s.protocols?.[k]?.enabled).map(([, l]) => l);
       const today = s.lastStats?.today;
       box.append(h('div', { class: 'line-row ' + cls },
-        h('div', { class: 'strip' }),
         h('div', { class: 'name' }, h('b', {}, s.name), h('span', { class: 'mono muted' }, s.host)),
         h('div', {}, label, protos.length ? h('div', { class: 'proto-chips', title: protos.join('、') }, PROTOS.filter(([k]) => s.protocols?.[k]?.enabled).map(([k]) => h('span', { class: 'pchip' }, { vlessReality: 'Reality', trojan: 'Trojan', vmess: 'VMess', hysteria2: 'Hy2', tuic: 'TUIC', anytls: 'AnyTLS', shadowsocks: 'SS', vlessXhttpReality: 'XHTTP-Reality', vlessXhttpTls: 'XHTTP-TLS' }[k] || k))) : h('span', { class: 'cap' }, '没有开启协议')),
         h('div', { class: 'hide-narrow' }, h('div', { class: 'num' }, today ? fmtBytes((today.up || 0) + (today.down || 0)) : '—'), h('div', { class: 'cap' }, '今日流量')),

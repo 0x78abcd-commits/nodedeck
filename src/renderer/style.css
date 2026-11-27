@@ -139,20 +139,13 @@ h4 { font-size: 14px; font-weight: 600; margin: 18px 0 8px; }
 .lines { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-panel); overflow: hidden; margin-bottom: 14px; }
 .lines-head { display: flex; align-items: center; gap: 10px; padding: 14px 18px; border-bottom: 1px solid var(--line); }
 .lines-head h3 { margin: 0; }
-.line-row { display: grid; grid-template-columns: 6px minmax(160px, 1.3fr) minmax(200px, 2fr) 130px 120px auto; align-items: center; gap: 16px; padding: 12px 18px 12px 0; border-bottom: 1px solid var(--line); }
+.line-row { display: grid; grid-template-columns: minmax(160px, 1.3fr) minmax(200px, 2fr) 130px 120px auto; align-items: center; gap: 16px; padding: 12px 18px; border-bottom: 1px solid var(--line); }
 .line-row:last-child { border-bottom: none; }
-.line-row .strip { align-self: stretch; margin: -12px 0; background: var(--idle); }
-.line-row.ok .strip { background: var(--ok); }
-.line-row.bad .strip { background: var(--danger); }
-.line-row.warn .strip { background: var(--warn); }
 .line-row .name b { display: block; font-weight: 600; }
 .line-row .num { font-family: var(--font-display); font-weight: 500; font-size: 15px; }
 .line-row .cap { color: var(--muted); font-size: 12px; }
 
 /* 服务器表格：第一格左边的信号条 */
-tr[class^='lamp-'] td:first-child { box-shadow: inset 3px 0 0 var(--idle); }
-tr.lamp-ok td:first-child { box-shadow: inset 3px 0 0 var(--ok); }
-tr.lamp-bad td:first-child { box-shadow: inset 3px 0 0 var(--danger); }
 td.lamp-cell { width: 44px; padding-left: 8px; padding-right: 4px; }
 .lamp-inner { display: flex; align-items: center; gap: 4px; }
 .drag-grip { cursor: grab; color: var(--faint); font-size: 13px; letter-spacing: -2px; padding: 4px 2px; user-select: none; opacity: .35; transition: opacity .12s; }
@@ -318,7 +311,7 @@ label.f.focus { border: 1px solid var(--accent); border-radius: 8px; padding: 6p
   .g4, .statstrip { grid-template-columns: repeat(2, 1fr); }
   .statstrip > div:nth-child(3) { border-left: none; }
   .statstrip > div:nth-child(n+3) { border-top: 1px solid var(--line); }
-  .line-row { grid-template-columns: 6px 1fr 1fr auto; }
+  .line-row { grid-template-columns: 1fr 1fr auto; }
   .line-row .hide-narrow { display: none; }
 }
 @media (max-width: 860px) {
