@@ -91,6 +91,30 @@ func (a *Agent) handleSpeed(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(res)
 	case "/nd-speed/ping":
 		w.Write([]byte("ok"))
+	case "/nd-speed/tcping":
+		// 被墙检测用：从这台 VPS 连一下别的服务器的端口（自己的服务器互相检测，不用第三方）。只许连公网地址
+		host := r.URL.Query().Get("host")
+		port, _ := strconv.Atoi(r.URL.Query().Get("port"))
+		w.Header().Set("Content-Type", "application/json")
+		res := map[string]any{"ok": false}
+		if host == "" || port <= 0 || port > 65535 {
+			res["error"] = "地址或端口不对"
+		} else if ips, err := net.LookupIP(host); err != nil || len(ips) == 0 {
+			res["error"] = "解析不了域名"
+		} else if ip := ips[0]; ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() || ip.IsLinkLocalUnicast() {
+			res["error"] = "不检测内网地址"
+		} else {
+			t0 := time.Now()
+			c, err := net.DialTimeout("tcp", net.JoinHostPort(ip.String(), strconv.Itoa(port)), 5*time.Second)
+			if err != nil {
+				res["error"] = err.Error()
+			} else {
+				c.Close()
+				res["ok"] = true
+				res["ms"] = time.Since(t0).Milliseconds()
+			}
+		}
+		_ = json.NewEncoder(w).Encode(res)
 	case "/nd-speed/ip":
 		// 节点测试查出口 IP：请求经节点发到这台 VPS 自己，看到的来源就是节点的出口（走落地时是落地的 IP），不经第三方
 		host, _, _ := net.SplitHostPort(r.RemoteAddr)

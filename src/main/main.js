@@ -276,8 +276,15 @@ async function notifyAll(srv, text) {
   send('toast', { text: `${srv.name}：${text}`, level: 'warn' });
   if (notify.anyOn(state().settings)) { try { await deploy.adminNotify(srv, text); } catch (_) { /* VPS 连不上就算了 */ } }
 }
+// 被墙检测的「海外视角」：默认用自己的其它 VPS 互相检测（不联系第三方）；选了 check-host.net 时只在手动检测里用
+const blockVia = () => (state().settings.blockCheckVia === 'checkhost' ? 'checkhost' : 'peers');
+function overseasCheck(host, port, excludeId) {
+  return blockVia() === 'checkhost' ? diagnose.checkHostTcp(sysFetch, host, port) : diagnose.peersTcp(sysFetch, state(), host, port, excludeId);
+}
+
 async function blockWatchTick() {
-  const mode = state().settings.blockWatch || 'off'; // 默认关
+  // 自动巡检永远不联系第三方：用 check-host 时巡检关闭
+  const mode = blockVia() === 'checkhost' ? 'off' : state().settings.blockWatch || 'off'; // 默认关
   if (mode === 'off') return;
   const list = state().servers.filter((x) => x.deployedAt && x.role !== 'relay' && mainTcpPort(x));
   if (!list.length) return;
@@ -294,7 +301,7 @@ async function blockWatchTick() {
   if (results.length && results.length === list.length && list.length > 1) return; // 全部不通更像本机网络问题
   for (const { srv, mp } of results) {
     let r;
-    try { r = await diagnose.blockCheck(sysFetch, srv.host, mp.port); } catch (_) { continue; }
+    try { r = await diagnose.blockCheck(sysFetch, srv.host, mp.port, (h, p) => overseasCheck(h, p, srv.id)); } catch (_) { continue; }
     if (!r.verdict.blocked) { blockState[srv.id] = 0; continue; }
     blockState[srv.id] = (blockState[srv.id] || 0) + 1;
     if (blockState[srv.id] < 2) continue;
@@ -567,7 +574,7 @@ function registerIpc() {
   handle('server:diagnose', async (id) => {
     const log = taskLogger('diag:' + id);
     return diagnose.diagnoseServer(state(), getServer(id), {
-      deploy, fetchFn: sysFetch, log: (step) => log(JSON.stringify(step)),
+      deploy, fetchFn: sysFetch, overseas: overseasCheck, log: (step) => log(JSON.stringify(step)),
       testEntry: fs.existsSync(singboxPath) ? testEntryFor('owner') : null,
     });
   });
@@ -911,7 +918,7 @@ function registerIpc() {
     return { local, remote };
   });
   handle('tools:socks', (text) => tools.socksToQr(text));
-  handle('tools:block', (host, port) => diagnose.blockCheck(sysFetch, host, port));
+  handle('tools:block', async (host, port) => ({ ...(await diagnose.blockCheck(sysFetch, host, port, (h, p) => overseasCheck(h, p))), via: blockVia() }));
   handle('tools:localProxies', async () => (await proxy.localCandidates('')).map(proxy.proxyLabel));
 
   // 更新

@@ -123,6 +123,15 @@ async function viewSettings(v) {
   const guardPane = () => {
     const rpMode = sel([['auto', '自动换新目标并通知'], ['notify', '只通知'], ['off', '不检查']], st.realityPatrol || 'auto');
     const bwMode = sel([['off', '关闭'], ['notify', '只提醒'], ['auto', '自动一键换新（6 小时内最多一次）并提醒']], st.blockWatch || 'off');
+    const bcVia = sel([['peers', '用我自己的其它 VPS 互相检测（不联系第三方）'], ['checkhost', '用 check-host.net 多地检测（第三方，只在手动检测时用）']], st.blockCheckVia === 'checkhost' ? 'checkhost' : 'peers');
+    const bwHint = h('div', { class: 'muted', style: { fontSize: '12px', margin: '-6px 0 12px' } });
+    const syncBc = () => {
+      const ch = bcVia.value === 'checkhost';
+      bwMode.disabled = ch;
+      bwHint.textContent = ch ? '用 check-host.net 时不做自动巡检：只有你在工具箱、体检里手动检测时才会把 IP 和端口发给它' : (S.servers.filter((x) => x.deployedAt).length < 2 ? '只有一台服务器时没有别的 VPS 能帮忙检测，巡检只能看本机通不通' : '');
+    };
+    bcVia.onchange = syncBc;
+    syncBc();
     const al = st.alerts || {};
     const alOn = h('input', { type: 'checkbox', checked: al.enabled !== false });
     const tuneOn = h('input', { type: 'checkbox', checked: st.smallBoxTuning !== false });
@@ -135,7 +144,8 @@ async function viewSettings(v) {
     return h('div', {},
       h('div', { class: 'card' }, h('h3', {}, '自动巡检'),
         field('Reality 目标巡检（VPS 每 6 小时检查一次）', rpMode, '目标网站下线、证书过期或不再支持 TLS 1.3 / HTTP2 时节点会连不上。自动模式下连续 3 次失败会换成同网段邻居或最快的大站，并改好本机订阅'),
-        field('被墙巡检（软件开着时每 30 分钟查一次）', bwMode, '本机连不通、海外能通，连续两次才判定被墙；电脑网络断了不会误报。关闭时可以在「工具箱 → 被墙检测」或服务器「体检」里手动查')),
+        field('被墙检测用什么当「海外视角」', bcVia, '判断被墙要对比：你这里连不通、外面能连通。自己的 VPS 互查不会把 IP 发给任何第三方，但至少要两台已部署的服务器；check-host.net 节点多、只有一台服务器也能用，但会把 IP 和端口发给它'),
+        field('被墙巡检（软件开着时每 30 分钟查一次）', bwMode, '本机连不通、海外视角能通，连续两次才判定被墙；电脑网络断了不会误报。关闭时可以在「工具箱 → 被墙检测」或服务器「体检」里手动查'), bwHint),
       h('div', { class: 'card' }, h('h3', {}, '运维告警'),
         chk(alOn, '开启运维告警', 'sing-box 挂了（会先自动重启）、磁盘快满、CPU 持续过高、三网延迟变差时，发到「通知」里配的渠道'),
         h('div', { class: 'row' }, field('磁盘用到 %', alDisk), field('CPU 连续 15 分钟高于 %', alCpu), field('三网延迟高于 ms', alLat))),
@@ -145,7 +155,7 @@ async function viewSettings(v) {
         chk(netOn, '部署时自动做其它网络优化', '检测后只改有依据的几项（缓冲区、路径 MTU 探测）；BBR + fq 部署时总会开启。原值都会备份，在服务器「更多 → 网络优化」里可以恢复'),
         chk(tuneOn, '小配置 VPS 自动优化', '内存 ≤ 2GB 且没有 swap 时加一个 swap 文件（1GB 内存加 1GB，2GB 加 2GB，磁盘不够会减小或跳过）；磁盘 < 20GB 时把系统日志限制在 200MB。卸载时一并撤销')),
       h('div', { class: 'actions set-foot' }, h('button', { class: 'primary', onclick: async () => {
-        await api.call('settings:set', { onlineTrack: trackOn.checked, latencyProbe: probeOn.checked, netAutoTune: netOn.checked, smallBoxTuning: tuneOn.checked, realityPatrol: rpMode.value, blockWatch: bwMode.value, alerts: { enabled: alOn.checked, diskPct: Number(alDisk.value) || 90, cpuPct: Number(alCpu.value) || 90, latencyMs: Number(alLat.value) || 300 } });
+        await api.call('settings:set', { blockCheckVia: bcVia.value, onlineTrack: trackOn.checked, latencyProbe: probeOn.checked, netAutoTune: netOn.checked, smallBoxTuning: tuneOn.checked, realityPatrol: rpMode.value, blockWatch: bwMode.value, alerts: { enabled: alOn.checked, diskPct: Number(alDisk.value) || 90, cpuPct: Number(alCpu.value) || 90, latencyMs: Number(alLat.value) || 300 } });
         saved();
       } }, '保存')));
   };

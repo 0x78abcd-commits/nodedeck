@@ -1,6 +1,7 @@
 'use strict';
 // 一键体检 + 被墙检测
-// 顺序：本机→SSH 端口 → SSH 登录 → 服务状态 → 服务器出网/出口 IP → 时间 → 端口监听 → 本机→协议端口 → 海外→端口(check-host.net) → 节点真连
+// 顺序：本机→SSH 端口 → SSH 登录 → 服务状态 → 服务器出网 → 时间 → 端口监听 → 本机→协议端口 → 海外→端口 → 节点真连
+// 「海外」看设置：用自己的其它 VPS 互相检测（默认，不联系第三方），或者 check-host.net（只在手动检测时用）
 const core = require('./core');
 const tools = require('./tools');
 
@@ -34,22 +35,45 @@ async function checkHostTcp(fetchFn, host, port, maxNodes = 6) {
   return { nodes, okCount: nodes.filter((n) => n.ok).length, total: nodes.length, link: j.permanent_link || `https://check-host.net/check-result/${j.request_id}` };
 }
 
+// 用自己的其它 VPS 检测：请求它们的 agent 连一下目标端口（不经第三方）。连不上的 VPS 不算数
+async function peersTcp(fetchFn, state, host, port, excludeId) {
+  const subPort = Number(state.settings?.subPort || 2096);
+  const target = String(host).replace(/^\[|\]$/g, '');
+  const peers = state.servers.filter((x) => x.deployedAt && x.speedToken && x.id !== excludeId && String(x.host).replace(/^\[|\]$/g, '') !== target);
+  const noToken = state.servers.filter((x) => x.deployedAt && !x.speedToken && x.id !== excludeId).length;
+  if (!peers.length) throw new Error(noToken ? '其它服务器还没装检测口令：在节点页点一次「测试」或「同步全部」后再测' : '没有其它已部署的服务器帮忙检测（至少要两台）');
+  const nodes = await Promise.all(peers.map(async (p) => {
+    const ph = String(p.host).includes(':') ? `[${p.host}]` : p.host;
+    try {
+      const r = await fetchFn(`http://${ph}:${subPort}/nd-speed/tcping?t=${encodeURIComponent(p.speedToken)}&host=${encodeURIComponent(target)}&port=${Number(port)}`, { signal: AbortSignal.timeout(12000) });
+      if (r.status === 404) return { node: p.name, skip: 'agent 太旧，同步后可用' };
+      const j = await r.json();
+      return { node: p.name, country: p.geo?.country || '', ok: !!j.ok, ms: j.ms ?? null, error: j.error || '' };
+    } catch (e) { return { node: p.name, skip: '这台本身连不上：' + e.message }; }
+  }));
+  const used = nodes.filter((n) => !n.skip);
+  if (!used.length) throw new Error('其它服务器都没能帮忙检测：' + nodes.map((n) => `${n.node}（${n.skip}）`).join('，'));
+  return { nodes: used, skipped: nodes.filter((n) => n.skip), okCount: used.filter((n) => n.ok).length, total: used.length, source: 'peers' };
+}
+
 function verdictFor(local, overseas) {
   if (local.ok) return { level: 'ok', text: '本机能连通' };
   if (!overseas) return { level: 'fail', text: '本机连不通' };
   const ratio = overseas.total ? overseas.okCount / overseas.total : 0;
-  if (ratio >= 0.5) return { level: 'fail', blocked: true, text: `海外 ${overseas.okCount}/${overseas.total} 个节点能通、本机不通：很可能被墙了` };
-  if (overseas.okCount === 0) return { level: 'fail', closed: true, text: '海外和本机都连不通：端口没开、防火墙/安全组没放行，或服务器关机' };
-  return { level: 'warn', text: `海外只有 ${overseas.okCount}/${overseas.total} 个节点能通，本机不通：线路不稳或部分地区被封` };
+  const who = overseas.source === 'peers' ? `你的其它 VPS 有 ${overseas.okCount}/${overseas.total} 台` : `海外 ${overseas.okCount}/${overseas.total} 个节点`;
+  if (ratio >= 0.5) return { level: 'fail', blocked: true, text: `${who}能通、本机不通：很可能被墙了` };
+  if (overseas.okCount === 0) return { level: 'fail', closed: true, text: `${overseas.source === 'peers' ? '你的其它 VPS 和' : '海外和'}本机都连不通：端口没开、防火墙/安全组没放行，或服务器关机` };
+  return { level: 'warn', text: `${who}能通，本机不通：线路不稳或部分地区被封` };
 }
 
 // 工具箱用：检测任意 IP:端口 是否被墙
-async function blockCheck(fetchFn, host, port) {
+// overseasFn(host, port)：海外视角怎么测（自己的 VPS 或 check-host），由主进程按设置传进来
+async function blockCheck(fetchFn, host, port, overseasFn) {
   const h = String(host).trim();
   const local = await tools.tcpPing(h, Number(port), 5000);
   let overseas = null;
   let overseasError = '';
-  try { overseas = await checkHostTcp(fetchFn, h, Number(port)); } catch (e) { overseasError = e.message; }
+  try { overseas = await (overseasFn || ((x, p) => checkHostTcp(fetchFn, x, p)))(h, Number(port)); } catch (e) { overseasError = e.message; }
   return { host: h, port: Number(port), local, overseas, overseasError, verdict: verdictFor(local, overseas), pingpe: `https://ping.pe/${h}:${port}` };
 }
 
@@ -116,11 +140,11 @@ async function diagnoseServer(state, server, deps) {
   for (const x of localFail.slice(0, 3)) toCheck.push({ label: x.label, port: x.port });
   for (const t of toCheck) {
     try {
-      const o = await checkHostTcp(deps.fetchFn, server.host, t.port);
+      const o = await (deps.overseas ? deps.overseas(server.host, t.port, server.id) : checkHostTcp(deps.fetchFn, server.host, t.port));
       const v = verdictFor({ ok: false }, o);
       if (v.blocked) blocked = true;
       if (v.closed) advice.add(`${t.label} 端口 ${t.port} 海外也不通：去云厂商控制台的安全组/防火墙放行这个端口（TCP${t.label === 'SSH' ? '' : ' 和 UDP'}）`);
-      add({ id: 'overseas-' + t.port, title: `海外连 ${t.label} 端口 ${t.port}`, level: v.level, text: v.text, link: o.link });
+      add({ id: 'overseas-' + t.port, title: `${o.source === 'peers' ? '其它 VPS' : '海外'}连 ${t.label} 端口 ${t.port}`, level: v.level, text: v.text, link: o.link });
     } catch (e) {
       add({ id: 'overseas-' + t.port, title: `海外连 ${t.label} 端口 ${t.port}`, level: 'skip', text: '海外检测失败：' + e.message });
     }
@@ -153,4 +177,4 @@ async function diagnoseServer(state, server, deps) {
   return { steps, level: worst, blocked, advice: [...advice] };
 }
 
-module.exports = { checkHostTcp, blockCheck, diagnoseServer, verdictFor };
+module.exports = { checkHostTcp, peersTcp, blockCheck, diagnoseServer, verdictFor };

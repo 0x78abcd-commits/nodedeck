@@ -29,15 +29,20 @@ const TOOLS = {
   block(box) {
     const host = h('input', { placeholder: 'IP 或域名' }), port = h('input', { placeholder: '端口，例如 443', style: { maxWidth: '140px' } });
     const out = h('div', {});
-    box.append(h('p', { class: 'muted' }, '同时从本机（国内）和海外多个节点（check-host.net）测 TCP 端口：海外通、本机不通 = 很可能被墙。会把 IP 和端口发给 check-host.net，大约需要 20 秒。'),
+    const ch = S.settings.blockCheckVia === 'checkhost';
+    box.append(h('p', { class: 'muted' }, ch
+      ? '同时从本机（国内）和海外多个节点（check-host.net）测 TCP 端口：海外通、本机不通 = 很可能被墙。会把 IP 和端口发给 check-host.net，大约需要 20 秒。'
+      : '同时从本机（国内）和你的其它 VPS 测 TCP 端口：其它 VPS 能通、本机不通 = 很可能被墙。不联系任何第三方，至少要两台已部署的服务器。', ' ',
+      h('a', { href: '#', onclick: (e) => { e.preventDefault(); goSettings('guard'); } }, '换检测方式')),
       h('div', { class: 'row' }, host, port, h('button', { class: 'primary auto', onclick: (e) => busy(e.currentTarget, async () => {
         out.innerHTML = '';
         const r = await api.call('tools:block', host.value, port.value || 443);
         out.append(h('div', { class: 'kv', style: { marginTop: '14px' } },
           kv('结论', h('span', { class: 'tag ' + (r.verdict.level === 'ok' ? 'ok' : r.verdict.level === 'warn' ? 'warn' : 'bad') }, r.verdict.text)),
           kv('本机', r.local.ok ? `通 · ${r.local.ms} ms` : `不通（${r.local.error}）`),
-          kv('海外', r.overseas ? h('div', {}, r.overseas.nodes.map((n) => h('span', { class: 'tag ' + (n.ok ? 'ok' : 'bad') }, `${n.country || n.node} ${n.city || ''} ${n.ok ? n.ms + 'ms' : '✘'}`))) : h('span', { class: 'muted' }, '检测失败：' + r.overseasError)),
-          kv('复核', h('a', { href: r.pingpe, target: '_blank' }, '在 ping.pe 多地测试'))));
+          kv(r.via === 'peers' ? '其它 VPS' : '海外', r.overseas ? h('div', {}, r.overseas.nodes.map((n) => h('span', { class: 'tag ' + (n.ok ? 'ok' : 'bad'), title: n.error || '' }, r.via === 'peers' ? `${n.node} ${n.ok ? n.ms + 'ms' : '✘'}` : `${n.country || n.node} ${n.city || ''} ${n.ok ? n.ms + 'ms' : '✘'}`)),
+            (r.overseas.skipped || []).map((n) => h('span', { class: 'tag', title: n.skip }, `${n.node} 没测`))) : h('span', { class: 'muted' }, '检测失败：' + r.overseasError)),
+          kv('复核', h('span', {}, h('a', { href: r.pingpe, target: '_blank' }, '在 ping.pe 多地测试'), h('span', { class: 'muted' }, '（第三方网站，点了才会打开）')))));
       }) }, '检测')), out);
   },
   dns(box) {
