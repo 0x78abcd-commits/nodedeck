@@ -16,6 +16,7 @@ const PROTOS = [
 const WARP_SITE_LABELS = { openai: 'ChatGPT / OpenAI', anthropic: 'Claude', google: 'Google / Gemini', netflix: 'Netflix', disney: 'Disney+', spotify: 'Spotify', tiktok: 'TikTok' };
 function randStr(n = 16) { const c = 'abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789'; let r = ''; const a = crypto.getRandomValues(new Uint8Array(n)); for (const x of a) r += c[x % c.length]; return r; }
 const PROTO_LABEL = Object.fromEntries(PROTOS.map(([k, l]) => [k, l]));
+const WEB_PORTS = [80, 443, 8080, 8443]; // 常用 Web 端口：很多服务商禁止拿来做代理伪装（和 core.WEB_PORTS 一致）
 const GB = 1024 ** 3;
 
 let S = null; // 全量状态

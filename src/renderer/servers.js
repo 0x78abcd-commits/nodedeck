@@ -14,6 +14,26 @@ async function viewServers(v) {
     h('button', { onclick: (e) => busy(e.currentTarget, syncAll) }, '同步全部'),
     h('button', { class: 'primary', onclick: () => editServer() }, '+ 添加服务器')));
   if (!S.servers.length) { v.append(emptyState('还没有服务器', '填 VPS 的 IP 和 SSH 密码，NodeDeck 会一键装好代理内核和 agent，生成节点和订阅。', h('button', { class: 'primary', onclick: () => editServer() }, '+ 添加服务器'))); return; }
+  const web = await api.call('servers:webPorts');
+  if (web.length) {
+    const fix = async (ev) => {
+      const btn = ev.currentTarget;
+      if (!(await confirmBox(`把这些协议换到别的端口并同步？\n\n${web.map((w) => `${w.name}：${w.uses.map((u) => `${u.label} ${u.port}`).join('、')}`).join('\n')}\n\nReality / XHTTP 换到 2053、2083 这类端口，其它换随机高位端口。换完用户要刷新订阅。`, '换掉'))) return;
+      await busy(btn, async () => {
+      const out = [];
+      for (const w of web) {
+        try { const r = await api.call('server:leaveWebPorts', w.id); out.push(`${w.name}：${r.changes.join('，')}${r.error ? `（同步失败：${r.error}）` : ''}`); } catch (e) { out.push(`${w.name}：${e.message}`); }
+      }
+      await reload(); render();
+      modal({ title: '已换掉 Web 端口', body: h('div', {}, h('pre', { class: 'log' }, out.join('\n')), h('p', { class: 'muted' }, '用户刷新订阅后生效。')), buttons: [{ label: '好' }] });
+      });
+    };
+    v.append(h('div', { class: 'page-warn' },
+      h('div', {}, h('b', {}, '有节点在用常用 Web 端口（80 / 443 / 8080 / 8443）'),
+        h('div', { class: 'muted', style: { fontSize: '12.5px', marginTop: '4px' } }, '不少服务商禁止在这几个端口上做代理伪装，发现了会停机。', web.map((w) => `${w.name}：${w.uses.map((u) => `${u.label} ${u.port}`).join('、')}`).join('；'))),
+      h('div', { class: 'spacer' }),
+      h('button', { class: 'small primary', onclick: fix }, '全部换掉')));
+  }
   for (const id of [...serverSel]) if (!S.servers.some((x) => x.id === id)) serverSel.delete(id);
   const n = serverSel.size;
   if (n) v.append(h('div', { class: 'toolbar', style: { marginBottom: '8px' } }, h('div', { class: 'spacer' }), h('span', { class: 'muted' }, `已选 ${n} 台`),
@@ -361,14 +381,16 @@ async function editServer(orig, opts = {}) {
     }
     portNote.textContent = !auto ? '每个协议的端口自己填；勾「固定端口」的，端口不通或一键换新时也不会被换掉。'
       : orig?.deployedAt ? '已经部署过：保持现在的端口（端口不通时会自动换）。想整体换一批用「一键换新」，或切到手动自己填。'
-        : '部署时自动挑：VLESS-Reality 和 XHTTP 优先用 443、8443 这类 HTTPS 常用端口（伪装成访问网站最自然），Hysteria2 优先 UDP 443，其它协议用随机高位端口，避开 8388 这类一看就是代理的默认端口；VPS 上已被占用的会跳过。';
+        : S.settings.avoidWebPorts === false
+          ? '部署时自动挑：VLESS-Reality 和 XHTTP 优先用 443、8443 这类 HTTPS 常用端口，Hysteria2 优先 UDP 443，其它协议用随机高位端口，避开 8388 这类一看就是代理的默认端口；VPS 上已被占用的会跳过。'
+          : '部署时自动挑：VLESS-Reality 和 XHTTP 用 2053、2083 这类 HTTPS 备用端口，其它协议用随机高位端口；不用 80 / 443 / 8080 / 8443（很多服务商禁止），也避开 8388 这类一看就是代理的默认端口和 VPS 上已被占用的端口。';
   };
   portMode.onchange = syncPM;
   syncPM();
 
   // 一键套用协议模板
   const TEMPLATES = {
-    stealth: { label: '抗封锁版：Reality（自动选邻居、443）+ AnyTLS', on: ['vlessReality', 'anytls'] },
+    stealth: { label: '抗封锁版：Reality（自动选邻居）+ AnyTLS', on: ['vlessReality', 'anytls'] },
     speed: { label: '高速版：Hysteria2（混淆 + 端口跳跃）+ TUIC，Reality 备用', on: ['hysteria2', 'tuic', 'vlessReality'], hy: true },
     balanced: { label: '平衡版：Reality + Hysteria2（混淆）', on: ['vlessReality', 'hysteria2'], hyObfs: true },
   };
@@ -378,7 +400,7 @@ async function editServer(orig, opts = {}) {
     if (!t) return;
     for (const [k] of PROTOS) protoEls[k].en.checked = t.on.includes(k);
     const r = protoEls.vlessReality;
-    if (r && portMode.value === 'manual' && !r.fixed.checked) r.pt.value = 443;
+    if (r && portMode.value === 'manual' && !r.fixed.checked) r.pt.value = S.settings.avoidWebPorts === false ? 443 : 2053;
     if (r) { r.rmode.value = '__auto__'; r.rmode.onchange(); }
     const hy = protoEls.hysteria2;
     if (hy && (t.hy || t.hyObfs) && !hy.obfs.value) hy.obfs.value = randStr(16);
@@ -433,6 +455,9 @@ async function editServer(orig, opts = {}) {
     for (const [k] of PROTOS) {
       const e = protoEls[k];
       s.protocols[k] = { ...s.protocols[k], enabled: e.en.checked, port: Number(e.pt.value || e.pt.dataset.keep), fixedPort: portMode.value === 'manual' && e.fixed.checked };
+      if (portMode.value === 'manual' && e.en.checked && S.settings.avoidWebPorts !== false && WEB_PORTS.includes(s.protocols[k].port) && !(k === 'vmess' && cfOn.checked)) {
+        throw new Error(`${PROTO_LABEL[k]} 的端口 ${s.protocols[k].port} 是常用 Web 端口（80 / 443 / 8080 / 8443），很多服务商禁止拿来做代理伪装，换一个（比如 2053）。确实要用的话在「设置 → 服务器与内核」里关掉「避开常用 Web 端口」`);
+      }
       if (e.rmode) {
         const pr = s.protocols[k];
         const m = e.rmode.value;

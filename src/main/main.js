@@ -505,6 +505,46 @@ function registerIpc() {
     store.upsert('servers', { id: srv.id, protocols: { ...srv.protocols, [entry.protocol]: { ...srv.protocols[entry.protocol], name } } });
     return true;
   });
+  // 换了端口之后，订阅和转发跟着更新：共享用户的其它服务器、把这些协议当转发目标的中转机
+  async function syncRelated(id, keys, log) {
+    const related = new Set();
+    for (const u of state().users) if (core.userHasServer(u, id)) for (const x of state().servers) if (x.id !== id && x.deployedAt && core.userHasServer(u, x.id)) related.add(x.id);
+    for (const f of state().forwards || []) if (f.target?.serverId === id && keys.includes(f.target?.protocol)) { const rl = getServer(f.relayServerId); if (rl?.deployedAt) related.add(rl.id); }
+    for (const rid of related) { log(`同步 ${getServer(rid).name}（订阅 / 转发跟着更新）…`); try { await syncOne(rid, () => {}); } catch (e) { log(`⚠ ${getServer(rid).name} 同步失败：${e.message}，稍后点「同步全部」`); } }
+  }
+  // 常用 Web 端口（80 / 443 / 8080 / 8443）：哪些服务器在用、一键换走
+  handle('servers:webPorts', () => state().servers.map((x) => ({ id: x.id, name: x.name, deployed: !!x.deployedAt, uses: core.webPortUses(state(), x) })).filter((x) => x.uses.length));
+  handle('server:leaveWebPorts', async (id) => {
+    const log = taskLogger('sync:' + id);
+    const srv0 = getServer(id);
+    const uses = core.webPortUses(state(), srv0);
+    if (!uses.length) return { changes: [] };
+    // 已部署的先看 VPS 上被别的程序占着哪些端口，避开
+    const busy = { tcp: [], udp: [] };
+    if (srv0.deployedAt) {
+      try {
+        const self = await deploy.serverSelfCheck(srv0);
+        const ours = new Set();
+        for (const { port, net } of core.serverPorts(state(), srv0)) if (port) for (const n of core.netsOf(net)) ours.add(`${n}/${port}`);
+        for (const x of self.listening) if (!ours.has(x)) { const [n, p] = x.split('/'); (busy[n] || []).push(Number(p)); }
+      } catch (e) { log('⚠ 读取 VPS 端口占用失败，按本机记录挑端口：' + e.message); }
+    }
+    const changes = [];
+    for (const u of uses) {
+      const cur = getServer(id);
+      const port = core.preferredFreePort(state(), cur, u.key, { busy, avoid: [u.port] });
+      store.upsert('servers', { id, protocols: { ...cur.protocols, [u.key]: { ...cur.protocols[u.key], port } } });
+      changes.push(`${u.label}：${u.port} → ${port}`);
+      log(`${u.label} 端口 ${u.port} → ${port}`);
+    }
+    const errs = core.checkPortConflicts(state(), getServer(id));
+    if (errs.length) { store.upsert('servers', { id, protocols: srv0.protocols }); throw new Error('换端口失败：' + errs.join('；')); }
+    let synced = false; let error = '';
+    if (srv0.deployedAt) {
+      try { await syncOne(id, log); synced = true; await syncRelated(id, uses.map((u) => u.key), log); } catch (e) { error = e.message; }
+    }
+    return { changes, synced, error };
+  });
   // 节点页「端口检测」：从本机连这个入口的端口（TCP 协议直接连端口，UDP 协议走一次真连），
   // 不通就换成优选端口再测（最多 3 次，都不通改回原端口）。opts.force：固定端口 / 疑似安全组没放行时也照样换
   handle('node:portCheck', async (entry, opts = {}) => {
@@ -539,7 +579,7 @@ function registerIpc() {
 
     log(`从本机${tcp ? '连接' : '真连（UDP 协议没法只测端口）'} ${entry.host}:${port0} …`);
     const first = await probePort(entryNow() || entry);
-    if (first.ok) { log('✔ 端口通'); return { status: 'ok', port: port0, message: `端口 ${port0} 从本机能连通` }; }
+    if (first.ok) { log('✔ 端口通'); return { status: 'ok', port: port0, message: `端口 ${port0} 从本机能连通` + (core.allowedPort(state(), port0) ? '' : '。不过它是常用 Web 端口（80 / 443 / 8080 / 8443），服务商禁止的话会被停机，建议在服务器页「换掉 Web 端口」') }; }
     log(`✘ 连不通${first.error ? '：' + first.error : ''}`);
 
     if (self.via) return { status: 'ip', message: `SSH 也要经本机代理（${self.via}）才连得上：多半是整个 IP 被墙，换端口没用，建议加中转、换 IP，或开 Cloudflare 隧道` };
@@ -569,11 +609,7 @@ function registerIpc() {
       const r = await probePort(entryNow());
       if (r.ok) {
         log(`✔ ${port} 能连通`);
-        // 订阅和转发跟着更新：共享用户的服务器、把这个节点当转发目标的中转机
-        const related = new Set();
-        for (const u of state().users) if (core.userHasServer(u, id)) for (const x of state().servers) if (x.id !== id && x.deployedAt && core.userHasServer(u, x.id)) related.add(x.id);
-        for (const f of state().forwards || []) if (f.target?.serverId === id && f.target?.protocol === key) { const rl = getServer(f.relayServerId); if (rl?.deployedAt) related.add(rl.id); }
-        for (const rid of related) { log(`同步 ${getServer(rid).name}（订阅 / 转发跟着更新）…`); try { await syncOne(rid, () => {}); } catch (e) { log(`⚠ ${getServer(rid).name} 同步失败：${e.message}，稍后点「同步全部」`); } }
+        await syncRelated(id, [key], log);
         return { status: 'changed', from: port0, to: port, message: `${label} 端口 ${port0} → ${port}，已经能连通。用户刷新订阅后生效` };
       }
       log(`✘ ${port} 也连不通`);

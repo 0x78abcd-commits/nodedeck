@@ -14,16 +14,16 @@ const CERT_PATH = `${REMOTE_DIR}/cert.pem`;
 const KEY_PATH = `${REMOTE_DIR}/key.pem`;
 
 const PROTOCOLS = {
-  vlessReality: { label: 'VLESS-Reality', net: 'tcp', defaultPort: 443 },
+  vlessReality: { label: 'VLESS-Reality', net: 'tcp', defaultPort: 2053 },
   trojan: { label: 'Trojan', net: 'tcp', defaultPort: 2083 },
   vmess: { label: 'VMess-WS', net: 'tcp', defaultPort: 2082 },
-  hysteria2: { label: 'Hysteria2', net: 'udp', defaultPort: 443 },
-  tuic: { label: 'TUIC', net: 'udp', defaultPort: 8443 },
-  anytls: { label: 'AnyTLS', net: 'tcp', defaultPort: 8443 },
+  hysteria2: { label: 'Hysteria2', net: 'udp', defaultPort: 2053 },
+  tuic: { label: 'TUIC', net: 'udp', defaultPort: 2083 },
+  anytls: { label: 'AnyTLS', net: 'tcp', defaultPort: 2086 },
   shadowsocks: { label: 'Shadowsocks-2022', net: 'both', defaultPort: 8388 },
   // 下面两个由 Xray 内核提供（sing-box 不支持 XHTTP）。Xray 收到的流量经本机 socks 交给 sing-box，
   // 落地、WARP 分流、屏蔽 BT / 广告 / 回国等路由规则照样生效
-  vlessXhttpReality: { label: 'VLESS-XHTTP-Reality', net: 'tcp', defaultPort: 2053, core: 'xray' },
+  vlessXhttpReality: { label: 'VLESS-XHTTP-Reality', net: 'tcp', defaultPort: 2052, core: 'xray' },
   vlessXhttpTls: { label: 'VLESS-XHTTP-TLS', net: 'tcp', defaultPort: 2087, core: 'xray' },
 };
 const XRAY_KEYS = Object.keys(PROTOCOLS).filter((k) => PROTOCOLS[k].core === 'xray');
@@ -58,14 +58,14 @@ function realityKeypair() {
 function defaultProtocols() {
   const kp = realityKeypair();
   return {
-    vlessReality: { enabled: true, port: 443, sni: 'www.microsoft.com', sniAuto: true, fp: 'chrome', privateKey: kp.privateKey, publicKey: kp.publicKey, shortId: randHex(4) },
+    vlessReality: { enabled: true, port: 2053, sni: 'www.microsoft.com', sniAuto: true, fp: 'chrome', privateKey: kp.privateKey, publicKey: kp.publicKey, shortId: randHex(4) },
     trojan: { enabled: true, port: 2083 },
     vmess: { enabled: true, port: 2082, path: '/' + randId(6) },
-    hysteria2: { enabled: true, port: 443, upMbps: 0, downMbps: 0 },
-    tuic: { enabled: true, port: 8443 },
-    anytls: { enabled: true, port: 8443 },
+    hysteria2: { enabled: true, port: 2053, upMbps: 0, downMbps: 0 },
+    tuic: { enabled: true, port: 2083 },
+    anytls: { enabled: true, port: 2086 },
     shadowsocks: { enabled: false, port: 8388, serverKey: crypto.randomBytes(16).toString('base64') },
-    vlessXhttpReality: { enabled: false, port: 2053, path: '/' + randId(8) },
+    vlessXhttpReality: { enabled: false, port: 2052, path: '/' + randId(8) },
     vlessXhttpTls: { enabled: false, port: 2087, path: '/' + randId(8) },
   };
 }
@@ -442,6 +442,21 @@ const FINGERPRINTS = ['chrome', 'firefox', 'safari', 'edge'];
 function fpOf(pc) { return FINGERPRINTS.includes(pc?.fp) ? pc.fp : 'chrome'; }
 // TCP 协议的优先端口：443 最自然，其次是常见的 HTTPS 备用端口
 const PREFERRED_TCP_PORTS = [443, 8443, 2053, 2083, 2087, 2096];
+// 常用 Web 端口：不少服务商禁止在这几个端口上跑网站或做代理类 Web 伪装（违规会被停机）。默认一律避开，设置里可以关
+const WEB_PORTS = [80, 443, 8080, 8443];
+const avoidWebPorts = (state) => state?.settings?.avoidWebPorts !== false;
+const allowedPort = (state, port) => !avoidWebPorts(state) || !WEB_PORTS.includes(Number(port));
+// 这台服务器上落在 Web 端口的协议（没开避开时返回空）
+function webPortUses(state, server) {
+  if (!avoidWebPorts(state)) return [];
+  const out = [];
+  for (const [k, m] of Object.entries(PROTOCOLS)) {
+    const pc = server.protocols?.[k];
+    if (!pc?.enabled || (k === 'vmess' && cfTunnelOf(server))) continue;
+    if (WEB_PORTS.includes(Number(pc.port))) out.push({ key: k, label: m.label, port: Number(pc.port), net: m.net });
+  }
+  return out;
+}
 // Hysteria2 端口跳跃范围，如 "20000-30000"；经中转的入口不跳跃
 function hopRange(server, entry) {
   const r = String(server.protocols?.hysteria2?.hopPorts || '').trim();
@@ -517,7 +532,8 @@ function pickFreePort(state, server, protocolKey, avoid = []) {
   throw new Error('找不到空闲端口');
 }
 
-// 部署时「自动优选端口」：伪装成 HTTPS 的协议优先用 HTTPS 常用端口（Reality 拿 443 最自然），Hysteria2 优先 UDP 443（像 HTTP/3），
+// 部署时「自动优选端口」：伪装成 HTTPS 的协议优先用 HTTPS 常用端口，Hysteria2 优先 UDP 443（像 HTTP/3）；开了「避开常用 Web 端口」（默认）时跳过 80 / 443 / 8080 / 8443，
+// Reality / XHTTP 落到 2053、2083 这类 Cloudflare 的 HTTPS 备用端口，
 // 其它协议用随机高位端口（避开 8388 这类一看就是代理的默认端口）。busy = VPS 上被其它程序占用的 { tcp: [], udp: [] }
 const AUTO_PREFER = {
   vlessReality: [443, 8443, 2053, 2083, 2087, 2096],
@@ -540,7 +556,7 @@ function preferredFreePort(state, server, protocolKey, { busy = {}, avoid = [] }
   for (const x of busy.udp || []) used.add(`udp/${x}`);
   for (const x of avoid) for (const n of nets) used.add(`${n}/${x}`);
   used.add(`tcp/${Number(server.sshPort) || 22}`);
-  const ok = (port) => nets.every((x) => !used.has(`${x}/${port}`)) && !ranges.some(([a, b]) => port >= a && port <= b);
+  const ok = (port) => allowedPort(state, port) && nets.every((x) => !used.has(`${x}/${port}`)) && !ranges.some(([a, b]) => port >= a && port <= b);
   let port = (AUTO_PREFER[protocolKey] || []).find(ok);
   for (let i = 0; !port && i < 500; i++) { const c = 10000 + crypto.randomInt(50000); if (ok(c)) port = c; }
   if (!port) throw new Error('找不到空闲端口');
@@ -569,7 +585,7 @@ function pickPreferredPort(state, server, protocolKey, extraUsed = []) {
     if (range) { ranges.push(range); continue; }
     for (const x of netsOf(n)) used.add(`${x}/${port}`);
   }
-  return PREFERRED_TCP_PORTS.find((port) => !netsOf(net).some((x) => used.has(`${x}/${port}`)) && !ranges.some(([a, b]) => port >= a && port <= b)) || 0;
+  return PREFERRED_TCP_PORTS.find((port) => allowedPort(state, port) && !netsOf(net).some((x) => used.has(`${x}/${port}`)) && !ranges.some(([a, b]) => port >= a && port <= b)) || 0;
 }
 
 // 节点被墙后"一键换新"：换端口（固定端口的不换）、Reality 密钥和 short id、VMess 路径
@@ -601,7 +617,7 @@ function rotateServer(state, server) {
   return { server: s, changes };
 }
 
-module.exports = { autoPickPorts, preferredFreePort,
+module.exports = { autoPickPorts, preferredFreePort, WEB_PORTS, avoidWebPorts, allowedPort, webPortUses,
   subTlsWanted, cfTunnelOf, fpOf, FINGERPRINTS, PREFERRED_TCP_PORTS, hopRange, PROTOCOLS, REMOTE_DIR, agentForwards, forwardTargets, CONN_LOG, XRAY_ACCESS_LOG, onlineTrackOn, GB, randId, randHex, randPassword, uuid, realityKeypair, defaultProtocols, newServer, newUser, userStatus, userExpireAt, userUsedBytes, userHasServer, usersForServer, buildServerConfig, XRAY_KEYS, isXray, usesXray, realityOn, xrayPorts, buildXrayConfig, acmeCertFiles, xhttpPath, netsOf, serverPorts, checkPortConflicts, resolveForwardTarget, landingOutbound, pickFreePort, rotateServer, ensureProtocols, ssUserKey, pickPreferredPort, usesAcme, tlsSniFor, WARP_SITES,
   // 内部共用（订阅模块要用）
   SS_METHOD,

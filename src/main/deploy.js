@@ -328,6 +328,14 @@ modprobe tcp_bbr 2>/dev/null; sysctl -w net.core.default_qdisc=fq >/dev/null 2>&
       const picked = core.autoPickPorts(state, server, { tcp: busy, udp: await busyUdpPorts(ssh) });
       log('自动优选端口：' + picked.join('，'));
     }
+    // 首次部署：避开常用 Web 端口（80 / 443 / 8080 / 8443，很多服务商禁止拿来做代理伪装）
+    if (!server.deployedAt) {
+      for (const u of core.webPortUses(state, server)) {
+        const np = core.preferredFreePort(state, server, u.key, { busy: { tcp: busy }, avoid: [u.port] });
+        log(`${u.label} 端口 ${u.port} 是常用 Web 端口，改用 ${np}（设置里可以关掉「避开常用 Web 端口」）`);
+        server.protocols[u.key].port = np;
+      }
+    }
     for (const [k, meta] of Object.entries(core.PROTOCOLS)) {
       const pc = server.protocols?.[k];
       if (!pc?.enabled || pc.fixedPort || !core.netsOf(meta.net).includes('tcp') || !busy.includes(Number(pc.port))) continue;

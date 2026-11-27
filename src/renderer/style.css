@@ -388,6 +388,7 @@ pre.term { background: #0e1214; color: #d7dee2; border-radius: 10px; padding: 12
 .pl-port { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 
 /* 清理其他程序 */
+.page-warn { display: flex; gap: 14px; align-items: center; background: var(--warn-soft); border: 1px solid color-mix(in srgb, var(--warn) 35%, transparent); border-radius: var(--r-panel); padding: 12px 16px; margin-bottom: 14px; }
 .cl-warn { background: var(--warn-soft); border: 1px solid color-mix(in srgb, var(--warn) 35%, transparent); border-radius: 10px; padding: 10px 12px; font-size: 13px; margin-bottom: 12px; }
 .cl-sec { margin-bottom: 14px; }
 .cl-sec h4 { margin: 0 0 4px; }

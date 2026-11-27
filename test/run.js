@@ -266,8 +266,15 @@ console.log('agent users', JSON.stringify(core.buildAgentUsers(state, node)));
   const st = { settings: { subPort: 2096 }, servers: [srv], forwards: [], users: [], landings: [] };
   core.autoPickPorts(st, srv, { tcp: [], udp: [] });
   const p = srv.protocols;
-  const ok1 = p.vlessReality.port === 443 && p.hysteria2.port === 443 && p.shadowsocks.port >= 10000 && p.trojan.port >= 10000 && !core.checkPortConflicts(st, srv).length;
+  // 默认避开 80 / 443 / 8080 / 8443：Reality 拿 2053，Hysteria2 随机高位
+  const web = () => Object.values(p).some((x) => x.enabled && core.WEB_PORTS.includes(x.port));
+  const ok0 = p.vlessReality.port === 2053 && p.hysteria2.port >= 10000 && !web() && !core.checkPortConflicts(st, srv).length && !core.webPortUses(st, srv).length;
+  st.settings.avoidWebPorts = false;
+  core.autoPickPorts(st, srv, { tcp: [], udp: [] });
+  const ok1 = ok0 && p.vlessReality.port === 443 && p.hysteria2.port === 443 && p.shadowsocks.port >= 10000 && p.trojan.port >= 10000 && !core.checkPortConflicts(st, srv).length;
   core.autoPickPorts(st, srv, { tcp: [443], udp: [] });
   const ok2 = p.vlessReality.port === 8443 && !core.checkPortConflicts(st, srv).length;
-  if (ok1 && ok2) console.log('OK   auto-ports'); else { console.log('FAIL auto-ports', JSON.stringify(Object.fromEntries(Object.entries(p).map(([k, v]) => [k, v.port])))); process.exitCode = 1; }
+  st.settings.avoidWebPorts = true;
+  const ok3 = core.webPortUses(st, srv).some((u) => u.key === 'vlessReality') && !core.webPortUses(st, { protocols: core.defaultProtocols() }).length;
+  if (ok1 && ok2 && ok3) console.log('OK   auto-ports'); else { console.log('FAIL auto-ports', JSON.stringify(Object.fromEntries(Object.entries(p).map(([k, v]) => [k, v.port])))); process.exitCode = 1; }
 }

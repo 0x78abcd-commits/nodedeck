@@ -96,7 +96,7 @@ function portCheck(e) {
     } finally { running = false; }
   };
   modal({ title: `端口检测：${serverName(e.serverId)} 的 ${pname}`, wide: true, onClose: off, body: h('div', {},
-    h('p', { class: 'muted', style: { marginTop: 0 } }, `先看服务器上 ${pname} 有没有在监听，再从这台电脑连 ${e.host}:${e.port}。不通就换成优选端口（Reality / XHTTP 优先 443、8443 这类 HTTPS 端口，其它随机高位端口），同步后再测，最多换 3 次，都不通就改回原端口。`),
+    h('p', { class: 'muted', style: { marginTop: 0 } }, `先看服务器上 ${pname} 有没有在监听，再从这台电脑连 ${e.host}:${e.port}。不通就换成优选端口（Reality / XHTTP 用 2053、2083 这类 HTTPS 备用端口，其它随机高位端口，不用 80 / 443 / 8080 / 8443），同步后再测，最多换 3 次，都不通就改回原端口。`),
     pre, result), buttons: [{ label: '关闭' }] });
   run(false);
 }
