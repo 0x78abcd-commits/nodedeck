@@ -79,6 +79,15 @@ class Store {
     return i >= 0 ? list[i] : item;
   }
 
+  // 按给定 id 顺序重排（拖动排序用）；没列到的按原顺序放到最后
+  reorder(col, ids) {
+    if (!COLLECTIONS.includes(col)) throw new Error('未知集合 ' + col);
+    const pos = new Map(ids.map((id, i) => [id, i]));
+    const list = this.state[col];
+    this.state[col] = list.map((x, i) => [x, pos.has(x.id) ? pos.get(x.id) : ids.length + i]).sort((a, b) => a[1] - b[1]).map((x) => x[0]);
+    this.save();
+  }
+
   remove(col, id) {
     if (!COLLECTIONS.includes(col)) throw new Error('未知集合 ' + col);
     if (col === 'users' && id === 'owner') throw new Error('默认用户不能删除');

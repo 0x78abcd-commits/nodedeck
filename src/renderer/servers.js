@@ -47,8 +47,9 @@ async function viewServers(v) {
     const exit = s.exit?.type === 'landing' ? h('span', { class: 'tag blue' }, '落地: ' + (S.landings.find((l) => l.id === s.exit.landingId)?.name || '?')) : h('span', { class: 'tag' }, '直连');
     const fw = S.forwards.filter((f) => f.relayServerId === s.id).length;
     const lamp = !s.deployedAt ? 'idle' : st && st.singbox && st.agent ? 'ok' : 'bad';
-    tb.append(h('tr', { class: 'lamp-' + lamp },
-      h('td', { style: { width: '28px' } }, cb),
+    const grip = h('span', { class: 'drag-grip', title: '按住拖动调整顺序（节点页、订阅里的顺序也跟着变）' }, '⋮⋮');
+    const row = h('tr', { class: 'lamp-' + lamp, 'data-id': s.id },
+      h('td', { class: 'lamp-cell', style: s.color ? { boxShadow: `inset 4px 0 0 ${s.color}` } : {} }, h('div', { class: 'lamp-inner' }, grip, cb)),
       h('td', {}, h('div', { class: 'srv-name' }, s.name), h('div', { class: 'muted mono', style: { wordBreak: 'normal', whiteSpace: 'nowrap', fontSize: '12px' } }, s.host), specChips(s), realityTag, s.role === 'relay' ? h('span', { class: 'tag blue' }, '中转机') : null, vpsExpireTag(s), core_cf(s) && s.deployedAt ? h('span', { class: 'tag ' + (s.lastStatus?.cf ? 'blue' : 'warn'), title: s.lastStatus?.cf ? '' : '隧道服务没在运行：检查令牌是否正确、VPS 能否连上 Cloudflare' }, s.lastStatus?.cf ? 'CF 隧道' : 'CF 隧道未连通') : null,
         core_xray(s) && s.deployedAt && st && !st.xray ? h('span', { class: 'tag warn', title: 'XHTTP 协议由 Xray 提供，Xray 没在运行。点「同步」重试，或「更多 → 查看日志」看原因；其它协议不受影响' }, 'Xray 未运行') : null),
       h('td', { class: 'st-cell' }, h('div', { class: 'st-top' }, status, st?.version ? h('span', { class: 'muted', style: { fontSize: '12px' }, title: st.xrayVersion ? 'Xray ' + st.xrayVersion : '' }, 'sing-box ' + st.version + (st.xrayVersion ? ' · Xray ' + st.xrayVersion : '')) : null, agentOutdated(s) ? h('span', { class: 'tag warn', title: '点「同步」自动升级' }, 'agent 待升级') : null), s.deployedAt ? serverMeters(s) : null),
@@ -72,12 +73,39 @@ async function viewServers(v) {
           s.deployedAt && { label: '重新部署', onClick: () => deployServer(s) },
           { label: '一键换新（被墙时用）', onClick: () => rotateServer(s) },
           { label: '清理其他面板 / 程序', onClick: () => cleanOthers(s) },
+          { label: '标签颜色…', onClick: () => pickServerColor(s) },
           s.deployedAt ? { label: '卸载…', onClick: () => uninstallServer(s, false) } : null,
           { sep: true },
           { label: '删除', danger: true, onClick: () => removeServer(s) },
-        ]) }, '更多 ▾')))));
+        ]) }, '更多 ▾'))));
+    tb.append(row);
+    // 拖动排序：只有按住左边的把手才能拖
+    grip.onmousedown = () => { row.draggable = true; };
+    row.ondragstart = (e) => { if (!row.draggable) { e.preventDefault(); return; } e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', s.id); row.classList.add('dragging'); };
+    row.ondragend = () => { row.draggable = false; row.classList.remove('dragging'); tb.querySelectorAll('.drop-before,.drop-after').forEach((x) => x.classList.remove('drop-before', 'drop-after')); };
+    row.ondragover = (e) => {
+      const src = tb.querySelector('tr.dragging');
+      if (!src || src === row) return;
+      e.preventDefault();
+      const r = row.getBoundingClientRect();
+      const after = e.clientY > r.top + r.height / 2;
+      tb.querySelectorAll('.drop-before,.drop-after').forEach((x) => x.classList.remove('drop-before', 'drop-after'));
+      row.classList.add(after ? 'drop-after' : 'drop-before');
+    };
+    row.ondrop = async (e) => {
+      e.preventDefault();
+      const src = tb.querySelector('tr.dragging');
+      if (!src || src === row) return;
+      const after = row.classList.contains('drop-after');
+      row.classList.remove('drop-before', 'drop-after');
+      row.parentNode.insertBefore(src, after ? row.nextSibling : row);
+      const ids = [...tb.querySelectorAll('tr[data-id]')].map((x) => x.dataset.id);
+      await api.call('col:reorder', 'servers', ids);
+      await reload();
+      markDirty(); // 订阅里的节点顺序跟着变，同步后生效
+    };
   }
-  v.append(h('div', { class: 'card' }, h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, allCb), ['服务器', '状态', '协议 / 端口', '出口', '操作'].map((t) => h('th', {}, t)))), tb)));
+  v.append(h('div', { class: 'card' }, h('table', {}, h('thead', {}, h('tr', {}, h('th', { class: 'lamp-cell' }, h('div', { class: 'lamp-inner' }, h('span', { class: 'drag-grip', style: { visibility: 'hidden' } }, '⋮⋮'), allCb)), ['服务器', '状态', '协议 / 端口', '出口', '操作'].map((t) => h('th', {}, t)))), tb)));
 }
 
 const serverSel = new Set();
@@ -663,4 +691,22 @@ function showMonitor(s) {
   };
   modal({ title: `监控 · ${s.name}`, wide: true, body, buttons: [{ label: '刷新', close: false, onClick: load }, { label: '关闭' }] });
   load();
+}
+
+// 服务器左边那条竖线的颜色：默认按状态（绿 = 运行中、红 = 异常、灰 = 未部署），也可以自己选一个颜色当分组标记
+const LABEL_COLORS = ['#2f9e44', '#1c7ed6', '#7048e8', '#e8590c', '#e03131', '#d6336c', '#f08c00', '#0c8599', '#495057', '#a0785a'];
+function pickServerColor(s) {
+  let cur = s.color || '';
+  const sw = h('div', { class: 'color-grid' });
+  const custom = h('input', { type: 'color', value: cur || '#1c7ed6', title: '自定义颜色' });
+  const draw = () => sw.replaceChildren(
+    h('button', { class: 'swatch auto-sw' + (!cur ? ' on' : ''), title: '跟随状态（默认）', onclick: () => { cur = ''; draw(); } }, '自动'),
+    ...LABEL_COLORS.map((c) => h('button', { class: 'swatch' + (cur === c ? ' on' : ''), style: { background: c }, title: c, onclick: () => { cur = c; draw(); } })),
+    h('label', { class: 'swatch custom-sw' + (cur && !LABEL_COLORS.includes(cur) ? ' on' : ''), title: '自定义颜色', style: cur && !LABEL_COLORS.includes(cur) ? { background: cur } : {} }, custom, '+'));
+  custom.oninput = () => { cur = custom.value; draw(); };
+  draw();
+  modal({ title: `标签颜色 · ${s.name}`, body: h('div', {}, h('p', { class: 'muted', style: { marginTop: 0 } }, '服务器列表左边那条竖线的颜色，可以用来给服务器分组。选「自动」就按状态显示：绿 = 运行中，红 = 异常，灰 = 未部署（状态那一列一直都有）。'), sw), buttons: [
+    { label: '取消' },
+    { label: '保存', class: 'primary', onClick: async () => { await api.call('col:upsert', 'servers', { id: s.id, color: cur }); render(); } },
+  ] });
 }

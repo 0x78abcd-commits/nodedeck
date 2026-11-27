@@ -377,6 +377,7 @@ function registerIpc() {
   handle('state:get', () => state());
   handle('col:upsert', (col, item) => store.upsert(col, item));
   handle('col:remove', (col, id) => store.remove(col, id));
+  handle('col:reorder', (col, ids) => store.reorder(col, ids));
   // 端口转发：各台中转机上每条规则的流量、连接数、目标探测结果
   handle('fwd:status', async () => {
     const s = state();
