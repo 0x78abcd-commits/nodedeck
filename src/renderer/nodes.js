@@ -80,7 +80,7 @@ function portCheck(e) {
   const result = h('div', { style: { marginTop: '10px' } });
   const off = api.on('task-log', (m) => { if (m.task !== `port:${e.serverId}:${e.protocol}`) return; pre.textContent += m.line + '\n'; pre.scrollTop = pre.scrollHeight; });
   let running = false;
-  const TAG = { ok: ['ok', '✔ 端口通'], changed: ['ok', '✔ 已换端口'], fixed: ['warn', '⚠ 不通'], firewall: ['warn', '⚠ 不通'], down: ['bad', '✘ 服务没监听'], ip: ['bad', '✘ 不通'], failed: ['bad', '✘ 不通'] };
+  const TAG = { ok: ['ok', '✔ 端口通'], changed: ['ok', '✔ 已换端口'], fixed: ['warn', '⚠ 不通'], firewall: ['warn', '⚠ 不通'], down: ['bad', '✘ 服务没监听'], allow: ['warn', '⚠ 不在白名单'], ip: ['bad', '✘ 不通'], failed: ['bad', '✘ 不通'] };
   const run = async (force) => {
     if (running) return;
     running = true; result.innerHTML = '';

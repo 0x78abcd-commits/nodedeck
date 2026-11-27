@@ -507,6 +507,9 @@ function cfTunnelOf(server) {
   return { token: t.token.trim(), hostname: t.hostname.trim(), cdnHosts: (t.cdnHosts || []).map((x) => String(x).trim()).filter(Boolean) };
 }
 // 订阅走 HTTPS（不用域名）：设置里没关、也没填订阅域名时，agent 给 VPS 的 IP 申请 Let's Encrypt 证书
+// 这个端口在 VPS 防火墙上只对白名单开放（名单外连不上是正常的，不能当成被墙或不通去换端口）
+function restrictedPort(state, server, port) { return portAllowRules(state, server).some((r) => Number(r.port) === Number(port)); }
+
 // 订阅的 IP 证书要用 TCP 80 做 http-01 验证：开了「避开常用 Web 端口」时不申请（订阅走 HTTP，或用 Cloudflare 代理的订阅域名走 HTTPS）
 function subTlsWanted(state) { return state.settings?.subHttps !== false && !state.settings?.subDomain && !avoidWebPorts(state); }
 
@@ -652,7 +655,7 @@ function rotateServer(state, server) {
   return { server: s, changes };
 }
 
-module.exports = { autoPickPorts, preferredFreePort, WEB_PORTS, avoidWebPorts, allowedPort, webPortUses, webAllowOf, portAllowRules,
+module.exports = { autoPickPorts, preferredFreePort, WEB_PORTS, avoidWebPorts, allowedPort, webPortUses, webAllowOf, portAllowRules, restrictedPort,
   subTlsWanted, cfTunnelOf, fpOf, FINGERPRINTS, PREFERRED_TCP_PORTS, hopRange, PROTOCOLS, REMOTE_DIR, agentForwards, forwardTargets, CONN_LOG, XRAY_ACCESS_LOG, onlineTrackOn, GB, randId, randHex, randPassword, uuid, realityKeypair, defaultProtocols, newServer, newUser, userStatus, userExpireAt, userUsedBytes, userHasServer, usersForServer, buildServerConfig, XRAY_KEYS, isXray, usesXray, realityOn, xrayPorts, buildXrayConfig, acmeCertFiles, xhttpPath, netsOf, serverPorts, checkPortConflicts, resolveForwardTarget, landingOutbound, pickFreePort, rotateServer, ensureProtocols, ssUserKey, pickPreferredPort, usesAcme, tlsSniFor, WARP_SITES,
   // 内部共用（订阅模块要用）
   SS_METHOD,

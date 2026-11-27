@@ -101,7 +101,7 @@ func (a *Agent) handleSpeed(w http.ResponseWriter, r *http.Request) {
 			res["error"] = "地址或端口不对"
 		} else if ips, err := net.LookupIP(host); err != nil || len(ips) == 0 {
 			res["error"] = "解析不了域名"
-		} else if ip := ips[0]; ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() || ip.IsLinkLocalUnicast() {
+		} else if ip := ips[0]; !publicIP(ip) {
 			res["error"] = "不检测内网地址"
 		} else {
 			t0 := time.Now()
@@ -157,4 +157,27 @@ func (a *Agent) udpEcho() {
 		}
 		_, _ = pc.WriteTo(buf[:n], from)
 	}
+}
+
+// 公网地址才让 tcping 去连：排除本机、内网、链路本地（含云厂商元数据 169.254.169.254）、组播、运营商级 NAT（100.64/10）、0.0.0.0/8 等
+var nonPublicNets = func() []*net.IPNet {
+	var out []*net.IPNet
+	for _, c := range []string{"0.0.0.0/8", "100.64.0.0/10", "192.0.0.0/24", "198.18.0.0/15", "240.0.0.0/4", "64:ff9b::/96", "2001:db8::/32"} {
+		if _, n, err := net.ParseCIDR(c); err == nil {
+			out = append(out, n)
+		}
+	}
+	return out
+}()
+
+func publicIP(ip net.IP) bool {
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsInterfaceLocalMulticast() {
+		return false
+	}
+	for _, n := range nonPublicNets {
+		if n.Contains(ip) {
+			return false
+		}
+	}
+	return true
 }

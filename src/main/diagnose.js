@@ -141,7 +141,8 @@ async function diagnoseServer(state, server, deps) {
   const tcpPorts = [];
   for (const [k, meta] of Object.entries(core.PROTOCOLS)) {
     const pc = server.protocols?.[k];
-    if (pc?.enabled && core.netsOf(meta.net).includes('tcp')) tcpPorts.push({ key: k, label: meta.label, port: Number(pc.port) });
+    if (pc?.enabled && core.netsOf(meta.net).includes('tcp') && !core.restrictedPort(state, server, pc.port)) tcpPorts.push({ key: k, label: meta.label, port: Number(pc.port) });
+    else if (pc?.enabled && core.restrictedPort(state, server, pc.port)) advice.add(`${meta.label} 的 ${pc.port} 端口只对白名单开放（${core.webAllowOf(state, server).join('、')}），体检不测它；这台电脑连不上的话，多半是公网 IP 变了，到「更多 → 用 443 等 Web 端口」重新设置一次`);
   }
   const local = await Promise.all(tcpPorts.map(async (p) => ({ ...p, r: await tools.tcpPing(server.host, p.port, 5000) })));
   const localFail = local.filter((x) => !x.r.ok);

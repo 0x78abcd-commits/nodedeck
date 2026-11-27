@@ -227,10 +227,10 @@ async function viewSettings(v) {
           } }, '保存'),
           h('button', { onclick: (e) => busy(e.currentTarget, async () => { const l = await api.call('tools:localProxies'); detected.textContent = l.length ? '检测到：' + l.join('、') : '没有检测到本机代理'; }) }, '检测本机代理'), detected)),
       h('div', { class: 'card' }, h('h3', {}, '备份'),
-        h('p', { class: 'muted', style: { marginTop: 0 } }, `备份文件包含服务器密码等敏感信息，请妥善保存。本地数据已用 Windows DPAPI 加密，存在：${info.dataDir}`),
+        h('p', { class: 'muted', style: { marginTop: 0 } }, `备份文件包含服务器密码、私钥和订阅口令，导出时建议设密码加密（忘了密码就打不开）。本地数据已用 Windows DPAPI 加密，存在：${info.dataDir}`),
         h('div', { class: 'actions' },
-          h('button', { onclick: async () => { const p = await api.call('data:export'); if (p) toast('已导出到 ' + p, 'ok'); } }, '导出备份'),
-          h('button', { onclick: async () => { if (await confirmBox('导入会覆盖当前全部数据，继续？')) { if (await api.call('data:import')) { toast('导入成功', 'ok'); render(); } } } }, '导入备份'))));
+          h('button', { onclick: () => exportBackup() }, '导出备份'),
+          h('button', { onclick: () => importBackup() }, '导入备份'))));
   };
 
   // ---- 外观与更新 ----
@@ -295,4 +295,37 @@ async function showWhatsNew() {
   const parts = md.split(/^## /m).slice(1).map((sec) => ({ ver: (sec.match(/^(\d+\.\d+\.\d+)/) || [])[1], text: sec })).filter((x) => x.ver && verCmp(x.ver, last) > 0 && verCmp(x.ver, info.version) <= 0);
   if (!parts.length) return;
   modal({ title: `已更新到 ${info.version}`, wide: true, body: h('div', { style: { whiteSpace: 'pre-wrap', lineHeight: 1.7 } }, parts.map((p) => plainNotes('## ' + p.text)).join('\n\n')), buttons: [{ label: '知道了', class: 'primary' }] });
+}
+
+// 导出备份：建议设密码（AES-256-GCM 加密），不设就是明文
+function exportBackup() {
+  const p1 = h('input', { type: 'password', placeholder: '至少 8 位' });
+  const p2 = h('input', { type: 'password', placeholder: '再输一次' });
+  modal({ title: '导出备份', body: h('div', {},
+    h('p', { class: 'muted', style: { marginTop: 0 } }, '备份里有所有服务器的 SSH 密码 / 私钥和用户的订阅口令。设个密码加密，放网盘、发聊天也不怕被看到；导入时要输这个密码，忘了就打不开。'),
+    h('div', { class: 'row' }, field('备份密码', p1), field('确认密码', p2))), buttons: [
+    { label: '取消' },
+    { label: '不加密导出', onClick: async () => { if (!(await confirmBox('不加密的备份是明文，谁拿到文件都能看到服务器密码。确定不加密？', '不加密导出'))) return false; const f = await api.call('data:export', ''); if (f) toast('已导出到 ' + f, 'ok'); } },
+    { label: '加密导出', class: 'primary', onClick: async () => {
+      if (p1.value.length < 8) throw new Error('密码至少 8 位');
+      if (p1.value !== p2.value) throw new Error('两次输入的密码不一样');
+      const f = await api.call('data:export', p1.value); if (f) toast('已导出加密备份到 ' + f, 'ok');
+    } },
+  ] });
+  setTimeout(() => p1.focus(), 50);
+}
+
+async function importBackup() {
+  try {
+    if (!(await confirmBox('导入会覆盖当前全部数据，继续？'))) return;
+    const r = await api.call('data:import');
+    if (!r) return;
+    if (r === true) { toast('导入成功', 'ok'); render(); return; }
+    const pw = h('input', { type: 'password' });
+    modal({ title: '输入备份密码', body: field('这个备份是加密的，输入导出时设的密码', pw), buttons: [
+      { label: '取消' },
+      { label: '导入', class: 'primary', onClick: async () => { await api.call('data:importWith', r.path, pw.value); toast('导入成功', 'ok'); render(); } },
+    ] });
+    setTimeout(() => pw.focus(), 50);
+  } catch (e) { toast(e.message, 'err'); }
 }

@@ -1,6 +1,7 @@
 'use strict';
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const { app, BrowserWindow, ipcMain, net, session, shell, dialog, Menu, nativeTheme } = require('electron');
 const core = require('./core');
 const tools = require('./tools');
@@ -176,7 +177,7 @@ function watchSubCert(id, tries = 0) {
 
 // 部署后从本机测 TCP 协议端口，不通的自动换端口（每个最多 3 次）；全部不通时不改动
 async function autoFixPorts(id, log) {
-  const tcpKeys = () => Object.entries(core.PROTOCOLS).filter(([k, m]) => core.netsOf(m.net).includes('tcp') && getServer(id).protocols?.[k]?.enabled).map(([k]) => k);
+  const tcpKeys = () => Object.entries(core.PROTOCOLS).filter(([k, m]) => core.netsOf(m.net).includes('tcp') && getServer(id).protocols?.[k]?.enabled && !core.restrictedPort(state(), getServer(id), getServer(id).protocols[k].port)).map(([k]) => k);
   const keys = tcpKeys();
   if (!keys.length) return [];
   const srv = getServer(id);
@@ -272,7 +273,8 @@ async function refreshUsage() {
 // 本机连不通、海外能通，连续两次判定为被墙后：notify 只提醒；auto 自动一键换新（6 小时内最多一次），换完复测
 const blockState = {};
 function mainTcpPort(srv) {
-  for (const k of ['vlessReality', 'trojan', 'anytls', 'vmess', 'vlessXhttpReality', 'vlessXhttpTls', 'shadowsocks']) if (srv.protocols?.[k]?.enabled) return { key: k, port: Number(srv.protocols[k].port) };
+  // 只对白名单开放的端口不拿来巡检（名单外的这台电脑和其它 VPS 本来就连不上）
+  for (const k of ['vlessReality', 'trojan', 'anytls', 'vmess', 'vlessXhttpReality', 'vlessXhttpTls', 'shadowsocks']) if (srv.protocols?.[k]?.enabled && !core.restrictedPort(state(), srv, srv.protocols[k].port)) return { key: k, port: Number(srv.protocols[k].port) };
   return null;
 }
 async function notifyAll(srv, text) {
@@ -482,6 +484,15 @@ async function webSetup(id, { key, port, auto = true, extra = [] }) {
   if (!cur.deployedAt) return { ok: true, port, allow, message: '已设置好，部署时生效' };
   log('同步到服务器（写防火墙白名单）…');
   await syncOne(id, log);
+  // 确认白名单规则真的写进了 VPS 防火墙：没写进去端口就对所有人开放了，违反服务商规定，必须改回去
+  const n = await deploy.allowRuleCount(getServer(id)).catch(() => -1);
+  if (n === 0) {
+    log('✘ VPS 防火墙里没有白名单规则（系统可能没装 iptables），改回原来的设置');
+    store.upsert('servers', { id, ...prev });
+    await syncOne(id, log).catch(() => {});
+    throw new Error('这台 VPS 上没法写防火墙白名单（多半是没装 iptables：Debian / Ubuntu 用 apt install iptables，CentOS 用 yum install iptables 装上后再试）。已经改回原来的端口，没有对公网开放');
+  }
+  if (n > 0) log(`✔ VPS 防火墙白名单已生效（${n} 条规则）`);
   await syncRelated(id, [key], log);
   // 从本机测：这台电脑在名单里才测得通（没勾「这台电脑的网络」时，测不通也算正常）
   log('从这台电脑测试 …');
@@ -686,6 +697,12 @@ function registerIpc() {
       return { status: 'down', message: `服务器上 ${label} 的端口 ${port0} 没在监听，换端口没用：先点服务器的「同步」重新下发配置，还不行看「日志」` };
     }
     log(`服务器上 ${label} 正在监听 ${port0} ✔`);
+    if (core.restrictedPort(state(), srv0, port0)) {
+      log(`${port0} 只对白名单开放：${core.webAllowOf(state(), srv0).join('、')}`);
+      const r = await probePort(entryNow() || entry);
+      log(r.ok ? '✔ 这台电脑能连上' : '✘ 这台电脑连不上');
+      return { status: r.ok ? 'ok' : 'allow', port: port0, message: r.ok ? `端口 ${port0} 只对白名单开放，这台电脑在名单里、能连通` : `端口 ${port0} 只对白名单开放，这台电脑连不上：多半是你的公网 IP 变了、不在名单里了（开着代理 / TUN 时也会这样）。到服务器「更多 → 用 443 等 Web 端口」重新点一次「一键设置」更新名单，不会去换端口` };
+    }
 
     log(`从本机${tcp ? '连接' : '真连（UDP 协议没法只测端口）'} ${entry.host}:${port0} …`);
     const first = await probePort(entryNow() || entry);
@@ -1162,19 +1179,47 @@ function registerIpc() {
   handle('app:changelog', () => readChangelog());
 
   // 备份
-  handle('data:export', async () => {
-    const r = await dialog.showSaveDialog(win, { title: '导出备份（包含服务器密码，请妥善保存）', defaultPath: `nodedeck-backup-${new Date().toISOString().slice(0, 10)}.json`, filters: [{ name: 'JSON', extensions: ['json'] }] });
+  // 备份文件用密码加密（scrypt + AES-256-GCM）：里面有服务器密码、私钥和订阅口令，明文放在网盘或聊天记录里很危险
+  const BK_MAGIC = 'nodedeck-backup-enc1';
+  let pendingImport = ''; // 输密码导入时只读刚才在对话框里选的那个文件
+  const bkKey = (password, salt) => crypto.scryptSync(String(password), salt, 32, { N: 1 << 15, r: 8, p: 1, maxmem: 64 << 20 });
+  handle('data:export', async (password) => {
+    const r = await dialog.showSaveDialog(win, { title: password ? '导出加密备份' : '导出备份（未加密，包含服务器密码，请妥善保存）', defaultPath: `nodedeck-backup-${new Date().toISOString().slice(0, 10)}.json`, filters: [{ name: 'JSON', extensions: ['json'] }] });
     if (r.canceled) return false;
-    fs.writeFileSync(r.filePath, JSON.stringify(state(), null, 2));
+    const text = JSON.stringify(state(), null, 2);
+    if (password) {
+      if (String(password).length < 8) throw new Error('密码至少 8 位');
+      const salt = crypto.randomBytes(16); const iv = crypto.randomBytes(12);
+      const c = crypto.createCipheriv('aes-256-gcm', bkKey(password, salt), iv);
+      const data = Buffer.concat([c.update(text, 'utf8'), c.final()]);
+      fs.writeFileSync(r.filePath, JSON.stringify({ format: BK_MAGIC, kdf: 'scrypt-N32768-r8-p1', salt: salt.toString('base64'), iv: iv.toString('base64'), tag: c.getAuthTag().toString('base64'), data: data.toString('base64') }), { mode: 0o600 });
+    } else fs.writeFileSync(r.filePath, text, { mode: 0o600 });
     return r.filePath;
   });
+  // 第一步选文件：加密的返回 { needPassword, path }，界面问了密码再调 data:importWith
+  const applyImport = (data) => {
+    if (!Array.isArray(data?.servers) || !Array.isArray(data?.users)) throw new Error('不是有效的 NodeDeck 备份');
+    store.replaceAll(data);
+    return true;
+  };
   handle('data:import', async () => {
     const r = await dialog.showOpenDialog(win, { title: '导入备份', filters: [{ name: 'JSON', extensions: ['json'] }], properties: ['openFile'] });
     if (r.canceled || !r.filePaths[0]) return false;
     const data = JSON.parse(fs.readFileSync(r.filePaths[0], 'utf8'));
-    if (!Array.isArray(data.servers) || !Array.isArray(data.users)) throw new Error('不是有效的 NodeDeck 备份');
-    store.replaceAll(data);
-    return true;
+    if (data?.format === BK_MAGIC) { pendingImport = r.filePaths[0]; return { needPassword: true, path: r.filePaths[0] }; }
+    return applyImport(data);
+  });
+  handle('data:importWith', async (file, password) => {
+    if (!pendingImport || file !== pendingImport) throw new Error('请重新选择备份文件');
+    const j = JSON.parse(fs.readFileSync(pendingImport, 'utf8'));
+    if (j?.format !== BK_MAGIC) throw new Error('不是加密备份');
+    let text;
+    try {
+      const d = crypto.createDecipheriv('aes-256-gcm', bkKey(password, Buffer.from(j.salt, 'base64')), Buffer.from(j.iv, 'base64'));
+      d.setAuthTag(Buffer.from(j.tag, 'base64'));
+      text = Buffer.concat([d.update(Buffer.from(j.data, 'base64')), d.final()]).toString('utf8');
+    } catch (_) { throw new Error('密码不对，或者备份文件损坏了'); }
+    return applyImport(JSON.parse(text));
   });
 }
 

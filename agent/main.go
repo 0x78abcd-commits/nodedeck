@@ -818,7 +818,7 @@ func run(cfgPath string) {
 	go a.udpEcho()
 	pub.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { http.NotFound(w, r) })
 	go func() {
-		srv := &http.Server{Handler: pub, ReadHeaderTimeout: 10 * time.Second}
+		srv := &http.Server{Handler: pub, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 90 * time.Second}
 		ln, err := net.Listen("tcp", a.cfg.SubListen)
 		if err != nil {
 			log.Fatal(err)

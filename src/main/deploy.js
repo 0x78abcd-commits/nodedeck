@@ -249,7 +249,9 @@ mkdir -p ${DIR}
 ${fresh ? '' : `[ -f ${FW_REC} ] || echo '# legacy' > ${FW_REC}`}
 ${fw}
 [ -f ${FW_REC} ] && sort -u -o ${FW_REC} ${FW_REC}
-[ -n "$FWD" ] && firewall-cmd -q --reload
+# firewalld（iptables 后端，如 CentOS 7）reload 会清掉 agent 加的端口跳跃和来源白名单规则：马上让 agent 重新加回来，
+# 否则只对白名单开放的端口会在下次 agent 重启前对所有人开放
+[ -n "$FWD" ] && firewall-cmd -q --reload && [ -f ${DIR}/agent.json ] && ${AGENT_BIN} apply-hops -c ${DIR}/agent.json >/dev/null 2>&1
 true`);
 }
 
@@ -784,6 +786,14 @@ async function vpsCheckTarget(ssh, domain) {
   return { ...list[0], where: 'vps', at: Date.now() };
 }
 
+// 来源白名单规则在 VPS 上实际生效了几条（没有 iptables 的系统会是 0：这时端口其实对所有人开放）
+async function allowRuleCount(server) {
+  return withSSH(server, async (ssh) => {
+    const r = await ssh.exec("n=0; for b in iptables ip6tables; do command -v $b >/dev/null && n=$((n + $($b -S INPUT 2>/dev/null | grep -c nodedeck-allow))); done; echo $n");
+    return Number(r.stdout.trim().split('\n').pop()) || 0;
+  });
+}
+
 // 在中转机上探测转发目标是不是 HTTP / Socks 明文代理（只握手，不经它访问网站）
 async function proxyProbe(server, targets) {
   const list = [...new Set(targets.map((t) => String(t).trim()).filter((t) => /^[^\s,']+$/.test(t)))].slice(0, 30);
@@ -818,4 +828,4 @@ async function gateRealityTarget(ssh, server, log, force) {
   log(`✔ Reality 目标 ${rp.sni} 检测通过（TLS 1.3、HTTP/2、X25519、证书有效，${r.ms} ms）`);
 }
 
-module.exports = { proxyProbe, ...cleanup, ...bench, withCC, swapSize, memLimits, writeUnits, tuneSmallBox, rememberHw, pickReality, adminNotify, realityCheck, deployServer, syncServer, updateSingbox, serverSelfCheck, notifyTest, fwdStatus, fwdReset, fetchMetrics, scanReality, serverStatus, fetchStats, resetTraffic, serverLogs, uninstall, testSSH, remoteTlsCheck, agentConfig };
+module.exports = { proxyProbe, allowRuleCount, ...cleanup, ...bench, withCC, swapSize, memLimits, writeUnits, tuneSmallBox, rememberHw, pickReality, adminNotify, realityCheck, deployServer, syncServer, updateSingbox, serverSelfCheck, notifyTest, fwdStatus, fwdReset, fetchMetrics, scanReality, serverStatus, fetchStats, resetTraffic, serverLogs, uninstall, testSSH, remoteTlsCheck, agentConfig };
