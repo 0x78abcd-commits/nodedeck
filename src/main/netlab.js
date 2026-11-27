@@ -1,6 +1,6 @@
 // 从这台电脑测到 VPS 的网络：TCP 下载 / 上传速度、UDP 丢包和抖动、去程路由。
 // 测的是「你家网络 ↔ VPS」这一段，用户实际用的就是这一段。测速会消耗 VPS 流量（每次约 100MB）。
-const http = require('http');
+const agenttls = require('./agenttls');
 const dgram = require('dgram');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
@@ -9,7 +9,7 @@ const DOWN_SECONDS = 8;
 const UP_SECONDS = 8;
 
 function speedBase(state, server) {
-  return { host: server.host, port: Number(state.settings?.subPort || 2096), token: server.speedToken };
+  return { host: String(server.host).replace(/^\[|\]$/g, ''), port: Number(state.settings?.subPort || 2096), token: server.speedToken, server };
 }
 
 // 下载测速：streams 条连接同时下载，测到第 secs 秒为止，跳过最开始 1 秒（TCP 慢启动），返回合计 Mbps。
@@ -26,7 +26,8 @@ function downloadTest(base, secs = DOWN_SECONDS, streams = 1) {
       if (el >= secs * 1000) finish();
     };
     for (let k = 0; k < streams; k++) {
-      const req = http.get({ host: base.host, port: base.port, path: `/nd-speed/down?t=${encodeURIComponent(base.token)}&bytes=${256 << 20}&s=${k}`, agent: false, timeout: 15000 }, (res) => {
+      // 走 HTTPS（口令不再明文经过墙），证书按 agent 报来的校验
+      const req = agenttls.request(base.server, { method: 'GET', host: base.host, port: base.port, path: `/nd-speed/down?t=${encodeURIComponent(base.token)}&bytes=${256 << 20}&s=${k}`, agent: false, timeout: 15000 }, (res) => {
         if (res.statusCode !== 200) { firstErr ||= new Error(`VPS 返回 ${res.statusCode}`); res.resume(); closed(); return; }
         if (!ttfb) ttfb = Date.now() - t0;
         res.on('data', (c) => { bytes += c.length; tick(); });
@@ -35,6 +36,7 @@ function downloadTest(base, secs = DOWN_SECONDS, streams = 1) {
       });
       req.on('timeout', () => { firstErr ||= new Error('连接超时'); req.destroy(); });
       req.on('error', (e) => { firstErr ||= e; closed(); });
+      req.end();
       reqs.push(req);
     }
     function closed() { if (--open <= 0) finish(); }
@@ -55,7 +57,7 @@ function uploadOnce(base, secs, k) {
   return new Promise((resolve) => {
     const chunk = crypto.randomBytes(64 * 1024);
     const t0 = Date.now(); let sent = 0; let done = false;
-    const req = http.request({ host: base.host, port: base.port, method: 'POST', path: `/nd-speed/up?t=${encodeURIComponent(base.token)}&s=${k}`, agent: false, timeout: 20000, headers: { 'Content-Type': 'application/octet-stream' } }, (res) => {
+    const req = agenttls.request(base.server, { host: base.host, port: base.port, method: 'POST', path: `/nd-speed/up?t=${encodeURIComponent(base.token)}&s=${k}`, agent: false, timeout: 20000, headers: { 'Content-Type': 'application/octet-stream' } }, (res) => {
       let body = '';
       res.on('data', (d) => { body += d; });
       res.on('end', () => {

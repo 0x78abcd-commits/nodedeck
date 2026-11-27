@@ -49,7 +49,7 @@ async function viewServers(v) {
     const lamp = !s.deployedAt ? 'idle' : st && st.singbox && st.agent ? 'ok' : 'bad';
     const grip = h('span', { class: 'drag-grip', title: '按住拖动调整顺序（节点页、订阅里的顺序也跟着变）' }, '⋮⋮');
     const row = h('tr', { class: 'lamp-' + lamp, 'data-id': s.id },
-      h('td', { class: 'lamp-cell', style: s.color ? { boxShadow: `inset 4px 0 0 ${s.color}` } : {} }, h('div', { class: 'lamp-inner' }, grip, cb)),
+      h('td', { class: 'lamp-cell' }, h('div', { class: 'lamp-inner' }, grip, cb)),
       h('td', {}, h('div', { class: 'srv-name' }, s.name), h('div', { class: 'muted mono', style: { wordBreak: 'normal', whiteSpace: 'nowrap', fontSize: '12px' } }, s.host), specChips(s), realityTag, s.role === 'relay' ? h('span', { class: 'tag blue' }, '中转机') : null, vpsExpireTag(s), core_cf(s) && s.deployedAt ? h('span', { class: 'tag ' + (s.lastStatus?.cf ? 'blue' : 'warn'), title: s.lastStatus?.cf ? '' : '隧道服务没在运行：检查令牌是否正确、VPS 能否连上 Cloudflare' }, s.lastStatus?.cf ? 'CF 隧道' : 'CF 隧道未连通') : null,
         core_xray(s) && s.deployedAt && st && !st.xray ? h('span', { class: 'tag warn', title: 'XHTTP 协议由 Xray 提供，Xray 没在运行。点「同步」重试，或「更多 → 查看日志」看原因；其它协议不受影响' }, 'Xray 未运行') : null),
       h('td', { class: 'st-cell' }, h('div', { class: 'st-top' }, status, st?.version ? h('span', { class: 'muted', style: { fontSize: '12px' }, title: st.xrayVersion ? 'Xray ' + st.xrayVersion : '' }, 'sing-box ' + st.version + (st.xrayVersion ? ' · Xray ' + st.xrayVersion : '')) : null, agentOutdated(s) ? h('span', { class: 'tag warn', title: '点「同步」自动升级' }, 'agent 待升级') : null), s.deployedAt ? serverMeters(s) : null),
@@ -73,7 +73,6 @@ async function viewServers(v) {
           s.deployedAt && { label: '重新部署', onClick: () => deployServer(s) },
           { label: '一键换新（被墙时用）', onClick: () => rotateServer(s) },
           { label: '清理其他面板 / 程序', onClick: () => cleanOthers(s) },
-          { label: '标签颜色…', onClick: () => pickServerColor(s) },
           s.deployedAt ? { label: '卸载…', onClick: () => uninstallServer(s, false) } : null,
           { sep: true },
           { label: '删除', danger: true, onClick: () => removeServer(s) },
@@ -274,7 +273,7 @@ async function editServer(orig, opts = {}) {
     const pt = I(pc.port, { type: 'number' });
     const fixed = h('input', { type: 'checkbox', checked: !!pc.fixedPort });
     const extra = [];
-    const els = { en, pt, fixed };
+    const els = { en, pt, fixed, fixedRow: h('label', { class: 'muted', style: { fontSize: '12px', display: 'block', margin: '-4px 0 8px' }, title: '勾上后，部署后端口不通或一键换新时都不会自动换这个端口' }, fixed, ' 固定端口（不自动更换）') };
     if (k === 'vlessReality') {
       // Reality 目标：自动优选 / 主流大站 / 自定义。只改展示和选择方式，挑选逻辑仍在部署和巡检里
       const targets = info.realityTargets || Object.keys(REALITY_NAMES);
@@ -344,8 +343,28 @@ async function editServer(orig, opts = {}) {
       if (mem && mem < 1024) extra.push(h('p', { style: { fontSize: '12px', margin: 0, color: 'var(--warn)' } }, `⚠ 这台机器只有 ${mem}MB 内存。开了 XHTTP 会多跑一个 Xray 内核（空载约 30–60MB，连接多时更多），和 sing-box 一起可能内存紧张；建议只开一个 XHTTP 协议，或加 swap（「更多 → 小机器优化」）。`));
     }
     protoEls[k] = els;
-    grid.append(h('div', { class: 'proto', 'data-proto': k }, h('div', { class: 'head' }, h('label', {}, en, ' ', h('b', {}, label)), h('span', { class: 'muted' }, netw.toUpperCase())), field('端口', pt), h('label', { class: 'muted', style: { fontSize: '12px', display: 'block', margin: '-4px 0 8px' }, title: '勾上后，部署后端口不通或一键换新时都不会自动换这个端口' }, fixed, ' 固定端口（不自动更换）'), extra));
+    grid.append(h('div', { class: 'proto', 'data-proto': k }, h('div', { class: 'head' }, h('label', {}, en, ' ', h('b', {}, label)), h('span', { class: 'muted' }, netw.toUpperCase())), field('端口', pt), els.fixedRow, extra));
   }
+
+  // 端口：自动优选（部署时挑）或手动填
+  const portMode = h('select', { style: { width: 'auto' } }, h('option', { value: 'auto' }, '端口：自动优选（推荐）'), h('option', { value: 'manual' }, '端口：手动填写'));
+  portMode.value = s.portMode || (orig?.deployedAt ? 'manual' : 'auto');
+  const portNote = h('p', { class: 'muted', style: { fontSize: '12px', margin: '0 0 10px' } });
+  const syncPM = () => {
+    const auto = portMode.value === 'auto';
+    const pending = auto && !orig?.deployedAt; // 还没部署：端口到部署时才挑，框里不显示一个会被换掉的数字
+    for (const e of Object.values(protoEls)) {
+      e.pt.disabled = auto; e.fixedRow.classList.toggle('hidden', auto);
+      if (pending && e.pt.value) { e.pt.dataset.keep = e.pt.value; e.pt.value = ''; }
+      if (!pending && !e.pt.value && e.pt.dataset.keep) e.pt.value = e.pt.dataset.keep;
+      e.pt.placeholder = pending ? '部署时自动挑' : '';
+    }
+    portNote.textContent = !auto ? '每个协议的端口自己填；勾「固定端口」的，端口不通或一键换新时也不会被换掉。'
+      : orig?.deployedAt ? '已经部署过：保持现在的端口（端口不通时会自动换）。想整体换一批用「一键换新」，或切到手动自己填。'
+        : '部署时自动挑：VLESS-Reality 和 XHTTP 优先用 443、8443 这类 HTTPS 常用端口（伪装成访问网站最自然），Hysteria2 优先 UDP 443，其它协议用随机高位端口，避开 8388 这类一看就是代理的默认端口；VPS 上已被占用的会跳过。';
+  };
+  portMode.onchange = syncPM;
+  syncPM();
 
   // 一键套用协议模板
   const TEMPLATES = {
@@ -359,12 +378,12 @@ async function editServer(orig, opts = {}) {
     if (!t) return;
     for (const [k] of PROTOS) protoEls[k].en.checked = t.on.includes(k);
     const r = protoEls.vlessReality;
-    if (r && !r.fixed.checked) r.pt.value = 443;
+    if (r && portMode.value === 'manual' && !r.fixed.checked) r.pt.value = 443;
     if (r) { r.rmode.value = '__auto__'; r.rmode.onchange(); }
     const hy = protoEls.hysteria2;
     if (hy && (t.hy || t.hyObfs) && !hy.obfs.value) hy.obfs.value = randStr(16);
     if (hy && t.hy && !hy.hop.value) hy.hop.value = '20000-30000';
-    toast('已套用模板，检查一下端口后保存', 'ok');
+    toast(portMode.value === 'manual' ? '已套用模板，检查一下端口后保存' : '已套用模板', 'ok');
     tpl.value = '';
   };
 
@@ -375,7 +394,7 @@ async function editServer(orig, opts = {}) {
     h('div', { class: 'row' }, field('角色', role), field('出口', exit), field('VPS 到期日（可选）', vpsExp, '到期前 7 天和 1 天会发通知提醒续费')),
     h('div', { class: 'row' }, field('每月流量额度 GB（可选）', quotaIn, '探针网页上显示用量进度'), field('分组（可选）', groupIn, '探针网页可以按分组筛选，例如「日本」「备用」')),
     field('自签证书域名（Trojan / Hy2 / TUIC / AnyTLS 的 SNI）', sniBox),
-    h('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', margin: '14px 0 8px' } }, h('h4', { style: { margin: 0 } }, '协议'), h('div', { class: 'spacer' }), tpl), grid,
+    h('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', margin: '14px 0 8px' } }, h('h4', { style: { margin: 0 } }, '协议'), h('div', { class: 'spacer' }), portMode, tpl), portNote, grid,
     h('h4', {}, '正式证书（可选）'),
     h('div', { class: 'row' }, field('域名', domain, '要先把这个域名的 A 记录指向服务器 IP（Cloudflare 请关掉小黄云）'), field('邮箱（可选）', acmeEmail)),
     h('label', { class: 'f' }, acme, ' 自动申请 Let\'s Encrypt 证书（Trojan / Hy2 / TUIC / AnyTLS 改用正式证书，客户端不再需要跳过证书验证；需要服务器 80 端口空闲）'),
@@ -405,6 +424,7 @@ async function editServer(orig, opts = {}) {
       if (sniBlocked(v)) throw new Error(`${v} 在国内按域名屏蔽，不能做 SNI，换一个`);
       s.tlsSni = v;
     }
+    s.portMode = portMode.value;
     s.exit = exit.value ? { type: 'landing', landingId: exit.value } : { type: 'direct' };
     s.domain = domain.value.trim(); s.acmeEmail = acmeEmail.value.trim(); s.acme = acme.checked && !!s.domain;
     if (acme.checked && !s.domain) throw new Error('开启正式证书需要先填域名');
@@ -412,7 +432,7 @@ async function editServer(orig, opts = {}) {
     s.routing = { blockBT: blockBT.checked, blockAds: blockAds.checked, blockCN: blockCN.checked, warp: { enabled: warpOn.checked, sites: warpSites.filter((x) => x.cb.checked).map((x) => x.k) } };
     for (const [k] of PROTOS) {
       const e = protoEls[k];
-      s.protocols[k] = { ...s.protocols[k], enabled: e.en.checked, port: Number(e.pt.value), fixedPort: e.fixed.checked };
+      s.protocols[k] = { ...s.protocols[k], enabled: e.en.checked, port: Number(e.pt.value || e.pt.dataset.keep), fixedPort: portMode.value === 'manual' && e.fixed.checked };
       if (e.rmode) {
         const pr = s.protocols[k];
         const m = e.rmode.value;
@@ -691,22 +711,4 @@ function showMonitor(s) {
   };
   modal({ title: `监控 · ${s.name}`, wide: true, body, buttons: [{ label: '刷新', close: false, onClick: load }, { label: '关闭' }] });
   load();
-}
-
-// 服务器左边那条竖线的颜色：默认按状态（绿 = 运行中、红 = 异常、灰 = 未部署），也可以自己选一个颜色当分组标记
-const LABEL_COLORS = ['#2f9e44', '#1c7ed6', '#7048e8', '#e8590c', '#e03131', '#d6336c', '#f08c00', '#0c8599', '#495057', '#a0785a'];
-function pickServerColor(s) {
-  let cur = s.color || '';
-  const sw = h('div', { class: 'color-grid' });
-  const custom = h('input', { type: 'color', value: cur || '#1c7ed6', title: '自定义颜色' });
-  const draw = () => sw.replaceChildren(
-    h('button', { class: 'swatch auto-sw' + (!cur ? ' on' : ''), title: '跟随状态（默认）', onclick: () => { cur = ''; draw(); } }, '自动'),
-    ...LABEL_COLORS.map((c) => h('button', { class: 'swatch' + (cur === c ? ' on' : ''), style: { background: c }, title: c, onclick: () => { cur = c; draw(); } })),
-    h('label', { class: 'swatch custom-sw' + (cur && !LABEL_COLORS.includes(cur) ? ' on' : ''), title: '自定义颜色', style: cur && !LABEL_COLORS.includes(cur) ? { background: cur } : {} }, custom, '+'));
-  custom.oninput = () => { cur = custom.value; draw(); };
-  draw();
-  modal({ title: `标签颜色 · ${s.name}`, body: h('div', {}, h('p', { class: 'muted', style: { marginTop: 0 } }, '服务器列表左边那条竖线的颜色，可以用来给服务器分组。选「自动」就按状态显示：绿 = 运行中，红 = 异常，灰 = 未部署（状态那一列一直都有）。'), sw), buttons: [
-    { label: '取消' },
-    { label: '保存', class: 'primary', onClick: async () => { await api.call('col:upsert', 'servers', { id: s.id, color: cur }); render(); } },
-  ] });
 }

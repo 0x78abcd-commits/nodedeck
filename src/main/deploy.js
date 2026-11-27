@@ -100,6 +100,13 @@ async function pickRealityOn(ssh, server, log) {
 }
 
 // 在 VPS 上被其它程序占用的 TCP 端口（不含我们自己的 sing-box）
+async function busyUdpPorts(ssh) {
+  const r = await ssh.exec(`(ss -Hulnp 2>/dev/null || netstat -ulnp 2>/dev/null) | grep -v nodedeck | grep -v 'sing-box'`);
+  const out = new Set();
+  for (const m of r.stdout.matchAll(/[:\]](\d{1,5})\s/g)) out.add(Number(m[1]));
+  return [...out];
+}
+
 async function busyTcpPorts(ssh) {
   const r = await ssh.exec(`(ss -Htlnp 2>/dev/null || netstat -tlnp 2>/dev/null) | grep -v nodedeck | grep -v 'sing-box'`);
   const out = new Set();
@@ -316,6 +323,11 @@ modprobe tcp_bbr 2>/dev/null; sysctl -w net.core.default_qdisc=fq >/dev/null 2>&
     log('§reality');
     // 端口：被 VPS 上其它程序占了的，换成优先端口（443 → 8443 → 2053 …）或随机端口
     const busy = await busyTcpPorts(ssh);
+    // 新服务器选了「自动优选端口」：在这台 VPS 上按空闲情况挑一遍
+    if (server.portMode === 'auto' && !server.deployedAt) {
+      const picked = core.autoPickPorts(state, server, { tcp: busy, udp: await busyUdpPorts(ssh) });
+      log('自动优选端口：' + picked.join('，'));
+    }
     for (const [k, meta] of Object.entries(core.PROTOCOLS)) {
       const pc = server.protocols?.[k];
       if (!pc?.enabled || pc.fixedPort || !core.netsOf(meta.net).includes('tcp') || !busy.includes(Number(pc.port))) continue;
@@ -490,7 +502,7 @@ echo CPUS=$(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo)
 echo MEMI=$(awk '/^MemTotal:/{t=$2} /^MemAvailable:/{a=$2} END{print int((t-a)/1024)" "int(t/1024)}' /proc/meminfo)
 echo DISK=$(df -Pm / | awk 'NR==2{print $3" "$2}')
 echo CPU=$(a=$(head -1 /proc/stat); sleep 0.5; b=$(head -1 /proc/stat); printf '%s|%s' "$a" "$b" | awk -F'|' '{n=split($1,x," "); split($2,y," "); for(i=2;i<=9&&i<=n;i++){ta+=x[i]; tb+=y[i]}; d=tb-ta; printf "%.0f", (d > 0 ? 100*(1-((y[5]+y[6])-(x[5]+x[6]))/d) : 0)}')
-echo EXTRA=$(${AGENT_BIN} extra -c ${DIR}/agent.json 2>/dev/null | tr -d '\n')
+printf 'EXTRA=%s\n' "$(${AGENT_BIN} extra -c ${DIR}/agent.json 2>/dev/null | tr -d '\n')"  # printf：dash 的 echo 会把 JSON 里的 \\n 变成真换行
 echo IP6=$(ip -6 addr show scope global 2>/dev/null | awk '/inet6/{print $2}' | cut -d/ -f1 | grep -v '^f[cd]' | head -1)
 `);
   const kv = {};
@@ -502,7 +514,7 @@ echo IP6=$(ip -6 addr show scope global 2>/dev/null | awk '/inet6/{print $2}' | 
     singbox: kv.SB === 'active', agent: kv.AG === 'active', version: kv.VER || '', agentVersion: kv.AGV || '', cf: kv.CF === 'active', xray: kv.XR === 'active', xrayVersion: kv.XRV || '', ipv6: kv.IP6 || '', load: kv.LOAD, mem: kv.MEM, uptime: kv.UP,
     // 给服务器列表画仪表用（MB）
     // 探针主控看到的各台在线情况、补货提醒的状态（agent 0.8.9 / 0.9.0 起）
-    ...(() => { try { const j = JSON.parse(kv.EXTRA || ''); return j && typeof j === 'object' ? { probe: j.probe || null, stock: j.stock || null } : {}; } catch (_) { return {}; } })(),
+    ...(() => { try { const j = JSON.parse(kv.EXTRA || ''); return j && typeof j === 'object' ? { probe: j.probe || null, stock: j.stock || null, ...(j.subSelfPem ? { subSelfPem: j.subSelfPem } : {}) } : {}; } catch (_) { return {}; } })(),
     subCert: (() => { try { const j = JSON.parse(kv.SUBCERT || ''); return j && typeof j === 'object' && 'ok' in j ? j : null; } catch (_) { return null; } })(),
     memUsed: memUsed || 0, memTotal: memTotal || 0, diskUsed: diskUsed || 0, diskTotal: diskTotal || 0, cpus: Number(kv.CPUS) || 0, cpu: kv.CPU === '' || kv.CPU == null ? null : Number(kv.CPU), uptimeSec: Number(kv.UPS) || 0, at: Date.now(),
   };

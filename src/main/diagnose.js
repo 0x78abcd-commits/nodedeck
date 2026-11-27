@@ -4,6 +4,7 @@
 // 「海外」看设置：用自己的其它 VPS 互相检测（默认，不联系第三方），或者 check-host.net（只在手动检测时用）
 const core = require('./core');
 const tools = require('./tools');
+const agenttls = require('./agenttls');
 
 const NODE_RE = /^([a-z]+)\d*\.node\.check-host\.net$/;
 
@@ -45,9 +46,9 @@ async function peersTcp(fetchFn, state, host, port, excludeId) {
   const nodes = await Promise.all(peers.map(async (p) => {
     const ph = String(p.host).includes(':') ? `[${p.host}]` : p.host;
     try {
-      const r = await fetchFn(`http://${ph}:${subPort}/nd-speed/tcping?t=${encodeURIComponent(p.speedToken)}&host=${encodeURIComponent(target)}&port=${Number(port)}`, { signal: AbortSignal.timeout(12000) });
-      if (r.status === 404) return { node: p.name, skip: 'agent 太旧，同步后可用' };
-      const j = await r.json();
+      // HTTPS，证书按 agent 报来的校验（口令不明文经过墙）
+      let j;
+      try { j = await agenttls.getJSON(p, `https://${ph}:${subPort}/nd-speed/tcping?t=${encodeURIComponent(p.speedToken)}&host=${encodeURIComponent(target)}&port=${Number(port)}`); } catch (e) { if (e.status === 404) return { node: p.name, skip: 'agent 太旧，同步后可用' }; throw e; }
       return { node: p.name, country: p.geo?.country || '', ok: !!j.ok, ms: j.ms ?? null, error: j.error || '' };
     } catch (e) { return { node: p.name, skip: '这台本身连不上：' + e.message }; }
   }));

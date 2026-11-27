@@ -152,6 +152,8 @@ type Agent struct {
 	stock  *stockStore
 	online *onlineTracker
 	fwd    *fwdManager
+	// 订阅端口自签证书（PEM），桌面端拿它校验测速等 HTTPS 接口
+	subSelfPEM string
 }
 
 func (a *Agent) path(name string) string { return filepath.Join(a.cfg.DataDir, name) }
@@ -717,6 +719,7 @@ func (a *Agent) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		if st := a.stockStatus(); st != nil {
 			out["stock"] = st
 		}
+		out["subSelfPem"] = a.subSelfPEM
 		if a.fwd != nil && len(a.cfg.Forwards) > 0 {
 			out["forwards"] = a.fwd.status()
 		}
@@ -818,21 +821,31 @@ func run(cfgPath string) {
 		if err != nil {
 			log.Fatal(err)
 		}
-		// 0.8.7 起：订阅端口同时接受 HTTPS（Let's Encrypt IP 证书，不需要域名）和 HTTP（旧地址继续能用）
+		// 0.8.7 起：订阅端口同时接受 HTTPS（Let's Encrypt IP 证书，不需要域名）和 HTTP（旧地址继续能用）。
+		// 0.9.14 起：没有 Let's Encrypt 证书时用自签证书，测速等接口也能走 HTTPS（桌面端按指纹校验）
+		h := &certHolder{}
 		if a.cfg.SubTLS != nil && a.cfg.SubTLS.Enabled {
-			h := &certHolder{}
 			cf, kf, _ := subCertPaths(a.cfg.DataDir)
 			h.load(cf, kf)
 			go a.subCertLoop(h)
-			tcfg := &tls.Config{MinVersion: tls.VersionTLS12, NextProtos: []string{"http/1.1"}, GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
-				if c, _ := h.get(); c != nil {
-					return c, nil
-				}
-				return nil, errors.New("证书还没申请下来")
-			}}
-			log.Fatal(srv.Serve(newDualListener(ln, tcfg)))
 		}
-		log.Fatal(srv.Serve(ln))
+		self, _, err := loadSelfCert(a.cfg.DataDir)
+		if err != nil {
+			log.Printf("生成自签证书失败：%v", err)
+		}
+		if self != nil {
+			a.subSelfPEM = string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: self.Certificate[0]}))
+		}
+		tcfg := &tls.Config{MinVersion: tls.VersionTLS12, NextProtos: []string{"http/1.1"}, GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+			if c, _ := h.get(); c != nil {
+				return c, nil
+			}
+			if self != nil {
+				return self, nil
+			}
+			return nil, errors.New("没有证书")
+		}}
+		log.Fatal(srv.Serve(newDualListener(ln, tcfg)))
 	}()
 
 	a.fwd = newFwdManager(a.path("forwards.json"))

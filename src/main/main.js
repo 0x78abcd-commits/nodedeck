@@ -10,6 +10,7 @@ const nodetest = require('./nodetest');
 const diagnose = require('./diagnose');
 const links = require('./links');
 const notify = require('./notify');
+const agenttls = require('./agenttls');
 const proxy = require('./proxy');
 const probe = require('./probe');
 const stock = require('./stock');
@@ -68,6 +69,8 @@ function getServer(id) {
 async function fetchVia(port, url, timeoutMs) {
   const ses = session.fromPartition(`nodedeck-test-${port}`);
   await ses.setProxy({ proxyRules: `http://127.0.0.1:${port}`, proxyBypassRules: '<-loopback>' });
+  // 测速 / 查出口 IP 走自己 VPS 的 HTTPS 接口：是我们某台 VPS 的自签证书也认（其它网站照常校验）
+  ses.setCertificateVerifyProc((req, cb) => cb(req.verificationResult === 'net::OK' || agenttls.isOurSelfCert(state(), req.certificate?.data || '') ? 0 : -3));
   await ses.closeAllConnections?.();
   return ses.fetch(url, { signal: AbortSignal.timeout(timeoutMs), cache: 'no-store' });
 }
@@ -88,7 +91,7 @@ async function sshProxies(server) {
 function speedUrlsFor(s, entry) {
   const srv = s.servers.find((x) => x.id === entry.serverId);
   const out = [];
-  if (srv?.speedToken && srv.host) out.push(`http://${srv.host.includes(':') ? `[${srv.host}]` : srv.host}:${Number(s.settings?.subPort || 2096)}/nd-speed/down?t=${encodeURIComponent(srv.speedToken)}&bytes=${256 << 20}`);
+  if (srv?.speedToken && srv.host) out.push(`https://${srv.host.includes(':') ? `[${srv.host}]` : srv.host}:${Number(s.settings?.subPort || 2096)}/nd-speed/down?t=${encodeURIComponent(srv.speedToken)}&bytes=${256 << 20}`);
   out.push('https://speed.cloudflare.com/__down?bytes=100000000');
   return out;
 }
@@ -97,7 +100,7 @@ function speedUrlsFor(s, entry) {
 function exitUrlFor(s, entry) {
   const srv = s.servers.find((x) => x.id === entry.serverId);
   if (!srv?.speedToken || !srv.host) return '';
-  return `http://${srv.host.includes(':') ? `[${srv.host}]` : srv.host}:${Number(s.settings?.subPort || 2096)}/nd-speed/ip?t=${encodeURIComponent(srv.speedToken)}`;
+  return `https://${srv.host.includes(':') ? `[${srv.host}]` : srv.host}:${Number(s.settings?.subPort || 2096)}/nd-speed/ip?t=${encodeURIComponent(srv.speedToken)}`;
 }
 
 // 节点在本机跑起来要用的内核和出站配置

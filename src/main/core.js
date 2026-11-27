@@ -517,6 +517,40 @@ function pickFreePort(state, server, protocolKey, avoid = []) {
   throw new Error('找不到空闲端口');
 }
 
+// 部署时「自动优选端口」：伪装成 HTTPS 的协议优先用 HTTPS 常用端口（Reality 拿 443 最自然），Hysteria2 优先 UDP 443（像 HTTP/3），
+// 其它协议用随机高位端口（避开 8388 这类一看就是代理的默认端口）。busy = VPS 上被其它程序占用的 { tcp: [], udp: [] }
+const AUTO_PREFER = {
+  vlessReality: [443, 8443, 2053, 2083, 2087, 2096],
+  vlessXhttpReality: [443, 8443, 2053, 2083, 2087, 2096],
+  vlessXhttpTls: [443, 8443, 2053, 2083, 2087, 2096],
+  hysteria2: [443, 8443],
+};
+function autoPickPorts(state, server, busy = {}) {
+  const p = server.protocols || {};
+  const keys = Object.keys(PROTOCOLS).filter((k) => p[k]?.enabled && !(k === 'vmess' && cfTunnelOf(server)));
+  for (const k of keys) p[k].port = 0; // 先全部腾空，按顺序重新挑
+  const picked = [];
+  for (const k of keys) {
+    const nets = netsOf(PROTOCOLS[k].net);
+    const used = new Set();
+    const ranges = [];
+    for (const { port, net: n, range } of serverPorts(state, server)) {
+      if (range) { ranges.push(range); continue; }
+      if (port) for (const x of netsOf(n)) used.add(`${x}/${port}`);
+    }
+    for (const x of busy.tcp || []) used.add(`tcp/${x}`);
+    for (const x of busy.udp || []) used.add(`udp/${x}`);
+    used.add(`tcp/${Number(server.sshPort) || 22}`);
+    const ok = (port) => nets.every((x) => !used.has(`${x}/${port}`)) && !ranges.some(([a, b]) => port >= a && port <= b);
+    let port = (AUTO_PREFER[k] || []).find(ok);
+    for (let i = 0; !port && i < 500; i++) { const c = 10000 + crypto.randomInt(50000); if (ok(c)) port = c; }
+    if (!port) throw new Error('找不到空闲端口');
+    p[k].port = port;
+    picked.push(`${PROTOCOLS[k].label} ${port}`);
+  }
+  return picked;
+}
+
 // 在优先端口里挑一个没被本服务器其它协议、端口跳跃范围和 extraUsed（VPS 上被别的程序占用的端口）用掉的
 function pickPreferredPort(state, server, protocolKey, extraUsed = []) {
   const net = PROTOCOLS[protocolKey]?.net || 'tcp';
@@ -559,7 +593,7 @@ function rotateServer(state, server) {
   return { server: s, changes };
 }
 
-module.exports = {
+module.exports = { autoPickPorts,
   subTlsWanted, cfTunnelOf, fpOf, FINGERPRINTS, PREFERRED_TCP_PORTS, hopRange, PROTOCOLS, REMOTE_DIR, agentForwards, forwardTargets, CONN_LOG, XRAY_ACCESS_LOG, onlineTrackOn, GB, randId, randHex, randPassword, uuid, realityKeypair, defaultProtocols, newServer, newUser, userStatus, userExpireAt, userUsedBytes, userHasServer, usersForServer, buildServerConfig, XRAY_KEYS, isXray, usesXray, realityOn, xrayPorts, buildXrayConfig, acmeCertFiles, xhttpPath, netsOf, serverPorts, checkPortConflicts, resolveForwardTarget, landingOutbound, pickFreePort, rotateServer, ensureProtocols, ssUserKey, pickPreferredPort, usesAcme, tlsSniFor, WARP_SITES,
   // 内部共用（订阅模块要用）
   SS_METHOD,

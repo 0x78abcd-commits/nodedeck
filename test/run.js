@@ -258,3 +258,16 @@ console.log('agent users', JSON.stringify(core.buildAgentUsers(state, node)));
   const noInbound = !(core.buildServerConfig(st, st.servers[0]).inbounds || []).some((i) => String(i.tag || '').startsWith('fwd-'));
   if (ok && noInbound) console.log('OK   forwards-agent'); else { console.log('FAIL forwards-agent', JSON.stringify(fw)); process.exitCode = 1; }
 }
+
+// 自动优选端口：Reality 拿 443（被占就 8443），Hysteria2 拿 UDP 443，其它随机高位端口且互不冲突
+{
+  const srv = { id: 'p', name: 'P', host: '1.2.3.4', protocols: core.defaultProtocols(), portMode: 'auto' };
+  srv.protocols.shadowsocks.enabled = true;
+  const st = { settings: { subPort: 2096 }, servers: [srv], forwards: [], users: [], landings: [] };
+  core.autoPickPorts(st, srv, { tcp: [], udp: [] });
+  const p = srv.protocols;
+  const ok1 = p.vlessReality.port === 443 && p.hysteria2.port === 443 && p.shadowsocks.port >= 10000 && p.trojan.port >= 10000 && !core.checkPortConflicts(st, srv).length;
+  core.autoPickPorts(st, srv, { tcp: [443], udp: [] });
+  const ok2 = p.vlessReality.port === 8443 && !core.checkPortConflicts(st, srv).length;
+  if (ok1 && ok2) console.log('OK   auto-ports'); else { console.log('FAIL auto-ports', JSON.stringify(Object.fromEntries(Object.entries(p).map(([k, v]) => [k, v.port])))); process.exitCode = 1; }
+}
