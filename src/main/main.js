@@ -751,10 +751,14 @@ function registerIpc() {
   handle('server:metrics', (id, range) => deploy.fetchMetrics(getServer(id), range));
   handle('tools:realityScan', (serverId) => deploy.scanReality(getServer(serverId)));
   handle('server:logs', (id) => deploy.serverLogs(getServer(id)));
-  handle('server:uninstall', async (id) => {
-    await deploy.uninstall(getServer(id));
-    store.upsert('servers', { id, deployedAt: null, lastStatus: null });
-    return true;
+  // parts：要清理哪几样（svc / sys / fw / cd），不传就全部
+  handle('server:uninstall', async (id, parts) => {
+    const srv = getServer(id);
+    const list = Array.isArray(parts) ? parts : ['svc', 'sys', 'fw', 'cd'];
+    const out = await deploy.uninstall(srv, state(), list);
+    if (list.includes('svc')) store.upsert('servers', { id, deployedAt: null, lastStatus: null });
+    if (list.includes('cd') && state().settings.cd?.serverId === id) { stock.closeTunnel(id); store.setSettings({ cd: {} }); }
+    return String(out || '');
   });
 
   // 用户

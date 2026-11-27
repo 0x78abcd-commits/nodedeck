@@ -72,6 +72,7 @@ async function viewServers(v) {
           s.deployedAt && { label: '重新部署', onClick: () => deployServer(s) },
           { label: '一键换新（被墙时用）', onClick: () => rotateServer(s) },
           { label: '清理其他面板 / 程序', onClick: () => cleanOthers(s) },
+          s.deployedAt ? { label: '卸载…', onClick: () => uninstallServer(s, false) } : null,
           { sep: true },
           { label: '删除', danger: true, onClick: () => removeServer(s) },
         ]) }, '更多 ▾')))));

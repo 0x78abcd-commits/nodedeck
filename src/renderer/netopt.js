@@ -453,16 +453,49 @@ async function showLogs(s) {
   modal({ title: `${s.name} 日志`, wide: true, body: h('pre', { class: 'log' }, t || '（空）'), buttons: [{ label: '关闭' }] });
 }
 
+// 删除 / 卸载服务器：可以全部卸载，也可以只勾部分
+const UNINSTALL_ITEMS = [
+  ['svc', '节点服务、agent 和全部数据', 'sing-box、Xray、Cloudflare 隧道、agent 停掉并删除，/etc/nodedeck 里的配置、证书、流量统计都删掉。不勾的话节点继续运行'],
+  ['sys', '还原系统设置', '跳跃端口规则、DNS、网络优化参数、NodeDeck 加的 swap 和系统日志大小限制，恢复成部署前（有备份的才还原）'],
+  ['fw', '关掉 NodeDeck 放行的防火墙端口', '只关 NodeDeck 新放行的端口；更早部署、没有记录的，只关现在没有程序在用的。SSH 端口永远不关'],
+  ['cd', 'changedetection.io（补货提醒）', '装在这台上的话，删掉它的容器、数据和镜像。Docker 本身保留（别的程序可能在用）'],
+];
+
+function uninstallServer(s, removeRecord) {
+  const boxes = Object.fromEntries(UNINSTALL_ITEMS.map(([k]) => [k, h('input', { type: 'checkbox', checked: k !== 'cd' || S.settings.cd?.serverId === s.id })]));
+  const all = h('input', { type: 'checkbox' });
+  const syncAll = () => { const v = Object.values(boxes); all.checked = v.every((b) => b.checked); all.indeterminate = !all.checked && v.some((b) => b.checked); };
+  all.onchange = () => { for (const b of Object.values(boxes)) b.checked = all.checked; };
+  for (const b of Object.values(boxes)) b.addEventListener('change', syncAll);
+  syncAll();
+  const rec = h('input', { type: 'checkbox', checked: !!removeRecord });
+  modal({ title: `${removeRecord ? '删除' : '卸载'}「${s.name}」`, body: h('div', {},
+    h('p', { class: 'muted', style: { marginTop: 0 } }, '勾选要从服务器上清理的内容：'),
+    h('div', { class: 'un-list' },
+      chk(all, '全部'),
+      h('div', { class: 'un-items' }, UNINSTALL_ITEMS.map(([k, t, d]) => chk(boxes[k], t, d)))),
+    h('div', { class: 'un-rec' }, chk(rec, '同时从软件里删除这台服务器', '指向这台、或以这台做中转的中转 / 端口转发规则，和用户线路里的这台都会一起去掉')),
+    ), buttons: [
+    { label: '取消' },
+    { label: removeRecord ? '卸载并删除' : '卸载', class: 'danger', onClick: async () => {
+      const parts = Object.entries(boxes).filter(([, b]) => b.checked).map(([k]) => k);
+      if (!parts.length && !rec.checked) throw new Error('什么都没勾');
+      if (parts.length) {
+        try {
+          const log = await api.call('server:uninstall', s.id, parts);
+          const closed = String(log || '').split('\n').filter((l) => l.startsWith('  关闭 ')).map((l) => l.trim().slice(3));
+          toast((parts.includes('svc') ? '已从服务器上卸载' : '已清理所选内容') + (closed.length ? `\n关掉了防火墙端口：${closed.join('、')}` : ''), 'ok');
+        } catch (e) {
+          if (!rec.checked || !(await confirmBox(`服务器上的清理失败：${e.message}\n\n还要从软件里删除这台吗？（服务器上的东西会留着）`, '仍然删除'))) throw e;
+        }
+      }
+      if (rec.checked) { await api.call('col:remove', 'servers', s.id); markDirty(); }
+      render();
+    } },
+  ] });
+}
+
 async function removeServer(s) {
-  const choice = await new Promise((resolve) => {
-    modal({ title: '删除服务器', body: h('div', {}, `确定删除「${s.name}」？`, s.deployedAt ? h('p', { class: 'muted' }, '可以先从服务器上卸载 NodeDeck（停止服务并删除文件）。') : null), onClose: () => resolve(null), buttons: [
-      { label: '取消', onClick: () => resolve(null) },
-      s.deployedAt ? { label: '卸载并删除', class: 'danger', onClick: () => resolve('uninstall') } : null,
-      { label: '仅删除记录', class: 'danger', onClick: () => resolve('local') },
-    ].filter(Boolean) });
-  });
-  if (!choice) return;
-  if (choice === 'uninstall') { try { await api.call('server:uninstall', s.id); } catch (e) { toast('卸载失败：' + e.message, 'err'); } }
-  await api.call('col:remove', 'servers', s.id);
-  markDirty(); render();
+  if (s.deployedAt) { uninstallServer(s, true); return; }
+  if (await confirmBox(`删除「${s.name}」？\n\n这台还没部署，只会删掉软件里的记录。`, '删除')) { await api.call('col:remove', 'servers', s.id); markDirty(); render(); }
 }

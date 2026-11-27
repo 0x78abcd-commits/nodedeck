@@ -152,4 +152,4 @@ function closeTunnel(id) {
 }
 function closeAll() { for (const id of [...tunnels.keys()]) closeTunnel(id); }
 
-module.exports = { MODES, cfg, stockServer, newWatch, validWatch, agentCfg, test, cdInstall, cdStatus, cdUninstall, cdTunnel, closeTunnel, closeAll, cdInstallScript, AGENT_BIN };
+module.exports = { CD, MODES, cfg, stockServer, newWatch, validWatch, agentCfg, test, cdInstall, cdStatus, cdUninstall, cdTunnel, closeTunnel, closeAll, cdInstallScript, AGENT_BIN };

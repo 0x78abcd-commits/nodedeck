@@ -218,20 +218,29 @@ sysctl -q -w vm.swappiness=10 || true`);
   }
 }
 
-// 放行防火墙端口（ufw / firewalld），部署和每次同步都会执行，保证新加的端口也能通
-async function openFirewall(ssh, state, server) {
-  const ports = core.serverPorts(state, server);
-  const fw = ports.map(({ port, net, range }) => {
-    const nets = net === 'both' || !net ? ['tcp', 'udp'] : [net];
-    const spec = range ? `${range[0]}:${range[1]}` : String(port);
-    const fspec = range ? `${range[0]}-${range[1]}` : String(port);
-    return nets.map((n) => `[ -n "$UFW" ] && ufw allow ${spec}/${n} >/dev/null 2>&1; [ -n "$FWD" ] && firewall-cmd -q --permanent --add-port=${fspec}/${n} 2>/dev/null`).join('; ');
-  }).join('\n');
-  await ssh.run(`
-UFW=; FWD=
+// 放行防火墙端口（ufw / firewalld），部署和每次同步都会执行，保证新加的端口也能通。
+// 原来没放行、由 NodeDeck 新放行的端口记到 fw-added，卸载时只关这些（不碰你自己早就放行的端口）
+const FW_REC = `${DIR}/fw-added`;
+function fwSpecs(ports) {
+  const out = [];
+  for (const { port, net, range } of ports) {
+    for (const n of net === 'both' || !net ? ['tcp', 'udp'] : [net]) out.push({ n, port, range, ufw: range ? `${range[0]}:${range[1]}` : String(port), fwd: range ? `${range[0]}-${range[1]}` : String(port) });
+  }
+  return out;
+}
+const FW_DETECT = `UFW=; FWD=
 if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then UFW=1; fi
-if command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; then FWD=1; fi
+if command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; then FWD=1; fi`;
+async function openFirewall(ssh, state, server, { fresh = false } = {}) {
+  const fw = fwSpecs(core.serverPorts(state, server)).map((x) => `[ -n "$UFW" ] && { ufw status 2>/dev/null | grep -qE '^${x.ufw}/${x.n}[[:space:]]' || { ufw allow ${x.ufw}/${x.n} >/dev/null 2>&1 && echo 'ufw ${x.ufw}/${x.n}' >> ${FW_REC}; }; }
+[ -n "$FWD" ] && { firewall-cmd -q --permanent --query-port=${x.fwd}/${x.n} 2>/dev/null || { firewall-cmd -q --permanent --add-port=${x.fwd}/${x.n} 2>/dev/null && echo 'fwd ${x.fwd}/${x.n}' >> ${FW_REC}; }; }`).join('\n');
+  await ssh.run(`
+${FW_DETECT}
+mkdir -p ${DIR}
+# 0.9.11 以前部署的没有记录：标成 legacy，卸载时对 NodeDeck 的端口改用「没有程序在用才关」
+${fresh ? '' : `[ -f ${FW_REC} ] || echo '# legacy' > ${FW_REC}`}
 ${fw}
+[ -f ${FW_REC} ] && sort -u -o ${FW_REC} ${FW_REC}
 [ -n "$FWD" ] && firewall-cmd -q --reload
 true`);
 }
@@ -327,7 +336,7 @@ modprobe tcp_bbr 2>/dev/null; sysctl -w net.core.default_qdisc=fq >/dev/null 2>&
     await ssh.writeFile(`${DIR}/agent.json`, JSON.stringify(agentConfig(state, server), null, 2));
 
     log('§firewall');
-    await openFirewall(ssh, state, server);
+    await openFirewall(ssh, state, server, { fresh: !server.deployedAt });
 
     log('§config');
     await pushConfig(ssh, state, server, log);
@@ -609,20 +618,59 @@ async function serverLogs(server) {
   return withSSH(server, async (ssh) => (await ssh.exec(svcOf(server).logs)).stdout);
 }
 
-async function uninstall(server) {
-  return withSSH(server, (ssh) => ssh.run(`
-echo '{}' > /tmp/nodedeck-empty.json && ${AGENT_BIN} apply-hops -c /tmp/nodedeck-empty.json >/dev/null 2>&1; rm -f /tmp/nodedeck-empty.json
-# DNS 还原（部署时改过才会动；原来的 DNS 仍然不通就保留现在的）
-${AGENT_BIN} dns-restore -c ${DIR}/agent.json >/dev/null 2>&1
-# 网络优化恢复成部署前的原值（有备份才会改）
-${AGENT_BIN} net-restore -c ${DIR}/agent.json >/dev/null 2>&1; rm -f /etc/sysctl.d/99-nodedeck-net.conf /etc/modules-load.d/nodedeck-bbr.conf
-${svcOf(server).remove}
+// 卸载。parts 可以自选（默认全部）：
+//   svc  停止并删除节点服务（sing-box、Xray、Cloudflare 隧道）、agent、程序和 /etc/nodedeck 里的全部数据
+//   sys  还原 NodeDeck 改过的系统设置：跳跃端口规则、DNS、网络优化参数、swap、系统日志大小限制
+//   fw   关掉 NodeDeck 放行的防火墙端口：只关它新放行的；没有记录的老部署只关现在没有程序在用的；SSH 端口永远不关
+//   cd   changedetection.io 的容器、数据和镜像（Docker 本身保留）
+const UNINSTALL_PARTS = ['svc', 'sys', 'fw', 'cd'];
+async function uninstall(server, state, parts = UNINSTALL_PARTS) {
+  const on = (k) => parts.includes(k);
+  const sshPort = Number(server.sshPort) || 22;
+  const cand = state ? fwSpecs(core.serverPorts(state, server)).filter((x) => x.range || (x.port !== sshPort && x.port !== 22)) : [];
+  const fwScript = `
+${FW_DETECT}
+inuse() { if command -v ss >/dev/null 2>&1; then ss -lnH -A "$1" "( sport = :$2 )" 2>/dev/null | grep -q .; else return 0; fi; }  # 没有 ss 时当作在用，不关
+close_ufw() { ufw delete allow "$1" >/dev/null 2>&1 && echo "  关闭 $1"; }
+close_fwd() { firewall-cmd -q --permanent --remove-port="$1" 2>/dev/null && echo "  关闭 $1"; }
+echo "防火墙："
+if [ -f ${FW_REC} ]; then
+  grep -v '^#' ${FW_REC} | while read -r kind spec; do
+    p=\${spec%%/*}; [ "$p" = "${sshPort}" ] || [ "$p" = "22" ] && continue
+    [ "$kind" = ufw ] && [ -n "$UFW" ] && close_ufw "$spec"
+    [ "$kind" = fwd ] && [ -n "$FWD" ] && close_fwd "$spec"
+  done
+fi
+# 有记录且不是 legacy：只关记录里的（上面已经关了）；没有记录或 legacy：NodeDeck 的端口没有程序在用才关
+if [ ! -f ${FW_REC} ] || grep -q '^# legacy' ${FW_REC}; then
+${cand.map((x) => `${x.range ? '' : `inuse ${x.n} ${x.port} || `}{ [ -n "$UFW" ] && ufw status 2>/dev/null | grep -qE '^${x.ufw}/${x.n}[[:space:]]' && close_ufw ${x.ufw}/${x.n}; [ -n "$FWD" ] && firewall-cmd -q --permanent --query-port=${x.fwd}/${x.n} 2>/dev/null && close_fwd ${x.fwd}/${x.n}; true; }`).join('\n')}
+fi
+[ -n "$FWD" ] && firewall-cmd -q --reload
+true`;
+  const steps = [];
+  // 顺序：先停服务（这样才能判断端口有没有别的程序在用）→ 关防火墙 → 还原系统设置（要用 agent）→ 删程序和数据 → changedetection
+  if (on('svc')) steps.push(`echo "停止服务"\n${svcOf(server).remove}`);
+  if (on('fw')) steps.push(fwScript);
+  if (on('sys')) steps.push(`echo "还原系统设置"
+if [ -x ${AGENT_BIN} ]; then
+  echo '{}' > /tmp/nodedeck-empty.json && ${AGENT_BIN} apply-hops -c /tmp/nodedeck-empty.json >/dev/null 2>&1; rm -f /tmp/nodedeck-empty.json
+  ${AGENT_BIN} dns-restore -c ${DIR}/agent.json >/dev/null 2>&1
+  ${AGENT_BIN} net-restore -c ${DIR}/agent.json >/dev/null 2>&1
+fi
+rm -f /etc/sysctl.d/99-nodedeck-net.conf /etc/modules-load.d/nodedeck-bbr.conf
+if grep -q '^/nodedeck.swap ' /etc/fstab 2>/dev/null; then swapoff /nodedeck.swap 2>/dev/null; sed -i '\\#^/nodedeck.swap #d' /etc/fstab; rm -f /nodedeck.swap /etc/sysctl.d/99-nodedeck-swap.conf; fi
+if [ -f /etc/systemd/journald.conf.d/nodedeck.conf ]; then rm -f /etc/systemd/journald.conf.d/nodedeck.conf; systemctl restart systemd-journald 2>/dev/null; fi`);
+  if (on('svc')) steps.push(`echo "删除程序和数据"
 rm -f ${AGENT_BIN} ${SB_BIN} ${SB_BIN}.old ${SB_BIN}.bad ${XRAY_BIN} ${XRAY_BIN}.old ${XRAY_BIN}.bad
-rm -rf ${DIR} /root/.nodedeck-bench
-# NodeDeck 加的 swap、日志限制、BBR 以外的系统改动一并撤销
-if grep -q '^/nodedeck.swap ' /etc/fstab 2>/dev/null; then swapoff /nodedeck.swap 2>/dev/null; sed -i '\#^/nodedeck.swap #d' /etc/fstab; rm -f /nodedeck.swap /etc/sysctl.d/99-nodedeck-swap.conf; fi
-if [ -f /etc/systemd/journald.conf.d/nodedeck.conf ]; then rm -f /etc/systemd/journald.conf.d/nodedeck.conf; systemctl restart systemd-journald 2>/dev/null; fi
-echo ok`));
+rm -rf ${DIR} /root/.nodedeck-bench`);
+  if (on('cd')) steps.push(`if command -v docker >/dev/null 2>&1; then
+  echo "删除 changedetection.io"
+  docker rm -f ${stockMod.CD.name} ${stockMod.CD.browser} >/dev/null 2>&1
+  docker volume rm ${stockMod.CD.vol} >/dev/null 2>&1; docker network rm ${stockMod.CD.net} >/dev/null 2>&1
+  docker image rm ${stockMod.CD.image} ${stockMod.CD.imageHub} ${stockMod.CD.browserImage} >/dev/null 2>&1
+fi`);
+  if (!steps.length) return '';
+  return withSSH(server, (ssh) => ssh.run(steps.join('\n') + '\necho ok'));
 }
 
 async function testSSH(server) {
