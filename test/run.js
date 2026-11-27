@@ -278,3 +278,20 @@ console.log('agent users', JSON.stringify(core.buildAgentUsers(state, node)));
   const ok3 = core.webPortUses(st, srv).some((u) => u.key === 'vlessReality') && !core.webPortUses(st, { protocols: core.defaultProtocols() }).length;
   if (ok1 && ok2 && ok3) console.log('OK   auto-ports'); else { console.log('FAIL auto-ports', JSON.stringify(Object.fromEntries(Object.entries(p).map(([k, v]) => [k, v.port])))); process.exitCode = 1; }
 }
+
+// Web 端口白名单：设了名单才允许用 443，中转机 IP 自动加入；开了避开时不申请订阅 IP 证书
+{
+  const a = { id: 'a', name: 'A', host: '5.5.5.5', protocols: core.defaultProtocols() };
+  const r = { id: 'r', name: 'R', host: '6.6.6.6', host6: '2001:db8::6', protocols: core.defaultProtocols() };
+  a.protocols.vlessReality.port = 443;
+  const st = { settings: { subPort: 2096 }, servers: [a, r], forwards: [{ id: 'f', relayServerId: 'r', listenPort: 30001, target: { type: 'node', serverId: 'a', protocol: 'vlessReality' }, allow: [] }, { id: 'g', relayServerId: 'a', listenPort: 8080, target: { type: 'custom', host: '9.9.9.9', port: 80, network: 'tcp' }, allow: ['7.7.7.7'] }], users: [], landings: [] };
+  const ok1 = core.webPortUses(st, a).length === 1 && !core.allowedPort(st, 443, a) && !core.subTlsWanted(st);
+  a.webAllow = ['1.2.3.4'];
+  const allow = core.webAllowOf(st, a);
+  const rules = core.portAllowRules(st, a);
+  const ok2 = !core.webPortUses(st, a).length && core.allowedPort(st, 443, a) && !core.allowedPort(st, 443, r)
+    && allow.includes('6.6.6.6') && allow.includes('2001:db8::6') && rules.length === 2 && rules[0].port === 443 && rules[1].port === 8080 && rules[1].allow[0] === '7.7.7.7';
+  st.settings.avoidWebPorts = false;
+  const ok3 = core.subTlsWanted(st) && core.allowedPort(st, 443, r);
+  if (ok1 && ok2 && ok3) console.log('OK   web-allow'); else { console.log('FAIL web-allow', ok1, ok2, ok3, JSON.stringify(rules)); process.exitCode = 1; }
+}

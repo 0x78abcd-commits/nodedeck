@@ -6,6 +6,14 @@ const core = require('./core');
 const tools = require('./tools');
 const agenttls = require('./agenttls');
 
+// 弱口令：少于 12 位，或者只有一种字符（全数字 / 全小写字母等），或者是常见密码
+const COMMON_PW = ['password', 'admin', 'root', 'qwerty', '123456', '12345678', '123456789', 'abc123', 'passw0rd', 'iloveyou', '000000', '111111'];
+function weakPassword(pw) {
+  if (pw.length < 12) return true;
+  const kinds = [/[a-z]/, /[A-Z]/, /\d/, /[^a-zA-Z\d]/].filter((r) => r.test(pw)).length;
+  return kinds < 2 || COMMON_PW.some((c) => pw.toLowerCase().includes(c));
+}
+
 const NODE_RE = /^([a-z]+)\d*\.node\.check-host\.net$/;
 
 // 用 check-host.net 从海外多个节点测 TCP 端口（会把 IP 和端口发给该网站）
@@ -94,6 +102,11 @@ async function diagnoseServer(state, server, deps) {
   try {
     self = await deps.deploy.serverSelfCheck(server);
     add({ id: 'ssh', title: 'SSH 登录', level: 'ok', text: self.via ? `成功（经本机代理 ${self.via}）` : '成功' });
+    const pw = server.authType === 'key' ? '' : String(server.password || '');
+    if (pw && weakPassword(pw)) {
+      add({ id: 'sshpw', title: 'SSH 密码强度', level: 'warn', text: '密码太短或太简单，VPS 一上线就会被机器人不停爆破，被猜中会被植入挖矿程序（服务商通常直接停机）' });
+      advice.add('SSH 密码太弱：改成 16 位以上的随机密码，或者改用密钥登录（服务器「编辑 → 认证方式」）');
+    }
   } catch (e) {
     add({ id: 'ssh', title: 'SSH 登录', level: 'fail', text: e.message });
   }
@@ -178,4 +191,4 @@ async function diagnoseServer(state, server, deps) {
   return { steps, level: worst, blocked, advice: [...advice] };
 }
 
-module.exports = { checkHostTcp, peersTcp, blockCheck, diagnoseServer, verdictFor };
+module.exports = { weakPassword, checkHostTcp, peersTcp, blockCheck, diagnoseServer, verdictFor };

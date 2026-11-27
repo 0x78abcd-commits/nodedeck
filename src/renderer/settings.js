@@ -170,6 +170,8 @@ async function viewSettings(v) {
     const sbAuto = h('input', { type: 'checkbox', checked: st.singboxAutoUpdate !== false });
     const subHttps = h('input', { type: 'checkbox', checked: st.subHttps !== false });
     const avoidWeb = h('input', { type: 'checkbox', checked: st.avoidWebPorts !== false });
+    const syncAvoid = () => { subHttps.disabled = avoidWeb.checked; subHttpsNote.textContent = avoidWeb.checked ? '已开「避开常用 Web 端口」：不申请 IP 证书（它要用 TCP 80 做验证），订阅走 HTTP。想要 HTTPS 订阅，用上面的「订阅域名」+ Cloudflare 代理，不需要 80 端口' : ''; };
+    const subHttpsNote = h('div', { class: 'muted set-indent', style: { fontSize: '12px', color: 'var(--warn)' } });
     const subDomain = h('input', { value: st.subDomain || '', placeholder: '留空 = 用户主服务器的 IP；可填 sub.example.com' });
     const tz = h('select', {}, [['Asia/Shanghai', '北京时间（UTC+8）'], ['Asia/Hong_Kong', '香港'], ['Asia/Taipei', '台北'], ['Asia/Tokyo', '东京（UTC+9）'], ['Asia/Singapore', '新加坡'], ['Europe/London', '伦敦'], ['America/Los_Angeles', '洛杉矶'], ['America/New_York', '纽约'], ['UTC', 'UTC']].map(([k, l]) => h('option', { value: k }, l)));
     tz.value = st.timezone || 'Asia/Shanghai';
@@ -181,12 +183,13 @@ async function viewSettings(v) {
     const syncUw = () => uwRow.classList.toggle('hidden', !uwOn.checked);
     uwOn.onchange = syncUw; syncUw();
     return h('div', {},
+      (syncAvoid(), avoidWeb.onchange = syncAvoid, null),
       h('div', { class: 'card' }, h('h3', {}, '端口'),
-        chk(avoidWeb, '避开常用 Web 端口（TCP 80 / 443 / 8080 / 8443）', '很多服务商禁止在这几个端口上托管网站或做代理类 Web 伪装，违规会被停机。打开后自动优选、端口检测、一键换新都不会用它们，手动填写也会被拦下；已经在用的会在服务器页提示，可以一键换掉。服务商没有这条规定的话可以关')),
+        chk(avoidWeb, '避开常用 Web 端口（TCP 80 / 443 / 8080 / 8443）', '很多服务商禁止在这几个端口上托管网站或做代理类 Web 伪装，违规会被停机。打开后自动优选、端口检测、一键换新都不会用它们，也不再用 TCP 80 申请证书；手动填写会被拦下，除非那台服务器填了「Web 端口来源白名单」（只对指定 IP 开放，在服务器「编辑」里）。已经在用的会在服务器页提示，可以一键换掉。服务商没有这条规定的话可以关')),
       h('div', { class: 'card' }, h('h3', {}, '订阅'),
         h('div', { class: 'row' }, field('订阅端口（对外开放）', subPort), field('时区', tz, '流量重置、日报、升级时间段都按这个时区算')),
-        field('订阅域名（可选）', subDomain, '把一个域名解析到任意一台已部署的服务器，订阅地址就不会因为换服务器而改变'),
-        chk(subHttps, '订阅链接用 HTTPS', '不需要域名：自动给每台 VPS 的 IP 申请 Let\'s Encrypt 证书，6 天有效、自动续。申请和续期时会在 TCP 80 端口临时开一个验证页（几秒钟，验证完就关），NodeDeck 会自动开防火墙；服务商有安全组的话也要放行。服务商连临时占用 80 端口都不允许的话就关掉这项。填了订阅域名时用域名')),
+        field('订阅域名（可选）', subDomain, '把一个域名解析到任意一台已部署的服务器，订阅地址就不会因为换服务器而改变。想要 HTTPS 又不占 80 端口：域名托管在 Cloudflare、开橙色云，SSL/TLS 模式选「完全（Full）」，这里填 https://你的域名:2096（订阅端口要是 2053 / 2083 / 2087 / 2096 之一，默认 2096 就行），浏览器和客户端看到的是 Cloudflare 的正式证书'),
+        chk(subHttps, '订阅链接用 HTTPS', '不需要域名：自动给每台 VPS 的 IP 申请 Let\'s Encrypt 证书，6 天有效、自动续。申请和续期时会在 TCP 80 端口临时开一个验证页（几秒钟，验证完就关）。填了订阅域名时用域名'), subHttpsNote),
       h('div', { class: 'card' }, h('h3', {}, '内核与升级'),
         field('sing-box 内核渠道', sbBase, '默认是你仓库里名为 singbox 的 Release，GitHub Actions 每天自动构建官方最新正式版'),
         field('Xray 内核渠道（XHTTP 协议用）', xrBase, '只有开了 VLESS-XHTTP 的服务器才会装 Xray。默认由 GitHub Actions 每天从官方同步（校验官方 SHA2-256）'),

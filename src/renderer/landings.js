@@ -326,7 +326,7 @@ function editForward(orig, copyOf = false, relayPreset, mode) {
   tlist.oninput = syncStrat; syncStrat();
   const sw = () => { nodeBox.classList.toggle('hidden', ttype.value !== 'node'); customBox.classList.toggle('hidden', ttype.value !== 'custom'); };
   ttype.onchange = sw; sw();
-  const adv = h('details', { class: 'fw-adv' }, h('summary', {}, '来源 IP 白名单（可选）'), field('只允许这些来源', allow, '比如只给自己家宽或某台机器用，别人扫到端口也连不上'));
+  const adv = h('details', { class: 'fw-adv' }, h('summary', {}, '来源 IP 白名单（可选）'), field('只允许这些来源', allow, '比如只给自己家宽或某台机器用。在 VPS 防火墙层面拦，别人扫端口也看不到。入口用 80 / 443 / 8080 / 8443 时必须填'));
   if ((f.allow || []).length) adv.open = true;
   modal({ title: (f.target.type === 'node' ? (isNew ? '添加中转' : '编辑中转') : (isNew ? '添加转发' : '编辑转发')), body: h('div', {},
     h('div', { class: 'row' }, field('中转服务器', relay), field('入口端口', h('div', { class: 'row' }, lp, rnd))),
@@ -348,6 +348,7 @@ function editForward(orig, copyOf = false, relayPreset, mode) {
       f.allow = allow.value.split('\n').map((x) => x.trim()).filter(Boolean);
       const badIp = f.allow.find((x) => !/^[0-9a-fA-F:.]+(\/\d{1,3})?$/.test(x));
       if (badIp) throw new Error(`白名单格式不对：${badIp}`);
+      if (S.settings.avoidWebPorts !== false && WEB_PORTS.includes(f.listenPort) && !f.allow.length) { adv.open = true; throw new Error(`入口端口 ${f.listenPort} 是常用 Web 端口（80 / 443 / 8080 / 8443），很多服务商不允许对公网开放。换一个，或者在「来源 IP 白名单」里填上允许连接的 IP（只对这些 IP 开放）`); }
       if (f.target.type === 'node' && !f.target.protocol) throw new Error('目标服务器没有启用协议');
       if (f.target.type === 'node' && f.target.serverId === f.relayServerId) throw new Error('中转机和目标不能是同一台');
       const clash = S.forwards.find((x) => x.id !== f.id && x.relayServerId === f.relayServerId && Number(x.listenPort) === f.listenPort);
@@ -378,6 +379,7 @@ function batchForwards() {
         if (!m) { errs.push(`第 ${i + 1} 行格式不对：${line}`); return; }
         const lp = Number(m[1]);
         if (usedPorts.has(lp)) { errs.push(`第 ${i + 1} 行：入口端口 ${lp} 已经有了`); return; }
+        if (S.settings.avoidWebPorts !== false && WEB_PORTS.includes(lp)) { errs.push(`第 ${i + 1} 行：入口端口 ${lp} 是常用 Web 端口，很多服务商不允许对公网开放；要用的话单独添加并填来源 IP 白名单`); return; }
         usedPorts.add(lp);
         const host = m[2].replace(/^\[|\]$/g, '');
         out.push({ id: 'f' + Math.random().toString(36).slice(2, 9), relayServerId: relay.value, listenPort: lp, enabled: true, name: '', target: { type: 'custom', host, port: Number(m[3]), network: (m[4] || '').toLowerCase(), targets: [`${m[2]}:${m[3]}`] }, strategy: 'failover', allow: [] });

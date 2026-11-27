@@ -18,7 +18,7 @@ async function viewServers(v) {
   if (web.length) {
     const fix = async (ev) => {
       const btn = ev.currentTarget;
-      if (!(await confirmBox(`把这些协议换到别的端口并同步？\n\n${web.map((w) => `${w.name}：${w.uses.map((u) => `${u.label} ${u.port}`).join('、')}`).join('\n')}\n\nReality / XHTTP 换到 2053、2083 这类端口，其它换随机高位端口。换完用户要刷新订阅。`, '换掉'))) return;
+      if (!(await confirmBox(`把这些协议换到别的端口并同步？\n\n${web.map((w) => `${w.name}：${w.uses.map((u) => (u.key === 'acme' ? u.label : `${u.label} ${u.port}`)).join('、')}`).join('\n')}\n\nReality / XHTTP 换到 2053、2083 这类端口，其它换随机高位端口；正式证书会关掉，改用自签证书。换完用户要刷新订阅。\n\n一定要用这些端口的话，取消，到服务器「编辑」里填「Web 端口来源白名单」，只对指定 IP 开放。`, '换掉'))) return;
       await busy(btn, async () => {
       const out = [];
       for (const w of web) {
@@ -30,7 +30,7 @@ async function viewServers(v) {
     };
     v.append(h('div', { class: 'page-warn' },
       h('div', {}, h('b', {}, '有节点在用常用 Web 端口（80 / 443 / 8080 / 8443）'),
-        h('div', { class: 'muted', style: { fontSize: '12.5px', marginTop: '4px' } }, '不少服务商禁止在这几个端口上做代理伪装，发现了会停机。', web.map((w) => `${w.name}：${w.uses.map((u) => `${u.label} ${u.port}`).join('、')}`).join('；'))),
+        h('div', { class: 'muted', style: { fontSize: '12.5px', marginTop: '4px' } }, '不少服务商禁止在这几个端口上对公网开放代理，发现了会停机。一定要用的话，在服务器「编辑」里填「Web 端口来源白名单」只对指定 IP 开放。', web.map((w) => `${w.name}：${w.uses.map((u) => (u.key === 'acme' ? u.label : `${u.label} ${u.port}`)).join('、')}`).join('；'))),
       h('div', { class: 'spacer' }),
       h('button', { class: 'small primary', onclick: fix }, '全部换掉')));
   }
@@ -366,6 +366,20 @@ async function editServer(orig, opts = {}) {
     grid.append(h('div', { class: 'proto', 'data-proto': k }, h('div', { class: 'head' }, h('label', {}, en, ' ', h('b', {}, label)), h('span', { class: 'muted' }, netw.toUpperCase())), field('端口', pt), els.fixedRow, extra));
   }
 
+  // Web 端口来源白名单：一定要用 80 / 443 / 8080 / 8443 时，只让这些 IP 连（服务商的要求），在 VPS 防火墙层面拦
+  const webAllow = h('textarea', { rows: 2, class: 'mono', placeholder: '一行一个 IP 或网段，例如\n1.2.3.4\n110.0.0.0/8' }, (s.webAllow || []).join('\n'));
+  const myIpBtn = h('button', { class: 'small auto', onclick: (ev) => busy(ev.currentTarget, async () => {
+    const r = await api.call('net:myIp', orig?.id);
+    const list = webAllow.value.split('\n').map((x) => x.trim()).filter(Boolean);
+    if (list.includes(r.ip)) { toast(`${r.ip} 已经在名单里`); return; }
+    webAllow.value = [...list, r.ip].join('\n');
+    toast(`已加入 ${r.ip}（由 ${r.via} 看到的本机地址）`, 'ok');
+  }) }, '加入本机当前 IP');
+  const webAllowBox = h('details', { class: 'fw-adv' }, h('summary', {}, 'Web 端口来源白名单（一定要用 80 / 443 / 8080 / 8443 时填）'),
+    field('只允许这些来源 IP 连 Web 端口上的协议', h('div', {}, webAllow, h('div', { style: { marginTop: '6px' } }, myIpBtn)),
+      '很多服务商不允许在这几个端口上对公网开放代理，但允许只对指定 IP 开放。填了之后这台服务器的协议才能用这几个端口，NodeDeck 会在 VPS 防火墙里只放行名单上的 IP（其它地址扫端口也看不到）；把这台当转发目标的中转机 IP 会自动加入。本机 IP 是让自己的 VPS 看来源地址查的；开着代理或 TUN 时查到的是代理出口，先关掉再点。家宽 IP 会变，变了要回来更新'));
+  if ((s.webAllow || []).length) webAllowBox.open = true;
+
   // 端口：自动优选（部署时挑）或手动填
   const portMode = h('select', { style: { width: 'auto' } }, h('option', { value: 'auto' }, '端口：自动优选（推荐）'), h('option', { value: 'manual' }, '端口：手动填写'));
   portMode.value = s.portMode || (orig?.deployedAt ? 'manual' : 'auto');
@@ -417,9 +431,10 @@ async function editServer(orig, opts = {}) {
     h('div', { class: 'row' }, field('每月流量额度 GB（可选）', quotaIn, '探针网页上显示用量进度'), field('分组（可选）', groupIn, '探针网页可以按分组筛选，例如「日本」「备用」')),
     field('自签证书域名（Trojan / Hy2 / TUIC / AnyTLS 的 SNI）', sniBox),
     h('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', margin: '14px 0 8px' } }, h('h4', { style: { margin: 0 } }, '协议'), h('div', { class: 'spacer' }), portMode, tpl), portNote, grid,
+    webAllowBox,
     h('h4', {}, '正式证书（可选）'),
     h('div', { class: 'row' }, field('域名', domain, '要先把这个域名的 A 记录指向服务器 IP（Cloudflare 请关掉小黄云）'), field('邮箱（可选）', acmeEmail)),
-    h('label', { class: 'f' }, acme, ' 自动申请 Let\'s Encrypt 证书（Trojan / Hy2 / TUIC / AnyTLS 改用正式证书，客户端不再需要跳过证书验证；需要服务器 80 端口空闲）'),
+    h('label', { class: 'f' }, acme, ' 自动申请 Let\'s Encrypt 证书（Trojan / Hy2 / TUIC / AnyTLS 改用正式证书，客户端不再需要跳过证书验证；需要服务器 80 端口空闲。开了「避开常用 Web 端口」时不能开）'),
     h('h4', {}, 'IPv6'),
     h('div', { class: 'row' }, field('IPv6 地址', host6, s.lastStatus?.ipv6 ? h('span', {}, `服务器检测到：${s.lastStatus.ipv6} `, h('a', { href: '#', onclick: (e) => { e.preventDefault(); host6.value = s.lastStatus.ipv6; } }, '填入')) : '部署后会自动检测'), field('线路', ipMode)),
     h('h4', {}, '路由规则'),
@@ -446,17 +461,21 @@ async function editServer(orig, opts = {}) {
       if (sniBlocked(v)) throw new Error(`${v} 在国内按域名屏蔽，不能做 SNI，换一个`);
       s.tlsSni = v;
     }
+    s.webAllow = webAllow.value.split('\n').map((x) => x.trim()).filter(Boolean);
+    { const bad = s.webAllow.find((x) => !/^[0-9a-fA-F:.]+(\/\d{1,3})?$/.test(x)); if (bad) throw new Error('Web 端口来源白名单格式不对：' + bad + '（只能填 IP 或网段）'); }
     s.portMode = portMode.value;
     s.exit = exit.value ? { type: 'landing', landingId: exit.value } : { type: 'direct' };
     s.domain = domain.value.trim(); s.acmeEmail = acmeEmail.value.trim(); s.acme = acme.checked && !!s.domain;
     if (acme.checked && !s.domain) throw new Error('开启正式证书需要先填域名');
+    if (s.acme && !orig?.acme && S.settings.avoidWebPorts !== false) throw new Error('正式证书申请和续期要在 TCP 80 上做验证（Let\'s Encrypt 的验证服务器 IP 不固定，没法用白名单），和「避开常用 Web 端口」冲突。不开也能用：自签证书的链接里带证书指纹，客户端照样能验证');
     s.host6 = host6.value.trim().replace(/^\[|\]$/g, ''); s.ipMode = ipMode.value;
     s.routing = { blockBT: blockBT.checked, blockAds: blockAds.checked, blockCN: blockCN.checked, warp: { enabled: warpOn.checked, sites: warpSites.filter((x) => x.cb.checked).map((x) => x.k) } };
     for (const [k] of PROTOS) {
       const e = protoEls[k];
       s.protocols[k] = { ...s.protocols[k], enabled: e.en.checked, port: Number(e.pt.value || e.pt.dataset.keep), fixedPort: portMode.value === 'manual' && e.fixed.checked };
-      if (portMode.value === 'manual' && e.en.checked && S.settings.avoidWebPorts !== false && WEB_PORTS.includes(s.protocols[k].port) && !(k === 'vmess' && cfOn.checked)) {
-        throw new Error(`${PROTO_LABEL[k]} 的端口 ${s.protocols[k].port} 是常用 Web 端口（80 / 443 / 8080 / 8443），很多服务商禁止拿来做代理伪装，换一个（比如 2053）。确实要用的话在「设置 → 服务器与内核」里关掉「避开常用 Web 端口」`);
+      if (portMode.value === 'manual' && e.en.checked && S.settings.avoidWebPorts !== false && !s.webAllow.length && WEB_PORTS.includes(s.protocols[k].port) && !(k === 'vmess' && cfOn.checked)) {
+        webAllowBox.open = true;
+        throw new Error(`${PROTO_LABEL[k]} 的端口 ${s.protocols[k].port} 是常用 Web 端口（80 / 443 / 8080 / 8443），很多服务商不允许对公网开放。换一个（比如 2053），或者在下面「Web 端口来源白名单」里填上允许连接的 IP（只对这些 IP 开放）`);
       }
       if (e.rmode) {
         const pr = s.protocols[k];

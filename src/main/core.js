@@ -445,15 +445,48 @@ const PREFERRED_TCP_PORTS = [443, 8443, 2053, 2083, 2087, 2096];
 // 常用 Web 端口：不少服务商禁止在这几个端口上跑网站或做代理类 Web 伪装（违规会被停机）。默认一律避开，设置里可以关
 const WEB_PORTS = [80, 443, 8080, 8443];
 const avoidWebPorts = (state) => state?.settings?.avoidWebPorts !== false;
-const allowedPort = (state, port) => !avoidWebPorts(state) || !WEB_PORTS.includes(Number(port));
-// 这台服务器上落在 Web 端口的协议（没开避开时返回空）
+const isIpLiteral = (x) => /^(\d{1,3}\.){3}\d{1,3}$/.test(x) || (x.includes(':') && /^[0-9a-f:.]+$/i.test(x));
+// Web 端口来源白名单：服务器上填的 IP / 网段，加上把这台当转发目标的中转机 IP（中转机要能连进来）
+function webAllowOf(state, server) {
+  const own = (server.webAllow || []).map((x) => String(x).trim()).filter(Boolean);
+  if (!own.length) return [];
+  const out = new Set(own);
+  for (const f of state.forwards || []) {
+    if (f.enabled === false || f.target?.type !== 'node' || f.target.serverId !== server.id) continue;
+    const r = (state.servers || []).find((x) => x.id === f.relayServerId);
+    for (const h of [r?.host, r?.host6]) { const v = String(h || '').trim().replace(/^\[|\]$/g, ''); if (v && isIpLiteral(v)) out.add(v); }
+  }
+  return [...out];
+}
+// 这个端口能不能用：没开「避开常用 Web 端口」、不是 Web 端口，或者这台服务器设了来源白名单（服务商允许只对指定 IP 开放）
+const allowedPort = (state, port, server) => !avoidWebPorts(state) || !WEB_PORTS.includes(Number(port)) || !!(server && webAllowOf(state, server).length);
+// 这台服务器上违反「避开常用 Web 端口」的地方：落在 Web 端口又没设白名单的协议，以及要用 TCP 80 做验证的正式证书（没开避开时返回空）
 function webPortUses(state, server) {
   if (!avoidWebPorts(state)) return [];
   const out = [];
+  const listed = webAllowOf(state, server).length > 0;
   for (const [k, m] of Object.entries(PROTOCOLS)) {
     const pc = server.protocols?.[k];
-    if (!pc?.enabled || (k === 'vmess' && cfTunnelOf(server))) continue;
+    if (!pc?.enabled || (k === 'vmess' && cfTunnelOf(server)) || listed) continue;
     if (WEB_PORTS.includes(Number(pc.port))) out.push({ key: k, label: m.label, port: Number(pc.port), net: m.net });
+  }
+  if (usesAcme(server)) out.push({ key: 'acme', label: '正式证书（Let\'s Encrypt 用 TCP 80 验证）', port: 80, net: 'tcp' });
+  return out;
+}
+// 给 agent 的端口来源白名单：设了白名单的服务器上落在 Web 端口的协议，以及填了来源白名单的端口转发（在防火墙层面拦，扫端口也看不到）
+function portAllowRules(state, server) {
+  const out = [];
+  const allow = webAllowOf(state, server);
+  if (allow.length) {
+    for (const [k, m] of Object.entries(PROTOCOLS)) {
+      const pc = server.protocols?.[k];
+      if (!pc?.enabled || (k === 'vmess' && cfTunnelOf(server)) || !WEB_PORTS.includes(Number(pc.port))) continue;
+      out.push({ port: Number(pc.port), net: m.net, allow });
+    }
+  }
+  for (const f of state.forwards || []) {
+    if (f.relayServerId !== server.id || f.enabled === false || !(f.allow || []).length) continue;
+    out.push({ port: Number(f.listenPort), net: resolveForwardTarget(state, f)?.network || 'both', allow: f.allow });
   }
   return out;
 }
@@ -473,7 +506,8 @@ function cfTunnelOf(server) {
   return { token: t.token.trim(), hostname: t.hostname.trim(), cdnHosts: (t.cdnHosts || []).map((x) => String(x).trim()).filter(Boolean) };
 }
 // 订阅走 HTTPS（不用域名）：设置里没关、也没填订阅域名时，agent 给 VPS 的 IP 申请 Let's Encrypt 证书
-function subTlsWanted(state) { return state.settings?.subHttps !== false && !state.settings?.subDomain; }
+// 订阅的 IP 证书要用 TCP 80 做 http-01 验证：开了「避开常用 Web 端口」时不申请（订阅走 HTTP，或用 Cloudflare 代理的订阅域名走 HTTPS）
+function subTlsWanted(state) { return state.settings?.subHttps !== false && !state.settings?.subDomain && !avoidWebPorts(state); }
 
 function serverPorts(state, server) {
   const ports = [];
@@ -617,7 +651,7 @@ function rotateServer(state, server) {
   return { server: s, changes };
 }
 
-module.exports = { autoPickPorts, preferredFreePort, WEB_PORTS, avoidWebPorts, allowedPort, webPortUses,
+module.exports = { autoPickPorts, preferredFreePort, WEB_PORTS, avoidWebPorts, allowedPort, webPortUses, webAllowOf, portAllowRules,
   subTlsWanted, cfTunnelOf, fpOf, FINGERPRINTS, PREFERRED_TCP_PORTS, hopRange, PROTOCOLS, REMOTE_DIR, agentForwards, forwardTargets, CONN_LOG, XRAY_ACCESS_LOG, onlineTrackOn, GB, randId, randHex, randPassword, uuid, realityKeypair, defaultProtocols, newServer, newUser, userStatus, userExpireAt, userUsedBytes, userHasServer, usersForServer, buildServerConfig, XRAY_KEYS, isXray, usesXray, realityOn, xrayPorts, buildXrayConfig, acmeCertFiles, xhttpPath, netsOf, serverPorts, checkPortConflicts, resolveForwardTarget, landingOutbound, pickFreePort, rotateServer, ensureProtocols, ssUserKey, pickPreferredPort, usesAcme, tlsSniFor, WARP_SITES,
   // 内部共用（订阅模块要用）
   SS_METHOD,

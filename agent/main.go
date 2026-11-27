@@ -59,6 +59,7 @@ type Config struct {
 	Telegram      TelegramConfig `json:"telegram"`
 	Wechat        WechatConfig   `json:"wechat"`
 	UDPHops       []UDPHop       `json:"udpHops"`
+	PortAllow     []PortAllow    `json:"portAllow"`
 	// 0.5.0 起
 	Init           string            `json:"init"` // systemd（默认）或 openrc
 	LatencyTargets map[string]string `json:"latencyTargets"`
@@ -802,6 +803,7 @@ func run(cfgPath string) {
 	a.loadState()
 	a.loadData()
 	a.applyHops()
+	a.applyAllow()
 	a.loadMetrics()
 	go a.metricsLoop()
 	if err := a.apply(true); err != nil {
@@ -989,6 +991,7 @@ func main() {
 	case "apply-hops":
 		a := &Agent{cfg: loadConfig(*cfgPath)}
 		a.applyHops()
+		a.applyAllow()
 		fmt.Println("ok")
 	case "install-singbox":
 		v, err := installSingbox(*manifest, *bin)

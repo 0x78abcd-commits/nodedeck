@@ -512,6 +512,17 @@ function registerIpc() {
     for (const f of state().forwards || []) if (f.target?.serverId === id && keys.includes(f.target?.protocol)) { const rl = getServer(f.relayServerId); if (rl?.deployedAt) related.add(rl.id); }
     for (const rid of related) { log(`同步 ${getServer(rid).name}（订阅 / 转发跟着更新）…`); try { await syncOne(rid, () => {}); } catch (e) { log(`⚠ ${getServer(rid).name} 同步失败：${e.message}，稍后点「同步全部」`); } }
   }
+  // 本机当前的公网 IP：问自己的一台 VPS 看到的来源地址（不经第三方）。开着代理 / TUN 时看到的是代理出口
+  handle('net:myIp', async (preferId) => {
+    const deployed = state().servers.filter((x) => x.deployedAt);
+    let srv = deployed.find((x) => x.id === preferId && x.speedToken) || deployed.find((x) => x.speedToken) || deployed.find((x) => x.id === preferId) || deployed[0];
+    if (!srv) throw new Error('还没有部署好的服务器，没法查本机 IP');
+    if (!srv.speedToken) { store.upsert('servers', { id: srv.id, speedToken: core.randId(32) }); await syncOne(srv.id, () => {}); srv = getServer(srv.id); }
+    const url = `https://${srv.host.includes(':') ? `[${srv.host}]` : srv.host}:${Number(state().settings?.subPort || 2096)}/nd-speed/ip?t=${encodeURIComponent(srv.speedToken)}`;
+    const r = await agenttls.getJSON(srv, url, 8000);
+    if (!r?.ip) throw new Error('没查到');
+    return { ip: r.ip, via: srv.name };
+  });
   // 常用 Web 端口（80 / 443 / 8080 / 8443）：哪些服务器在用、一键换走
   handle('servers:webPorts', () => state().servers.map((x) => ({ id: x.id, name: x.name, deployed: !!x.deployedAt, uses: core.webPortUses(state(), x) })).filter((x) => x.uses.length));
   handle('server:leaveWebPorts', async (id) => {
@@ -532,16 +543,17 @@ function registerIpc() {
     const changes = [];
     for (const u of uses) {
       const cur = getServer(id);
+      if (u.key === 'acme') { store.upsert('servers', { id, acme: false }); changes.push('关掉正式证书（改用自签证书，链接里带证书指纹）'); log('关掉正式证书'); continue; }
       const port = core.preferredFreePort(state(), cur, u.key, { busy, avoid: [u.port] });
       store.upsert('servers', { id, protocols: { ...cur.protocols, [u.key]: { ...cur.protocols[u.key], port } } });
       changes.push(`${u.label}：${u.port} → ${port}`);
       log(`${u.label} 端口 ${u.port} → ${port}`);
     }
     const errs = core.checkPortConflicts(state(), getServer(id));
-    if (errs.length) { store.upsert('servers', { id, protocols: srv0.protocols }); throw new Error('换端口失败：' + errs.join('；')); }
+    if (errs.length) { store.upsert('servers', { id, protocols: srv0.protocols, acme: srv0.acme }); throw new Error('换端口失败：' + errs.join('；')); }
     let synced = false; let error = '';
     if (srv0.deployedAt) {
-      try { await syncOne(id, log); synced = true; await syncRelated(id, uses.map((u) => u.key), log); } catch (e) { error = e.message; }
+      try { await syncOne(id, log); synced = true; await syncRelated(id, uses.map((u) => u.key).filter((k) => k !== 'acme'), log); } catch (e) { error = e.message; }
     }
     return { changes, synced, error };
   });
@@ -579,7 +591,7 @@ function registerIpc() {
 
     log(`从本机${tcp ? '连接' : '真连（UDP 协议没法只测端口）'} ${entry.host}:${port0} …`);
     const first = await probePort(entryNow() || entry);
-    if (first.ok) { log('✔ 端口通'); return { status: 'ok', port: port0, message: `端口 ${port0} 从本机能连通` + (core.allowedPort(state(), port0) ? '' : '。不过它是常用 Web 端口（80 / 443 / 8080 / 8443），服务商禁止的话会被停机，建议在服务器页「换掉 Web 端口」') }; }
+    if (first.ok) { log('✔ 端口通'); return { status: 'ok', port: port0, message: `端口 ${port0} 从本机能连通` + (core.allowedPort(state(), port0, getServer(id)) ? '' : '。不过它是常用 Web 端口（80 / 443 / 8080 / 8443），服务商禁止的话会被停机，建议在服务器页「全部换掉」，或者在服务器「编辑」里填 Web 端口来源白名单') }; }
     log(`✘ 连不通${first.error ? '：' + first.error : ''}`);
 
     if (self.via) return { status: 'ip', message: `SSH 也要经本机代理（${self.via}）才连得上：多半是整个 IP 被墙，换端口没用，建议加中转、换 IP，或开 Cloudflare 隧道` };

@@ -55,6 +55,7 @@ function agentConfig(state, server = {}) {
     speedToken: server.speedToken || '',
     latencyProbe: !!st.latencyProbe, // 后台定时测三网延迟，默认关（省流量）
     // 订阅 HTTPS：给 VPS 的 IP 申请 Let's Encrypt 证书（6 天有效，agent 自动续）
+    portAllow: server ? core.portAllowRules(state, server) : [],
     subTls: core.subTlsWanted(state) ? { enabled: true, host: String(server.host || '').replace(/^\[|\]$/g, '') } : null,
     stock: stockMod.agentCfg(state, server), // 补货提醒（内置轻量版）：只在选中的那台上有
     probe: probe.agentCfg(state, server), // 探针：只读接口密钥；主控还带网页口令和机器列表
@@ -331,6 +332,7 @@ modprobe tcp_bbr 2>/dev/null; sysctl -w net.core.default_qdisc=fq >/dev/null 2>&
     // 首次部署：避开常用 Web 端口（80 / 443 / 8080 / 8443，很多服务商禁止拿来做代理伪装）
     if (!server.deployedAt) {
       for (const u of core.webPortUses(state, server)) {
+        if (u.key === 'acme') { log('⚠ 开了正式证书：申请和续期要在 TCP 80 上做验证，和「避开常用 Web 端口」冲突，建议在服务器设置里关掉正式证书'); continue; }
         const np = core.preferredFreePort(state, server, u.key, { busy: { tcp: busy }, avoid: [u.port] });
         log(`${u.label} 端口 ${u.port} 是常用 Web 端口，改用 ${np}（设置里可以关掉「避开常用 Web 端口」）`);
         server.protocols[u.key].port = np;
